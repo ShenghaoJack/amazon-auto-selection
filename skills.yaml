@@ -1,0 +1,553 @@
+# =============================================================================
+# skills.yaml — Amazon 类目选品流水线 · Skill 清单（供 LLM 编排 / MCP / 自研路由使用）
+# =============================================================================
+# 设计原则: Skill = 确定性能力单元; LLM = 规划/选择/判断/汇总(只经 Skill 触达世界)。
+# 机械动作(抓取/分页/限速/重试/写盘/校验)一律留在 Skill 内部, 不进 LLM 循环。
+#
+# 生成: 2026-09-10 | 版本: 1.0 | 来源: core/ + steps/ + scripts/ + agent/(只读分析层)
+# 校验: 每个 skill 的 inputs/outputs 与 STEP_DEVELOPMENT_GUIDE.md 第5节数据契约一致
+# =============================================================================
+
+meta:
+  project: auto-workflow-python
+  title: Amazon 类目选品流水线(0-19 步) + Web 控制台
+  version: "1.0"
+  generated: "2026-09-10"
+  orchestrator_deterministic: "core/orchestrator.py"      # 现状: 20 步顺序执行(0-19) + 断点续跑
+  step_registry: "steps/registry.py"                      # 步骤注册表(天然的 skill 索引)
+  control_plane: "webui/server.py"                        # HTTP 控制面(/api/run|stop|config/save|reset-step|archive|history|inject-words|keyword-lists)
+  llm_agent_layer: "agent/"                               # crewAI 只读分析层(未接入流水线): report_crew / qa_crew
+  invocation:
+    cli: "python main.py run|step N|login|reset|reset-step N|archive|status"
+    api: "POST /api/run {config_file, mode: resume|from|step, from_step?, step?, overrides?}"
+
+# -----------------------------------------------------------------------------
+# 约定(所有 skill 共用)
+# -----------------------------------------------------------------------------
+conventions:
+  data_root: "data"
+  cat_root: "data/<CAT>"
+  config_source: "data/<CAT>/config.yaml"                 # 每类目一份(真源); 根 config.yaml 仅占位模板
+  config_backup: "data/<CAT>/config-backups/<CAT>-v<N>.bak"
+  monitor_dir: "data/<CAT>/17_备份与监控"
+  state_files:
+    step_status: "17_备份与监控/step-status.txt"           # 步骤状态/耗时/中断累计(acc)
+    step_duration: "17_备份与监控/step-duration.csv"
+    progress_log: "17_备份与监控/pipeline-progress.log"
+    alerts: "17_备份与监控/monitor-alerts.txt"
+    health: "17_备份与监控/health-report.json"
+    llm_usage: "17_备份与监控/llm-usage.jsonl"             # LLM 每次调用的 token/费用明细(append-only; 轮转为 llm-usage-<run_id>.jsonl)
+    llm_usage_steps: "17_备份与监控/llm-usage-steps.csv"    # 本轮每步汇总(调用数/命中/未命中/输出/费用估算元)
+    screenshots: "17_备份与监控/screenshots/"
+  run_lock: "data/<CAT>/.run.lock"                        # 每类目单实例锁(防幽灵/僵尸进程并发)
+  dry_run: "DRY_RUN=true → LLM/MCP/浏览器/HTTP 全走 Mock(离线可跑通 0-19, 零费用)"
+  archiving: "每步完成即时同步到 data/archive/<CAT>-<时间戳>/<NN_步骤名>/; 续跑复用最新归档目录"
+  artifact_prefix: "<CAT>-"                               # 中间产物统一前缀
+  guardrails:                                             # LLM 编排必须遵守
+    - "状态由代码状态机管理(step-status/acc/INTERRUPTED), 不得依赖 LLM 记忆"
+    - "LLM 只输出『选哪个 skill + 参数』, 不输出机械循环"
+    - "每个 skill 幂等; 失败抛异常不静默(禁止把失败标成功)"
+    - "预算硬上限: 抓取配额/重试/等待窗口不得被 LLM 放大"
+    - "全链路审计: 每次 skill 调用记录 入参/产物/耗时/耗时上限/决策理由"
+    - "可回放: LLM 决策须落成 skill 序列文件, 可脱离 LLM 重跑"
+    - "只读分析类 skill 不得改写流水线产物 schema"
+
+# -----------------------------------------------------------------------------
+# 决策点(适合交给 LLM 的"模糊判断"; 其余一律走确定性 skill)
+# -----------------------------------------------------------------------------
+llm_decision_points:
+  - id: gate_not_met
+    trigger: "FR-09 开品门槛不达标(达标核心大词 < GATE_MIN_QUALIFIED)"
+    options: ["放宽 SCREEN_REQUIREMENT 后重跑 step7", "调整 CANDIDATE_LIMIT 扩候选后重跑 step4-7", "换目标月(TREND_MONTH)", "放弃该类目"]
+    skill_hint: ["config.set", "kw.generate", "kw.screen", "ops.status"]
+    guard: "改阈值必须重跑 step7 才生效(只从 step8 续跑仍是旧结论)"
+  - id: quota_exhausted
+    trigger: "卖家精灵导出按钮提示『当天剩余0次』"
+    options: ["切备用账号(窗口内)", "等待到 SS_QUOTA_WINDOW_START", "提人工加账号"]
+    skill_hint: ["market.traffic", "market.competitors"]
+    guard: "备用账号仅在 SS_QUOTA_WINDOW_* 窗口内可用; 不得绕过"
+  - id: export_not_ready
+    trigger: "FR-13 状态轮询到 EXPORT_STATUS_WAIT 仍『导出中』"
+    options: ["延长 EXPORT_STATUS_WAIT 后重跑 step13", "稍后重跑 step13 补齐", "缩小 BATCH_VARIANT 分批提交"]
+    skill_hint: ["config.set", "market.competitors"]
+  - id: submit_not_effective
+    trigger: "FR-12 报『导出任务未在「我的导出」生成』"
+    options: ["重跑 step12(可能页面/查询未就绪)", "SS_FORCE_RESUBMIT=true 强制重提", "检查登录态/CDP"]
+    skill_hint: ["market.competitors"]
+  - id: login_or_structure_drift
+    trigger: "登录页变体/扫码登录/选择器超时/页面改版"
+    options: ["重试", "重启 CDP Chrome(scripts/start_ss_chrome.py)", "提人工适配选择器"]
+    skill_hint: ["ops.diagnose", "market.traffic"]
+  - id: review_disagreement
+    trigger: "FR-10 复核一致率 < REVIEW_MIN_RATE"
+    options: ["按 REVIEW_POLICY 自动改判(follow_review/drop_on_disagree)", "人工复核不一致项后重跑 step10"]
+    skill_hint: ["filter.review", "product.variants"]
+  - id: low_sales_prune
+    trigger: "FR-14 低销量筛选后行数骤降/为空"
+    options: ["下调 MONTHLY_SALES_MIN", "检查 FR-13 竞品数据是否为空(月销量来源)"]
+    skill_hint: ["config.set", "analysis.split"]
+
+# =============================================================================
+# A. 业务 skill(对应 FR-00 … FR-17)
+# =============================================================================
+skills:
+
+  # ---------------------------------------------------------------- FR-00
+  - id: cat.discover
+    name: 榜单收集
+    covers: ["FR-00"]
+    kind: browser
+    description: "打开类目 Best Sellers / New Releases 榜单页, 滚动抓取全部商品 ASIN, 并集去重。启动前做登录态预检与 LIST_URLS 规范校验。"
+    config_keys: ["CAT", "LIST_URLS", "MARKET", "AMZ_PROFILE", "COOKIE", "COOKIE_CHECK", "SS_ACCOUNT", "SS_PASSWORD"]
+    inputs:
+      config: "data/<CAT>/config.yaml"
+    outputs:
+      - "<CAT>-bestseller-newrelease.json  # {bs:[], nr:[], union:[]}"
+      - "<CAT>-bestseller-newrelease-all.txt"
+    preconditions:
+      - "LIST_URLS 为规范短链 https://<host>/gp/bestsellers/<类目>/<节点ID>(否则阻断)"
+      - "亚马逊 Profile 会话有效(或 COOKIE 可导入); 卖家精灵登录态有效"
+      - "data/<CAT>/.run.lock 未被存活进程占用"
+    idempotency: "断点续爬(已处理 URL 跳过); NR 榜空榜容忍(页面提示或抓不到 ASIN 即跳过)"
+    budget: {cost: "浏览器会话 1 次", retry: "页面级重试", external_quota: "无"}
+    on_failure: "抛异常 → 步骤标 FAILED(CRIT 告警); 不静默"
+    notes: "CDP 后台模式可配 SS_CDP_URL; 登录预检查进程内缓存(同轮只确认一次)"
+
+  # ---------------------------------------------------------------- FR-01
+  - id: cat.details
+    name: 榜单详情抓取
+    covers: ["FR-01"]
+    kind: http
+    description: "HTTP 直连抓双榜商品详情(标题+五点), 状态分类(ok/bot_blocked/not_found/http_N)。"
+    config_keys: ["MARKET", "COOKIE", "REQUEST_MIN_INTERVAL", "REQUEST_MAX_INTERVAL", "REQUEST_RETRY", "HTTP_TIMEOUT"]
+    inputs: ["<CAT>-bestseller-newrelease-all.txt"]
+    outputs: ["<CAT>-dual-details.jsonl"]
+    preconditions: ["上一步产物存在", "COOKIE 有效性预检查通过(仅本轮含 1/10 步骤时执行)"]
+    idempotency: "JSONL 追加写 + ok=True 记录跳过(失败记录重跑时自动重试)"
+    budget: {cost: "≈ASIN 数 次 HTTP", rate_limit: "随机 1.5-3.5s/请求", retry: "REQUEST_RETRY(默认4) + [8,20,40,70]s 退避"}
+    on_failure: "记录 ok=false 不阻断整步; COOKIE 失效/被风控 → 预检即阻断"
+    notes: "curl_cffi 模拟 Chrome TLS 指纹(成功率约 99.6%); 五点只取 feature-bullets 容器"
+
+  # ---------------------------------------------------------------- FR-02
+  - id: cat.filter_prompt
+    name: 生成过滤提示词
+    covers: ["FR-02"]
+    kind: llm
+    description: "LLM 依榜单真实标题样本判定类目范围, 生成产品定义 + 5 类过滤词(硬排除/相关标题/相关卖点/配件/耗材)。"
+    config_keys: ["CAT", "FILTER_REQUIREMENT", "LLM_API_KEY", "LLM_BASE_URL", "LLM_MODEL", "LLM_NO_THINK", "LLM_TIMEOUT"]
+    inputs: ["<CAT>-dual-details.jsonl"]
+    outputs: ["filter-<CAT>-prompt.json  # {category, requirement, 产品, hard_exclude[], related_title[], related_bullets[], accessories[], consumables[], rules[]}"]
+    preconditions: ["FR-01 详情存在"]
+    idempotency: "覆盖写"
+    budget: {llm_calls: "1(多轮重试)", temperature: 0.3}
+    on_failure: "抛异常(多轮重试保证生成成功)"
+    notes: "类目展示名用 core/catname.display_cat 清洗(去 -v2/-US 等后缀); 本步不写『达标关键词』"
+
+  # ---------------------------------------------------------------- FR-03
+  - id: cat.filter_details
+    name: 榜单详情过滤(第一遍)
+    covers: ["FR-03"]
+    kind: llm
+    description: "用 FR-02 提示词对双榜详情做阶梯式 LLM 判定(相关词优先规则), 剔除配件/耗材/硬排除。"
+    config_keys: ["BATCH_FILTER", "FILTER_JUDGE_TRIES", "FILTER_JUDGE_FALLBACK", "FILTER_JUDGE_WORKERS", "LLM_TIMEOUT"]
+    inputs: ["<CAT>-dual-details.jsonl", "filter-<CAT>-prompt.json"]
+    outputs: ["<CAT>-dual-details-filtered.jsonl  # 保留行 + keep:true + reason", "<CAT>-filtered-dual.txt"]
+    preconditions: ["两步上游产物存在"]
+    idempotency: "覆盖写"
+    budget: {llm_calls: "ceil(记录数/BATCH_FILTER) × 降档重试", fallback_cfg: ["FILTER_JUDGE_TRIES", "FILTER_JUDGE_FALLBACK"]}
+    on_failure: "整批失败→集中重发→拆2条/批→1条/批; 仍失败按 FILTER_JUDGE_FALLBACK(默认 keep 不误杀)"
+    notes: "判定规则: ①相关词命中→保留 ②硬排除命中→剔除 ③卖点命中排除→剔除 ④配件/耗材→剔除 ⑤默认保留"
+
+  # ---------------------------------------------------------------- FR-04
+  - id: kw.generate
+    name: 生成关键词(候选 + 五维度长尾)
+    covers: ["FR-04"]
+    kind: llm
+    description: "候选词 = LLM抽取(温度0) ∪ 确定性挖掘(动态产品名词白名单) ∪ 根词(规则乙: 覆盖类目名实词最多), 按覆盖率回测排序取前 CANDIDATE_LIMIT; 长尾 = 场景/人群/功能/属性/痛点五维度, 每维取「全部标题+五点」里频率最高的实体 × 核心根词, 各 LONGTAIL_PER_DIM 条(默认 25 条)。"
+    config_keys: ["CANDIDATE_LIMIT", "LONGTAIL_PER_DIM", "LONGTAIL_COUNT", "LLM_MODEL", "LLM_TIMEOUT"]
+    inputs: ["<CAT>-dual-details-filtered.jsonl", "filter-<CAT>-prompt.json"]
+    outputs: ["<CAT>-keywords-candidates.txt", "<CAT>-keywords.txt  # [核心大词] + [长尾词]",
+              "<CAT>-keywords-entities.txt  # 五维实体台账(实体/商品数/出现次数/来源), FR-09 抓取词的输入"]
+    preconditions: ["FR-03 产物非空"]
+    idempotency: "覆盖写"
+    budget: {llm_calls: "1(大词抽取) + 5×2(五维实体抽取+润色) + 重试"}
+    on_failure: "LLM 失败 → 确定性挖掘 + 维度模板兜底(保证恰好 CANDIDATE_LIMIT 候选 + LONGTAIL_PER_DIM×5 长尾)"
+    notes: "2026-09-13: 长尾改为「五维高频实体 × 基座词」并由 LLM 润色(≤8 词); 实体须在语料里真实出现(计数为 0 即淘汰); 维度模板与台账格式见 steps/_keywords.py(与 FR-09 共用)。2026-09-10: 生成长尾时用 FR-02 的 配件/耗材/硬排除 词表排除(_load_skip_terms/_is_accessory)"
+
+  # ---------------------------------------------------------------- FR-05
+  - id: kw.mine
+    name: 关键词挖词(MCP 三接口)
+    covers: ["FR-05"]
+    kind: mcp
+    description: "逐词调卖家精灵 MCP 拿搜索量/购买量率/环比同比/3月增长/CPC/ABA周度/Google月度指数。**2026-09-29 起待挖词 = FR-04 候选 ∪ 人工核心词清单**(面板加的词也要有指标, 否则步骤8 报告里只能标『人工新增(未判定)』)。"
+    config_keys: ["SS_MCP_URL", "SS_MCP_KEY", "SITE", "TREND_MONTH"]
+    inputs: ["<CAT>-keywords-candidates.txt", "filter-<CAT>-core-words.txt(可选人工清单)"]
+    outputs: ["<CAT>-amazon-keyword-data.json"]
+    preconditions: ["MCP 密钥有效(check_mcp_key)", "候选词或人工核心词非空"]
+    idempotency: "已有且 status=ok 的词跳过; status=error 的词重挖(人工新增词同理, 重跑只挖新词)"
+    budget:
+      mcp_calls: "待挖词数 × 4(keyword_research_trends / aba_research_trend / keyword_miner(CPC) / google_trend)"
+      timeout_sec: 25              # core/mcp.py MCP_HTTP_TIMEOUT(原 60, 防"看似卡死")
+      retries: 3                   # MCP_CALL_RETRIES(2/5/8s 退避)
+    on_failure: "单接口失败不影响其他(记 error 字段); 三接口全失败该词 status=error"
+    notes: "重试不可调小: 卖家精灵偶发 SSL 连接中断(UNEXPECTED_EOF_WHILE_READING), 过少重试会丢 google_trend → FR-07 判『google_yoy缺失/数据不足』; 逐接口进度日志便于定位卡点; 人工核心词并入后日志会打印『约 4K 次 MCP 调用』, 待挖 >30 个额外 WARN"
+
+  # ---------------------------------------------------------------- FR-06
+  - id: kw.trend
+    name: 站内月度趋势
+    covers: ["FR-06"]
+    kind: mcp
+    description: "拉取逐词逐月站内趋势序列(搜索量/购买量/购买率 + 严格单月同比)。"
+    config_keys: ["TREND_MONTH", "SS_MCP_URL", "SS_MCP_KEY"]
+    inputs: ["<CAT>-keywords.txt 或 候选词"]
+    outputs: ["<CAT>-amazon-monthly.json"]
+    idempotency: "覆盖写"
+    budget: {mcp_calls: "≈词数"}
+    on_failure: "抛异常/记错, 缺去年同月回退滚动同比"
+
+  # ---------------------------------------------------------------- FR-07
+  - id: kw.screen
+    name: 生成筛选脚本并筛选(达标判定)
+    covers: ["FR-07"]
+    kind: llm+local
+    description: "生成/回退筛选脚本, 逐词判 达标/不达标/数据不足; 阈值来自 SCREEN_REQUIREMENT 文本。"
+    config_keys:
+      primary: ["SCREEN_REQUIREMENT"]                                        # ★ 文本优先参与判定(2026-09-10)
+      fallback: ["SEARCH_VOLUME_THRESHOLD", "MOM_YOY_MIN", "GOOGLE_YOY_MIN", "CPC_MAX"]
+      llm: ["LLM_MODEL", "LLM_TIMEOUT"]
+    inputs: ["<CAT>-amazon-keyword-data.json", "<CAT>-amazon-monthly.json"]
+    outputs: ["screen-<CAT>.py", "<CAT>-screen-results.json  # verdict: 达标/不达标/数据不足 + reason"]
+    preconditions: ["FR-05 数据存在"]
+    idempotency: "覆盖写(重新生成脚本与结果)"
+    budget: {llm_calls: "1(脚本生成) + 回退模板"}
+    on_failure: "LLM 生成失败/脚本无效 → 回退通用模板(阈值内嵌)重算"
+    notes: "阈值优先级 = SCREEN_REQUIREMENT(解析) → 4 个单键 → 默认(30000/-20/-20/3)。⚠️ 改标准后必须重跑本 skill(脚本把阈值内嵌为字面量); 4 个单键在 webui 属 HIDDEN_KEYS"
+    invalidates: ["market.traffic", "cat.gate", "product.variants"]           # 下游依赖判定结果
+
+  # ---------------------------------------------------------------- FR-08
+  - id: kw.report
+    name: 关键词报告
+    covers: ["FR-08"]
+    kind: local
+    description: "7-sheet Excel 报告(结论总览/核心词/季节性/总表/长尾/源数据/方法说明), 判定三色高亮 + 开品门槛检查。"
+    config_keys: ["GATE_MIN_QUALIFIED", "CORE_SEARCH_PAGES", "LONGTAIL_SEARCH_PAGES"]
+    inputs: ["<CAT>-screen-results.json", "<CAT>-amazon-keyword-data.json", "<CAT>-amazon-monthly.json"]
+    outputs: ["<CAT>-keyword-report.xlsx"]
+    idempotency: "覆盖写"
+    budget: {cost: "本地, 秒级"}
+    on_failure: "抛异常"
+
+  # ---------------------------------------------------------------- FR-09
+  - id: cat.gate
+    name: 搜索收集(开品门槛 + 自然位收集)
+    covers: ["FR-09"]
+    kind: browser
+    description: "门槛检查(核心词数 ≥ GATE_MIN_QUALIFIED, 否则中止); 收集清单 = 全部核心词 + 抓取词(五维度各取频率最高实体 × 搜索量最高的核心词, 最多 5 条)逐词在亚马逊搜索, 只收自然位(排广告), 截图留档, 并入双榜清单。**关键词三态(2026-09-29)**: 自动 = 与旧版一致; 人工清单(filter-<CAT>-core-words.txt / -longtail-words.txt 存在) = 用清单词且门槛按最终词数判、长尾抓取词直接用清单; 停止标记(filter-<CAT>-keyword-stop.txt 存在) = 直接中止不抓取。"
+    config_keys: ["GATE_MIN_QUALIFIED", "CORE_SEARCH_PAGES", "LONGTAIL_SEARCH_PAGES", "REQUEST_RETRY", "MARKET"]
+    inputs: ["<CAT>-screen-results.json", "<CAT>-keywords.txt", "<CAT>-keywords-entities.txt", "filter-<CAT>-prompt.json", "filter-<CAT>-core-words.txt(可选人工清单)", "filter-<CAT>-longtail-words.txt(可选人工清单)", "filter-<CAT>-keyword-stop.txt(可选停止标记)"]
+    outputs: ["<CAT>-search-asins.json", "<CAT>-search-asins-all.txt", "<CAT>-search-verify.json", "<CAT>-search-verify.csv", "<CAT>-used-keywords.txt", "17_备份与监控/screenshots/<词>.png"]
+    preconditions: ["FR-07 判定存在(自动态)", "核心词数 ≥ GATE_MIN_QUALIFIED(人工态按清单词数; 非 US 站自动态不适用)", "无人工停止标记"]
+    idempotency: "断点续爬(collected/verified 持久化, 同词重搜整体刷新)"
+    budget: {cost: "浏览器会话 + (核心词×CORE_SEARCH_PAGES + 抓取词×LONGTAIL_SEARCH_PAGES) 页", external_quota: "无"}
+    on_failure: "门槛不足 → StepFailedError(开品门槛未过) 中止; 人工停止标记 → StepFailedError(人工停止) 中止; 页面结构漂移 → 回退旧全文 /dp/ 并告警"
+    notes: "2026-09-29: 关键词三态(自动/人工清单/人工停止)见 core/keyword_lists.py, 三处消费端(FR-06/08/09)共用同一 resolver。2026-09-13: 抓取词改口径 —— 基座=搜索量最高的核心词, 每维取 FR-04 台账里第一个可用实体(不在基座里/非配件), 最多 5 条; 「长尾须含核心产品名词头」由硬门槛降为排序权重(硬门槛实战会把长尾全剔 → 相关长尾 0), 仅在实体台账缺失时回退到「按相关度取最多 5 个长尾词」。2026-09-09/10 强化: 解析前 wait_for_selector 等客户端渲染; 标题 9 级兜底; 长尾剔除配件/非主营(FR-02 词表)"
+    llm_decision_points: ["gate_not_met"]
+
+  # ---------------------------------------------------------------- FR-10
+  - id: product.variants
+    name: 变体抓取 + 第二遍过滤 + 自动复核
+    covers: ["FR-10"]
+    kind: http+llm
+    description: "抓候选商品全部变体(父子/变体链/图片/五点), 注入『达标关键词』后用同一提示词做第二遍过滤, 跑完自动抽查复核。"
+    config_keys: ["FALLBACK", "FETCH_WORKERS", "FETCH_LONG_EVERY", "FETCH_LONG_MIN", "FETCH_LONG_MAX", "REQUEST_MIN_INTERVAL", "REQUEST_MAX_INTERVAL", "BATCH_FILTER", "FILTER_JUDGE_WORKERS", "REVIEW_AUTO", "REVIEW_LIMIT", "REVIEW_MIN_RATE", "REVIEW_POLICY", "COOKIE"]
+    inputs: ["<CAT>-search-asins.json", "filter-<CAT>-prompt.json", "filter-<CAT>-inject-words.txt(可选人工清单)"]
+    outputs:
+      - "<CAT>-results.jsonl"
+      - "<CAT>-父项变体明细.xlsx"
+      - "<CAT>-parents.txt / <CAT>-variants.txt"
+      - "<CAT>-过滤审计.csv"
+      - "<CAT>-复核-过滤审计.csv / <CAT>-复核-不一致项.csv"
+      - "<CAT>-变体抓取-父ASIN汇总.csv / 变体ASIN明细.csv / 输入ASIN映射.csv / 质量检查.json"
+      - "<CAT>-injected-keywords.txt(实际注入记录)"
+    preconditions: ["FR-09 ASIN 清单存在"]
+    idempotency: "断点只跳成功(ok=True); 失败(bot_blocked 等)重跑时自动重试(追加前剪除旧失败行)"
+    budget: {cost: "变体数 × 尝试次数 HTTP", concurrency: "FETCH_WORKERS(动态 8/6/3/2 封顶)", llm_calls: "过滤批次 + 复核抽样"}
+    on_failure: "轮数用尽残余转浏览器补抓(每 ASIN 1 次)后舍弃并留审计; 复核一致率 < REVIEW_MIN_RATE → 阻断 FAILED"
+    notes: "注入源: 人工清单优先, 否则 FR-07 达标全集; 动态注入(非预先写死); 2026-09-10 复核一致率问题已由过滤逻辑修正"
+    llm_decision_points: ["review_disagreement"]
+
+  # ---------------------------------------------------------------- FR-11
+  - id: market.traffic
+    name: 查流量来源(卖家精灵)
+    covers: ["FR-11"]
+    kind: browser
+    description: "按父体分批在卖家精灵提交查流量来源并导出, 下载监听 + 全量合并。"
+    config_keys: ["SITE", "TRAFFIC_MONTH", "BATCH_PARENT", "DOWNLOAD_TIMEOUT", "SCREENSHOT_EVERY", "SS_ACCOUNT", "SS_PASSWORD", "SS_ACCOUNTS", "SS_ACTIVE_ACCOUNT", "SS_QUOTA_WINDOW_START", "SS_QUOTA_WINDOW_END", "SS_CDP_URL", "SS_PROFILE"]
+    inputs: ["<CAT>-parents.txt"]
+    outputs: ["11_查流量来源/KeywordCompetitors-*.xlsx", "11_查流量来源/合并-11_查流量来源.xlsx"]
+    idempotency: "已导出组跳过; 断点续跑"
+    budget: {cost: "浏览器会话", external_quota: "导出配额=组数(主账号+备用账号)"}
+    on_failure: "配额耗尽 → QuotaExhausted → 自动换备用账号(仅窗口内); 全耗尽 → 提醒加账号后重跑"
+    llm_decision_points: ["quota_exhausted"]
+
+  # ---------------------------------------------------------------- FR-12
+  - id: market.competitors
+    name: 查竞品提交(卖家精灵)
+    covers: ["FR-12"]
+    kind: browser
+    description: "按变体 ASIN 分批提交查竞品导出任务(选站点/月份 → 填 ASIN → 查询 → 取消『展示所有变体』 → 导出)。"
+    config_keys: ["SITE", "COMPETITOR_MONTH", "BATCH_VARIANT", "SS_FORCE_RESUBMIT", "SS_ACCOUNTS", "SS_ACTIVE_ACCOUNT", "SS_CDP_URL"]
+    inputs: ["<CAT>-variants.txt"]
+    outputs: ["12_查竞品/<CAT>-submitted.json  # {fingerprint, groups:[{group,time,task_name,asins}]}"]
+    idempotency: "三重去重(本地文件/本地记录/平台任务); 指纹变化强制重提"
+    budget: {cost: "浏览器会话", external_quota: "导出配额=组数"}
+    on_failure: "**2026-09-10 起**: 点击导出后必须确认任务真实生成, 口径与 FR-13 一致(来源含『查竞品』+ 任务名含目标月 + 时间≥本次提交-90s; **不按 ASIN 匹配**, 平台任务名不含 ASIN), 最多等 120s(每10s 轮询), 存在即算创建成功; 未创建 → StepFailedError 且**不重试**(避免重复提交重复扣配额); 不再用兜底任务名假成功"
+    llm_decision_points: ["submit_not_effective", "quota_exhausted", "login_or_structure_drift"]
+    notes: "非标准 ASIN(纯数字 ISBN 型)先剔除; ASIN 填入用原生 value setter + 读回校验; 分隔符=空格"
+
+  # ---------------------------------------------------------------- FR-13
+  - id: market.download
+    name: 竞品数据下载合并
+    covers: ["FR-13"]
+    kind: browser
+    description: "在「我的导出」解析任务列表, 三重过滤(来源/月份/时间窗口)定位目标任务, 状态轮询至全部『已完成』后勾选下载、解压、合并。"
+    config_keys: ["COMPETITOR_MONTH", "EXPORT_STATUS_WAIT", "EXPORT_STATUS_INTERVAL"]
+    inputs: ["12_查竞品/<CAT>-submitted.json"]
+    outputs: ["13_查竞品下载/组N.xlsx", "13_查竞品下载/合并-13_查竞品下载.xlsx"]
+    idempotency: "已下载文件保留; 未完成组可重跑补齐"
+    budget: {cost: "浏览器会话 + 等待时间", wait_sec: "EXPORT_STATUS_WAIT(默认600, 大组建议1800~3600)"}
+    on_failure: "超时仍『导出中』→ FAILED『导出任务未全部完成: 未完成 N 个』(可稍后重跑 step13 补齐)"
+    llm_decision_points: ["export_not_ready"]
+    notes: "无数据文件时会写出空合并文件(保证 DONE 校验) → 下游 FR-14 将缺少月销量, 需重跑本 skill 补齐"
+
+  # ---------------------------------------------------------------- FR-14
+  - id: analysis.split
+    name: 流量拆分
+    covers: ["FR-14"]
+    kind: local+mcp
+    description: "明细+流量来源+竞品数据左关联, 按父体内流量占比拆分月销量, 低销量筛选, 主价按币种识别+网页补抓, MCP 补配送方式/上架时间; 输出 3 sheet。"
+    config_keys: ["MONTHLY_SALES_MIN", "MARKET", "COOKIE", "SITE", "TREND_MONTH", "COMPETITOR_MONTH", "TRAFFIC_MONTH", "SS_MCP_URL", "SS_MCP_KEY"]
+    inputs: ["<CAT>-父项变体明细.xlsx", "11_查流量来源/合并-*.xlsx", "13_查竞品下载/合并-*.xlsx", "<CAT>-results.jsonl"]
+    outputs: ["14_流量拆分/流量拆分数据-需人工补充.xlsx  # 3 sheet = 原始表 / AI已补充 / 人工待补充"]
+    idempotency: "覆盖写"
+    budget: {cost: "本地 pandas + MCP(每40 ASIN 一批 × ≤6 个月) + 少量网页补抓", external_quota: "MCP 调用"}
+    on_failure: "关键产物缺失/为空 → 抛异常(FR-15 会报『拆分结果为空』); 价格补不到不删行 → 计人工待补充表"
+    llm_decision_points: ["low_sales_prune"]
+    notes: "⚠️ 月销量来源=竞品数据(FR-13); 若 FR-13 为空则 MONTHLY_SALES_MIN 会把行全删 → 下游空表"
+
+  # ---------------------------------------------------------------- FR-15
+  - id: analysis.report
+    name: 初步类目分析报告
+    covers: ["FR-15"]
+    kind: local
+    description: "4-sheet 报告: 综合分析(核心KPI/4项类目门禁/品牌Top10/达标关键词/季节性) + 关键词与季节性 + 变体明细 + 口径说明。"
+    config_keys: ["SEARCH_VOLUME_THRESHOLD", "MOM_YOY_MIN", "GOOGLE_YOY_MIN", "CPC_MAX"]
+    inputs: ["14_流量拆分/流量拆分数据-需人工补充.xlsx(AI已补充 sheet, 必填)", "<CAT>-keyword-report.xlsx(可选)"]
+    outputs: ["<CAT>-初步类目分析报告.xlsx"]
+    preconditions: ["FR-14 产物存在且非空"]
+    idempotency: "覆盖写"
+    budget: {cost: "本地, 秒级"}
+    on_failure: "输入为空 → 抛错阻断(『拆分结果为空』)"
+
+  # ---------------------------------------------------------------- FR-16
+  - id: annotation.attrs
+    name: 属性集提取与确认
+    covers: ["FR-16"]
+    kind: llm
+    description: "N(默认3)次 LLM 抽取属性集(标题+五点+详细参数)→并集去重→同义归并→固化为 attribute-spec.json 待 Web 人工确认。"
+    config_keys: ["ATTR_MODE", "ATTR_KEYS", "ATTR_DESC", "LLM_API_KEY", "LLM_MODEL"]
+    inputs: ["14_流量拆分/流量拆分数据-需人工补充.xlsx(AI已补充)"]
+    outputs: ["<CAT>-attribute-spec.json"]
+    idempotency: "重跑覆盖 spec.json(status 回落 pending_confirm)"
+    budget: {llm_calls: "3 次抽取 + 1 次同义归并 + 说明补齐"}
+    on_failure: "抽取失败回退内置默认属性集; 归并失败保留并集交人工"
+
+  # ---------------------------------------------------------------- FR-17
+  - id: annotation.stabilize
+    name: 属性标注
+    covers: ["FR-17"]
+    kind: llm
+    description: "读取已确认属性集和步骤14数据，固定两遍全量标注，分歧格单独补判一次；执行完整性闸门与图片视觉补充，并生成词表。"
+    config_keys: ["ATTR_STAB_CHUNK", "ATTR_STAB_MAX_ALONE", "ATTR_STAB_MAX_RETRY", "ATTR_STAB_PROMPT", "VISION_API_KEY", "VISION_BASE_URL", "VISION_MODEL", "LLM_API_KEY", "LLM_MODEL"]
+    inputs: ["<CAT>-attribute-spec.json(confirmed)", "14_流量拆分/流量拆分数据-需人工补充.xlsx(AI已补充)", "rules.json(受控词表)"]
+    outputs: ["17_属性标注/稳定性结果.json", "17_属性标注/<CAT>-属性标注-单遍原始.xlsx", "17_属性标注/唯一值统计.json"]
+    idempotency: "input.json 快照可复现; 重跑覆盖交付表"
+    budget: {llm_calls: "2遍全量标注 + 冲突格定向补判 + 结构补漏 + 未明确格视觉补充"}
+    on_failure: "结构闸门(完整性)全拒 → 阻断; 交付值一致率只记录不阻断（提示门槛固定为0）"
+
+  # ---------------------------------------------------------------- FR-18
+  - id: annotation.standardize
+    name: 标准化
+    covers: ["FR-18"]
+    kind: llm
+    description: "读步骤17 稳定性结果.json + input.json + 视觉补充.json + rules.json; **应用已确认词表**做归并标准化(受控词表机械收敛 + 大模型语义归类) + 交付值终检。⚠ 词表生成/聚类**不在这里**, 已在步骤17 末尾完成(见 _generate_vocab); 新词初审在真数据上恒不触发(vocab_candidates 只在非 closed 策略下收集)。"
+    config_keys: ["ATTR_STAB_GEN_VOCAB", "ATTR_STAB_AUTO_ONBOARD", "ATTR_XC_AUTO", "LLM_API_KEY", "LLM_MODEL"]
+    inputs: ["17_属性标注/稳定性结果.json", "17_属性标注/input.json", "17_属性标注/视觉补充.json", "rules.json(受控词表)"]
+    outputs: ["18_标准化/<CAT>-属性标注-标准化交付.xlsx", "18_标准化/词表聚类报告.json"]
+    idempotency: "覆盖写; 词表聚类报告含原值→规范值映射供人工审核"
+    budget: {llm_calls: "冷启动词表聚类(可选) + 1 次语义归类 + 新词候选审校"}
+    on_failure: "词表生成失败保留唯一值交人工; 语义归类失败 → 阻断"
+
+  # ---------------------------------------------------------------- FR-19
+  - id: ops.health
+    name: 备份 + 最终体检
+    covers: ["FR-19"]
+    kind: local
+    description: "抓取质量统计/连续失败检测/卡死检测/产物完整性/步骤耗时统计/LLM 用量与费用(只记录不告警) + 预警推送(企业微信/弹窗) + 归档提示。"
+    config_keys: ["WECOM_WEBHOOK", "STUCK_MINUTES", "CONSECUTIVE_FAIL_WARN", "RECENT_SUCCESS_RATIO", "DATA_ROOT"]
+    inputs: ["17_备份与监控/* (step-status/step-duration/pipeline-progress/monitor-alerts/llm-usage)", "各步产物"]
+    outputs: ["17_备份与监控/health-report.json", "data/archive/<CAT>-<时间戳>/  (归档快照)"]
+    idempotency: "覆盖写; 重置边界 [RESET] 后只推新预警(历史保留在文件)"
+    budget: {cost: "本地"}
+    on_failure: "体检发现问题 → 写报告 + 推送, 不阻断"
+
+# =============================================================================
+# B. 运维 / 控制类 skill(给 LLM 编排层用的"手")
+# =============================================================================
+ops_skills:
+
+  - id: ops.status
+    name: 查询步骤状态
+    kind: read_only
+    description: "读 step-status.txt / step-duration.csv / health-report.json, 汇总各步状态、耗时、中断次数、卡点。"
+    inputs: ["17_备份与监控/*"]
+    outputs: ["结构化状态(不写盘)"]
+    guard: "只读"
+
+  - id: ops.llm_cost
+    name: 查询 LLM 用量与费用
+    kind: read_only
+    description: "读各步的 LLM token 消耗与费用估算(按 类目/轮/步骤 排名, **并区分文本模型与图片模型**)。口径: token 以模型返回的 usage 为准; 费用按 命中/未命中/输出 三价分别算并按调用时刻区分高峰/空闲; **是本地估算, 不等于平台账单**(平台按 API key 只有账户级总数, 拆不到类目/步骤)。文本走 LLM_MODEL、图片走 VISION_MODEL(两个 key), 且图片 token 由服务端按尺寸折算进 prompt → 必须分通道看。命令: python scripts/llm_cost_report.py [--cat 片段] [--archive] [--top N] [--csv 文件]"
+    inputs: ["data/<CAT>/17_备份与监控/llm-usage.jsonl", "data/<CAT>/17_备份与监控/llm-usage-steps.csv"]
+    outputs: ["控制台排名表(可选 --csv 导出)"]
+    guard: "只读; 不联网、不调 LLM(价表用磁盘缓存/内置快照)"
+
+  - id: ops.run_until
+    name: 断点续跑到指定步骤
+    kind: orchestrator
+    description: "调用 core/orchestrator.py 从第一个未完成步骤顺序执行(幂等, 失败即停并标记)。"
+    params: {from_step: "int(可选)"}
+    inputs: ["data/<CAT>/config.yaml"]
+    outputs: ["各步产物 + 状态文件"]
+    idempotency: "整链幂等(已完成步骤跳过; 失败步骤重跑)"
+    budget: {guard: "继承各 skill 预算; 运行期间持 .run.lock"}
+
+  - id: ops.run_step
+    name: 单步运行
+    kind: orchestrator
+    description: "只运行指定步骤(独立审查 / 定点重跑), 会强制覆盖该步产物。"
+    params: {step: "int 0..19"}
+    guard: "同类目已有存活进程 → 拒绝启动"
+
+  - id: ops.config_set
+    name: 修改类目配置
+    kind: control_plane
+    description: "改 data/<CAT>/config.yaml 一个或多个键(逐键语义比对, 仅变化项计入), 自动写版本化备份。"
+    params: {config_file: "str", values: "map"}
+    outputs: ["data/<CAT>/config.yaml", "data/<CAT>/config-backups/<CAT>-v<N>.bak"]
+    guard: "无实际改动不生成备份; 每类目保留最近 10 份"
+    notes: "⚠️ 改 SCREEN_REQUIREMENT 后必须重跑 kw.screen(FR-07) 才生效"
+
+  - id: ops.config_restore
+    name: 配置备份治理
+    kind: cli
+    description: "备份列表/恢复/清理; 类目历史存档的 config 读取/改动/沿用。"
+    command: "python scripts/config_backup_tool.py list|restore|prune  /  archive list|show|edit|delete|use"
+
+  - id: ops.review_filter
+    name: 过滤结果复核
+    kind: local+llm
+    description: "用同一份过滤提示词重判 FR-10 结果, 找不一致项并出审计 CSV(也可由 FR-10 自动附带)。"
+    command: "python -X utf8 scripts/review_filter_audit.py [--limit N]"
+    params: {limit: "int(0=全量)", policy: "keep_original|follow_review|drop_on_disagree"}
+
+  - id: ops.archive
+    name: 快照归档
+    kind: control_plane
+    description: "手动完整快照(00-19 目录归档)。"
+    params: {action: "archive"}
+
+  - id: ops.reset
+    name: 重置步骤及下游
+    kind: control_plane
+    description: "重置步骤 N 及全部下游(N=0 即整类目重清; 重置不归档, 需要留底先 archive)。"
+    params: {step: "int 0..19"}
+    guard: "monitor-alerts 追加 [RESET] 边界, 历史预警不重推"
+
+  - id: ops.diagnose
+    name: 诊断/排障工具集
+    kind: cli
+    description: "平台与登录态诊断(卖家精灵登录/CDP/日期控件/导出按钮/查询页面等), 供 LLM 在异常时取证。"
+    command: "python scripts/diag_login*.py | diag_cdp* | diag_export_buttons.py | diag_lookup_page.py | diag_date_control*.py | check_cookie.py | discover_mcp_tools.py"
+    outputs: ["日志/截图(不写业务产物)"]
+
+  - id: ops.ss_chrome
+    name: 启动卖家精灵 CDP Chrome
+    kind: cli
+    description: "以持久 Profile + 远程调试端口启动 Chrome, 供 SS_CDP_URL 直连(不弹窗)。"
+    command: "python scripts/start_ss_chrome.py"
+
+  - id: ops.parallel_cats
+    name: 多类目并行
+    kind: cli
+    description: "并行跑多个类目(依赖每类目 Profile 隔离 + 单实例锁)。"
+    command: "python scripts/parallel_cats.py"
+
+  - id: ops.dry_run
+    name: 离线全流程冒烟
+    kind: cli
+    description: "零费用验证 0-19 产物完整性(dry-run Mock)。"
+    command: "python main.py run --dry-run --config config.smoke.yaml  或  python scripts/smoke_dry_run.py"
+
+# =============================================================================
+# C. 只读知识/分析 skill(agent 层已实现, 未接入流水线)
+# =============================================================================
+knowledge_skills:
+
+  - id: kb.read
+    name: 类目产物落地读取
+    kind: read_only
+    module: "agent/context/category_context.py + agent/tools/artifact_tools.py"
+    description: "把 data/<CAT>/ 的交付产物规范化为数据块并记录 provenance, 供 LLM 引用(数字只来自产物, 防幻觉)。"
+    outputs: ["紧凑文本摘要 + sources 引用"]
+
+  - id: report.generate
+    name: 一键深度分析报告(crewAI 顺序 Crew)
+    kind: llm
+    module: "agent/crews/report_crew.py"
+    description: "角色链: 类目数据研究员 → 关键词分析师 → 市场竞争分析师 → 类目负责人 → 报告撰写。"
+    guard: "只读产物; 不改流水线 schema; 独立依赖(crewai)"
+
+  - id: qa.ask
+    name: 类目自然语言问答(crewAI 层级 Crew)
+    kind: llm
+    module: "agent/crews/qa_crew.py"
+    description: "路由 Agent 按问题分类(kpi/keyword/market/general)委派分析师作答, 附 sources。"
+    status: "Phase 1-6 已实现; Flask 服务层/前端(Phase 7)未做, 未接入自动化流程"
+
+# =============================================================================
+# 失效传播(LLM 编排需知晓: 重跑某 skill 后哪些下游结论作废)
+# =============================================================================
+invalidation_map:
+  cat.filter_prompt: [cat.filter_details, kw.generate, kw.mine, kw.screen, cat.gate, product.variants]
+  cat.filter_details: [kw.generate, kw.mine, kw.screen, cat.gate, product.variants]
+  kw.generate: [kw.mine, kw.screen, kw.report, cat.gate, product.variants]
+  kw.mine: [kw.screen, kw.report, cat.gate, product.variants]
+  kw.screen: [kw.report, cat.gate, product.variants]        # ★ 阈值改动只需重跑 kw.screen 起
+  cat.gate: [product.variants]
+  product.variants: [market.traffic, market.competitors, analysis.split, analysis.report, annotation.attrs]
+  market.traffic: [analysis.split, analysis.report]
+  market.competitors: [analysis.split, analysis.report]
+  market.download: [analysis.split, analysis.report]
+  analysis.split: [analysis.report, annotation.attrs]
+
+# =============================================================================
+# 已知边界(编排时不要尝试)
+# =============================================================================
+known_limits:
+  - "dry-run 下所有外部调用走 Mock: 不能用来验证真实页面/导出/配额行为"
+  - "平台风控/配额是硬约束: LLM 不得通过增加重试/并发绕过(会放大封禁风险与成本)"
+  - "步骤11+ 无需亚马逊 COOKIE(本地计算/卖家精灵), 预检查会自动跳过"
+  - "步骤14+ 为本地计算: 不走浏览器, 但仍可能调 MCP(competitor_lookup)与网页补抓"
+  - "agent 层未接入流水线: 目前只能离线只读分析, 无 HTTP 入口(Phase 7 未实现)"
+  - "每类目同时只允许一个运行进程(.run.lock); 跨类目可并行(Profile 已按类目隔离)"

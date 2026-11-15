@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>前端响应式验收</title>
+  <style>
+    *{box-sizing:border-box}body{margin:0;background:#202733;color:#e8edf5;font:14px 'Segoe UI','Microsoft YaHei UI',sans-serif}header{padding:16px 24px;display:flex;align-items:center;gap:20px;flex-wrap:wrap;border-bottom:1px solid #445169}h1{font-size:17px;margin:0}label{display:flex;align-items:center;gap:8px}select,a{background:#111721;color:#e8edf5;padding:8px 12px;border:1px solid #627188;border-radius:5px;text-decoration:none}p{margin:16px 24px;color:#bac5d5;font-size:12px}main{padding:8px 24px 24px;overflow:auto}iframe{box-sizing:content-box;display:block;border:1px solid #627188;margin:auto;background:#10151e;width:375px;height:812px}
+  </style>
+</head>
+<body>
+  <header><h1>前端响应式验收</h1><label>测试尺寸<select id="size"><option value="375">375 × 812 手机</option><option value="768">768 × 1024 平板</option><option value="1024">1024 × 768 笔记本</option><option value="1440">1440 × 900 桌面</option></select></label><label>测试页面<select id="page"><option value="workbench">流程工作台</option><option value="tasks">任务中心</option><option value="review">人工确认</option><option value="artifacts">产物与证据</option></select></label><a href="./">返回工作台</a></header>
+  <p>使用独立 iframe 视口验证 CSS 断点与交互。尺寸指 iframe 内容区；每次切换页面会重置该页演示数据。</p>
+  <main><iframe id="preview" title="响应式工作台预览" src="./#workbench/CAT-001" width="375" height="812"></iframe></main>
+  <script>
+    const size=document.getElementById('size'),page=document.getElementById('page'),preview=document.getElementById('preview');
+    size.addEventListener('change',()=>{const width=Number(size.value);const heights={375:812,768:1024,1024:768,1440:900};preview.style.width=width+'px';preview.style.height=heights[width]+'px'});
+    page.addEventListener('change',()=>{preview.src='./#'+page.value+'/CAT-001'});
+  </script>
+</body>
+</html>

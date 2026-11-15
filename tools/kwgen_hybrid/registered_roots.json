@@ -1,0 +1,74 @@
+{
+  "schema_version": 1,
+  "description": "Migrated recall hints from v3 local/synonym roots plus category roots. Exact category + marketplace match; no month binding. All terms require verification and semantic review.",
+  "entries": [
+    {
+      "category": "Automatic Cat Feeders",
+      "marketplace": "US",
+      "roots": [
+        {"text": "automatic cat feeder", "language": "en"},
+        {"text": "cat feeder", "language": "en"},
+        {"text": "pet feeder", "language": "en"},
+        {"text": "cat food dispenser", "language": "en"},
+        {"text": "food dispenser", "language": "en"}
+      ]
+    },
+    {
+      "category": "Dog Dryer",
+      "marketplace": "US",
+      "roots": [
+        {"text": "dog dryer", "language": "en"},
+        {"text": "pet dryer", "language": "en"},
+        {"text": "grooming dryer", "language": "en"},
+        {"text": "blow dryer", "language": "en"}
+      ]
+    },
+    {
+      "category": "Cutting Boards",
+      "marketplace": "US",
+      "roots": [
+        {"text": "cutting board", "language": "en"},
+        {"text": "chopping board", "language": "en"},
+        {"text": "wood cutting board", "language": "en"}
+      ]
+    },
+    {
+      "category": "Food Processors",
+      "marketplace": "US",
+      "roots": [
+        {"text": "food processor", "language": "en"},
+        {"text": "electric food processor", "language": "en"},
+        {"text": "food chopper", "language": "en"}
+      ]
+    },
+    {
+      "category": "Chopping Boards",
+      "marketplace": "DE",
+      "roots": [
+        {"text": "chopping board", "language": "en"},
+        {"text": "schneidebrett", "language": "de"},
+        {"text": "küchenbrett", "language": "de"},
+        {"text": "cutting board", "language": "en"},
+        {"text": "wood chopping board", "language": "en"}
+      ]
+    },
+    {
+      "category": "Chopping Boards",
+      "marketplace": "FR",
+      "roots": [
+        {"text": "chopping board", "language": "en"},
+        {"text": "planche à découper", "language": "fr"},
+        {"text": "planche a decouper", "language": "fr"},
+        {"text": "cutting board", "language": "en"}
+      ]
+    },
+    {
+      "category": "Chopping Boards",
+      "marketplace": "UK",
+      "roots": [
+        {"text": "chopping board", "language": "en"},
+        {"text": "cutting board", "language": "en"}
+      ]
+    }
+  ]
+}

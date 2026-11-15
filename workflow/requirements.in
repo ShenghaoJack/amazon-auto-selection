@@ -1,0 +1,5 @@
+# Dedicated workflow environment; do not merge into root or agent requirements.
+langgraph==1.2.16
+langgraph-checkpoint-sqlite==3.1.2
+pydantic==2.14.1
+# Exact transitive versions are recorded after the M0 dependency smoke test.

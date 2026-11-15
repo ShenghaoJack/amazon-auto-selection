@@ -1,0 +1,2624 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Product Research Workflow API",
+    "version": "0.1.0",
+    "description": "M0 contract only. No endpoint is implemented or started by this file. Body schemas plus Python semantic policies are required."
+  },
+  "servers": [
+    {
+      "url": "/"
+    }
+  ],
+  "paths": {
+    "/api/v2/workflows": {
+      "get": {
+        "operationId": "get_workflows",
+        "summary": "M1: /api/v2/workflows",
+        "x-milestone": "M1",
+        "x-implementation-status": "contract-only",
+        "parameters": [
+          {
+            "name": "cursor",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "maxLength": 512
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 20
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "schema": {
+              "$ref": "#/components/schemas/RunStatus"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Snapshot",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkflowList"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Version/state/idempotency conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Service not implemented or unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "post_workflows",
+        "summary": "M2: /api/v2/workflows",
+        "x-milestone": "M2",
+        "x-implementation-status": "contract-only",
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Accepted is not execution success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommandAccepted"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Version/state/idempotency conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Service not implemented or unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateWorkflowRequest"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v2/workflows/{run_id}": {
+      "get": {
+        "operationId": "get_workflows_run_id",
+        "summary": "M1: /api/v2/workflows/{run_id}",
+        "x-milestone": "M1",
+        "x-implementation-status": "contract-only",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Snapshot",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunSnapshot"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Version/state/idempotency conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Service not implemented or unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v2/workflows/{run_id}/nodes": {
+      "get": {
+        "operationId": "get_workflows_run_id_nodes",
+        "summary": "M1: /api/v2/workflows/{run_id}/nodes",
+        "x-milestone": "M1",
+        "x-implementation-status": "contract-only",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Snapshot",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/NodeSnapshot"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Version/state/idempotency conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Service not implemented or unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v2/workflows/{run_id}/artifacts": {
+      "get": {
+        "operationId": "get_workflows_run_id_artifacts",
+        "summary": "M1: /api/v2/workflows/{run_id}/artifacts",
+        "x-milestone": "M1",
+        "x-implementation-status": "contract-only",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Snapshot",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ArtifactSnapshot"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Version/state/idempotency conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Service not implemented or unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v2/workflows/{run_id}/logs": {
+      "get": {
+        "operationId": "get_workflows_run_id_logs",
+        "summary": "M1: /api/v2/workflows/{run_id}/logs",
+        "x-milestone": "M1",
+        "x-implementation-status": "contract-only",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Snapshot",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LogPage"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Version/state/idempotency conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Service not implemented or unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v2/scheduler/overview": {
+      "get": {
+        "operationId": "get_scheduler_overview",
+        "summary": "M1: /api/v2/scheduler/overview",
+        "x-milestone": "M1",
+        "x-implementation-status": "contract-only",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Snapshot",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SchedulerOverview"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Version/state/idempotency conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Service not implemented or unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v2/resources": {
+      "get": {
+        "operationId": "get_resources",
+        "summary": "M2: /api/v2/resources",
+        "x-milestone": "M2",
+        "x-implementation-status": "contract-only",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Snapshot",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ResourceSnapshot"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Version/state/idempotency conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Service not implemented or unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v2/workflows/{run_id}/resource-waits": {
+      "get": {
+        "operationId": "get_workflows_run_id_resource-waits",
+        "summary": "M2: /api/v2/workflows/{run_id}/resource-waits",
+        "x-milestone": "M2",
+        "x-implementation-status": "contract-only",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Snapshot",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ResourceWait"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Version/state/idempotency conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Service not implemented or unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v2/workflows/{run_id}/commands": {
+      "post": {
+        "operationId": "post_workflows_run_id_commands",
+        "summary": "M2: /api/v2/workflows/{run_id}/commands",
+        "x-milestone": "M2",
+        "x-implementation-status": "contract-only",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Accepted is not execution success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommandAccepted"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Version/state/idempotency conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Service not implemented or unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CommandRequest"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v2/workflows/{run_id}/reviews/{request_id}/confirm": {
+      "post": {
+        "operationId": "post_workflows_run_id_reviews_request_id_confirm",
+        "summary": "M3: /api/v2/workflows/{run_id}/reviews/{request_id}/confirm",
+        "x-milestone": "M3",
+        "x-implementation-status": "contract-only",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "request_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Accepted is not execution success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommandAccepted"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Version/state/idempotency conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Service not implemented or unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReviewConfirmation"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v2/reviews": {
+      "get": {
+        "operationId": "get_reviews",
+        "summary": "M3: /api/v2/reviews",
+        "x-milestone": "M3",
+        "x-implementation-status": "contract-only",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Snapshot",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewList"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Version/state/idempotency conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Service not implemented or unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v2/workflows/{run_id}/reviews/{request_id}/revisions": {
+      "post": {
+        "operationId": "post_workflows_run_id_reviews_request_id_revisions",
+        "summary": "M3: /api/v2/workflows/{run_id}/reviews/{request_id}/revisions",
+        "x-milestone": "M3",
+        "x-implementation-status": "contract-only",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "request_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Accepted is not execution success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommandAccepted"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Version/state/idempotency conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Service not implemented or unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SaveReviewRevision"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v2/workflows/{run_id}/evidence/{evidence_id}": {
+      "get": {
+        "operationId": "get_workflows_run_id_evidence_evidence_id",
+        "summary": "M5: /api/v2/workflows/{run_id}/evidence/{evidence_id}",
+        "x-milestone": "M5",
+        "x-implementation-status": "contract-only",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "evidence_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Snapshot",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EvidenceSnapshot"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Version/state/idempotency conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Service not implemented or unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v2/workflows/{run_id}/opportunities": {
+      "get": {
+        "operationId": "get_workflows_run_id_opportunities",
+        "summary": "M5: /api/v2/workflows/{run_id}/opportunities",
+        "x-milestone": "M5",
+        "x-implementation-status": "contract-only",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Snapshot",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/OpportunitySnapshot"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Version/state/idempotency conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Service not implemented or unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v2/workflows/{run_id}/events": {
+      "get": {
+        "operationId": "stream_run_events",
+        "summary": "M2: resumable per-run SSE",
+        "x-milestone": "M2",
+        "x-implementation-status": "contract-only",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "Last-Event-ID",
+            "in": "header",
+            "schema": {
+              "type": "string",
+              "pattern": "^[0-9]+$"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "SSE id = run_seq; data = RunEvent; global_seq is a separate cursor.",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Cursor expired; reload snapshot.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v2/events": {
+      "get": {
+        "operationId": "stream_global_events",
+        "summary": "M2: resumable global summary SSE",
+        "x-milestone": "M2",
+        "x-implementation-status": "contract-only",
+        "parameters": [
+          {
+            "name": "Last-Event-ID",
+            "in": "header",
+            "schema": {
+              "type": "string",
+              "pattern": "^[0-9]+$"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "SSE id = global_seq; data = GlobalEvent. Never reuse a run cursor.",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Cursor expired; reload snapshot.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v2/workflows/{run_id}/artifacts/{artifact_id}/download": {
+      "get": {
+        "operationId": "download_artifact",
+        "summary": "M3: run-scoped manifest-authorized download",
+        "x-milestone": "M3",
+        "x-implementation-status": "contract-only",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "artifact_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "File validated against the run manifest; no arbitrary path parameter.",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Artifact not found in task scope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "ApiError": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "enum": [
+              "INVALID_INPUT",
+              "NOT_FOUND",
+              "STALE_STATE_VERSION",
+              "COMMAND_NOT_ALLOWED",
+              "IDEMPOTENCY_CONFLICT",
+              "STALE_REVIEW",
+              "REVIEW_NOT_OPEN",
+              "RESOURCE_IDENTITY_CONFLICT",
+              "RESYNC_REQUIRED",
+              "NOT_IMPLEMENTED",
+              "SERVICE_UNAVAILABLE"
+            ],
+            "title": "Code",
+            "type": "string"
+          },
+          "message": {
+            "maxLength": 2000,
+            "minLength": 1,
+            "title": "Message",
+            "type": "string"
+          },
+          "request_id": {
+            "format": "uuid",
+            "title": "Request Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "request_id"
+        ],
+        "title": "ApiError",
+        "type": "object"
+      },
+      "ArtifactSnapshot": {
+        "additionalProperties": false,
+        "properties": {
+          "artifact_id": {
+            "format": "uuid",
+            "title": "Artifact Id",
+            "type": "string"
+          },
+          "run_id": {
+            "format": "uuid",
+            "title": "Run Id",
+            "type": "string"
+          },
+          "node_id": {
+            "enum": [
+              "collect",
+              "keyword",
+              "market",
+              "attribute",
+              "voc",
+              "opportunity",
+              "quality",
+              "report"
+            ],
+            "title": "Node Id",
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 240,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "revision": {
+            "minimum": 1,
+            "title": "Revision",
+            "type": "integer"
+          },
+          "content_hash": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Content Hash",
+            "type": "string"
+          },
+          "media_type": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Media Type",
+            "type": "string"
+          },
+          "size_bytes": {
+            "minimum": 0,
+            "title": "Size Bytes",
+            "type": "integer"
+          },
+          "ready": {
+            "title": "Ready",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "artifact_id",
+          "run_id",
+          "node_id",
+          "name",
+          "revision",
+          "content_hash",
+          "media_type",
+          "size_bytes",
+          "ready"
+        ],
+        "title": "ArtifactSnapshot",
+        "type": "object"
+      },
+      "CommandAccepted": {
+        "additionalProperties": false,
+        "properties": {
+          "command_id": {
+            "format": "uuid",
+            "title": "Command Id",
+            "type": "string"
+          },
+          "run_id": {
+            "format": "uuid",
+            "title": "Run Id",
+            "type": "string"
+          },
+          "status": {
+            "const": "ACCEPTED",
+            "title": "Status",
+            "type": "string"
+          },
+          "received_at": {
+            "format": "date-time",
+            "title": "Received At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "command_id",
+          "run_id",
+          "status",
+          "received_at"
+        ],
+        "title": "CommandAccepted",
+        "type": "object"
+      },
+      "CommandRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "command": {
+            "$ref": "#/components/schemas/CommandType"
+          },
+          "expected_state_version": {
+            "minimum": 1,
+            "title": "Expected State Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "command",
+          "expected_state_version"
+        ],
+        "title": "CommandRequest",
+        "type": "object"
+      },
+      "CommandType": {
+        "enum": [
+          "start",
+          "pause",
+          "stop",
+          "resume",
+          "retry",
+          "cancel"
+        ],
+        "title": "CommandType",
+        "type": "string"
+      },
+      "CreateWorkflowRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "category_id": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Category Id",
+            "type": "string"
+          },
+          "config_ref": {
+            "maxLength": 160,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+            "title": "Config Ref",
+            "type": "string"
+          },
+          "input_manifest_id": {
+            "format": "uuid",
+            "title": "Input Manifest Id",
+            "type": "string"
+          },
+          "mode": {
+            "enum": [
+              "legacy-compatible",
+              "task-isolated"
+            ],
+            "title": "Mode",
+            "type": "string"
+          },
+          "template_id": {
+            "enum": [
+              "legacy-v1",
+              "agent-v3"
+            ],
+            "title": "Template Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "category_id",
+          "config_ref",
+          "input_manifest_id",
+          "mode",
+          "template_id"
+        ],
+        "title": "CreateWorkflowRequest",
+        "type": "object"
+      },
+      "EvidenceSnapshot": {
+        "additionalProperties": false,
+        "properties": {
+          "evidence_id": {
+            "format": "uuid",
+            "title": "Evidence Id",
+            "type": "string"
+          },
+          "run_id": {
+            "format": "uuid",
+            "title": "Run Id",
+            "type": "string"
+          },
+          "artifact_id": {
+            "format": "uuid",
+            "title": "Artifact Id",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "review",
+              "listing",
+              "market",
+              "keyword",
+              "derived"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "source_ref": {
+            "maxLength": 512,
+            "minLength": 1,
+            "title": "Source Ref",
+            "type": "string"
+          },
+          "location": {
+            "maxLength": 512,
+            "minLength": 1,
+            "title": "Location",
+            "type": "string"
+          },
+          "quote": {
+            "anyOf": [
+              {
+                "maxLength": 8000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Quote"
+          },
+          "source_hash": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Source Hash",
+            "type": "string"
+          }
+        },
+        "required": [
+          "evidence_id",
+          "run_id",
+          "artifact_id",
+          "kind",
+          "source_ref",
+          "location",
+          "quote",
+          "source_hash"
+        ],
+        "title": "EvidenceSnapshot",
+        "type": "object"
+      },
+      "GlobalEvent": {
+        "additionalProperties": false,
+        "properties": {
+          "global_seq": {
+            "minimum": 1,
+            "title": "Global Seq",
+            "type": "integer"
+          },
+          "event": {
+            "$ref": "#/components/schemas/RunEvent"
+          }
+        },
+        "required": [
+          "global_seq",
+          "event"
+        ],
+        "title": "GlobalEvent",
+        "type": "object"
+      },
+      "LogEntry": {
+        "additionalProperties": false,
+        "properties": {
+          "seq": {
+            "minimum": 1,
+            "title": "Seq",
+            "type": "integer"
+          },
+          "occurred_at": {
+            "format": "date-time",
+            "title": "Occurred At",
+            "type": "string"
+          },
+          "level": {
+            "enum": [
+              "DEBUG",
+              "INFO",
+              "WARN",
+              "ERROR"
+            ],
+            "title": "Level",
+            "type": "string"
+          },
+          "message": {
+            "maxLength": 8000,
+            "title": "Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "seq",
+          "occurred_at",
+          "level",
+          "message"
+        ],
+        "title": "LogEntry",
+        "type": "object"
+      },
+      "LogPage": {
+        "additionalProperties": false,
+        "properties": {
+          "run_id": {
+            "format": "uuid",
+            "title": "Run Id",
+            "type": "string"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/LogEntry"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "maxLength": 512,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "run_id",
+          "items",
+          "next_cursor"
+        ],
+        "title": "LogPage",
+        "type": "object"
+      },
+      "NodeSnapshot": {
+        "additionalProperties": false,
+        "properties": {
+          "node_id": {
+            "enum": [
+              "collect",
+              "keyword",
+              "market",
+              "attribute",
+              "voc",
+              "opportunity",
+              "quality",
+              "report"
+            ],
+            "title": "Node Id",
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/NodeStatus"
+          },
+          "attempt": {
+            "minimum": 0,
+            "title": "Attempt",
+            "type": "integer"
+          },
+          "step_numbers": {
+            "items": {
+              "maximum": 20,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "title": "Step Numbers",
+            "type": "array"
+          },
+          "input_refs": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "title": "Input Refs",
+            "type": "array"
+          },
+          "output_refs": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "title": "Output Refs",
+            "type": "array"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          },
+          "error_code": {
+            "anyOf": [
+              {
+                "maxLength": 160,
+                "minLength": 1,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Code"
+          }
+        },
+        "required": [
+          "node_id",
+          "status",
+          "attempt",
+          "step_numbers",
+          "input_refs",
+          "output_refs",
+          "started_at",
+          "finished_at",
+          "error_code"
+        ],
+        "title": "NodeSnapshot",
+        "type": "object"
+      },
+      "NodeStatus": {
+        "enum": [
+          "PENDING",
+          "READY",
+          "RUNNING",
+          "WAITING_RESOURCE",
+          "WAITING_HUMAN",
+          "PAUSED",
+          "INTERRUPTED",
+          "RECONCILING",
+          "FAILED",
+          "SUCCEEDED",
+          "SKIPPED"
+        ],
+        "title": "NodeStatus",
+        "type": "string"
+      },
+      "OpportunitySnapshot": {
+        "additionalProperties": false,
+        "properties": {
+          "opportunity_id": {
+            "format": "uuid",
+            "title": "Opportunity Id",
+            "type": "string"
+          },
+          "run_id": {
+            "format": "uuid",
+            "title": "Run Id",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "feature",
+              "configuration",
+              "product_line"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "title": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Title",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "NEEDS_EVIDENCE",
+              "READY_FOR_REVIEW",
+              "ACCEPTED",
+              "DEFERRED"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "evidence_ids": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "title": "Evidence Ids",
+            "type": "array"
+          },
+          "hypotheses": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Hypotheses",
+            "type": "array"
+          },
+          "validation_plan": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Validation Plan",
+            "type": "array"
+          }
+        },
+        "required": [
+          "opportunity_id",
+          "run_id",
+          "kind",
+          "title",
+          "status",
+          "evidence_ids",
+          "hypotheses",
+          "validation_plan"
+        ],
+        "title": "OpportunitySnapshot",
+        "type": "object"
+      },
+      "ResourceSnapshot": {
+        "additionalProperties": false,
+        "properties": {
+          "resource_key": {
+            "maxLength": 160,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+            "title": "Resource Key",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "FREE",
+              "HELD",
+              "RECONCILING"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "owner_run_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Owner Run Id"
+          },
+          "execution_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Execution Id"
+          },
+          "lease_epoch": {
+            "minimum": 0,
+            "title": "Lease Epoch",
+            "type": "integer"
+          },
+          "expires_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expires At"
+          },
+          "waiting_run_ids": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "title": "Waiting Run Ids",
+            "type": "array"
+          }
+        },
+        "required": [
+          "resource_key",
+          "status",
+          "owner_run_id",
+          "execution_id",
+          "lease_epoch",
+          "expires_at",
+          "waiting_run_ids"
+        ],
+        "title": "ResourceSnapshot",
+        "type": "object"
+      },
+      "ResourceWait": {
+        "additionalProperties": false,
+        "properties": {
+          "run_id": {
+            "format": "uuid",
+            "title": "Run Id",
+            "type": "string"
+          },
+          "node_id": {
+            "enum": [
+              "collect",
+              "keyword",
+              "market",
+              "attribute",
+              "voc",
+              "opportunity",
+              "quality",
+              "report"
+            ],
+            "title": "Node Id",
+            "type": "string"
+          },
+          "resource_keys": {
+            "items": {
+              "maxLength": 160,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+              "type": "string"
+            },
+            "title": "Resource Keys",
+            "type": "array"
+          },
+          "waiting_since": {
+            "format": "date-time",
+            "title": "Waiting Since",
+            "type": "string"
+          },
+          "reason": {
+            "maxLength": 2000,
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "run_id",
+          "node_id",
+          "resource_keys",
+          "waiting_since",
+          "reason"
+        ],
+        "title": "ResourceWait",
+        "type": "object"
+      },
+      "ReviewConfirmation": {
+        "additionalProperties": false,
+        "properties": {
+          "artifact_id": {
+            "format": "uuid",
+            "title": "Artifact Id",
+            "type": "string"
+          },
+          "revision": {
+            "minimum": 1,
+            "title": "Revision",
+            "type": "integer"
+          },
+          "content_hash": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Content Hash",
+            "type": "string"
+          },
+          "input_manifest_id": {
+            "format": "uuid",
+            "title": "Input Manifest Id",
+            "type": "string"
+          },
+          "expected_state_version": {
+            "minimum": 1,
+            "title": "Expected State Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "artifact_id",
+          "revision",
+          "content_hash",
+          "input_manifest_id",
+          "expected_state_version"
+        ],
+        "title": "ReviewConfirmation",
+        "type": "object"
+      },
+      "ReviewKind": {
+        "enum": [
+          "attribute_spec",
+          "standard_vocabulary"
+        ],
+        "title": "ReviewKind",
+        "type": "string"
+      },
+      "ReviewList": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ReviewRequest"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "maxLength": 512,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "items",
+          "next_cursor"
+        ],
+        "title": "ReviewList",
+        "type": "object"
+      },
+      "ReviewRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "request_id": {
+            "format": "uuid",
+            "title": "Request Id",
+            "type": "string"
+          },
+          "run_id": {
+            "format": "uuid",
+            "title": "Run Id",
+            "type": "string"
+          },
+          "artifact_id": {
+            "format": "uuid",
+            "title": "Artifact Id",
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/ReviewKind"
+          },
+          "revision": {
+            "minimum": 1,
+            "title": "Revision",
+            "type": "integer"
+          },
+          "content_hash": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Content Hash",
+            "type": "string"
+          },
+          "input_manifest_id": {
+            "format": "uuid",
+            "title": "Input Manifest Id",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "OPEN",
+              "CONFIRMED",
+              "SUPERSEDED"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "request_id",
+          "run_id",
+          "artifact_id",
+          "kind",
+          "revision",
+          "content_hash",
+          "input_manifest_id",
+          "status",
+          "created_at"
+        ],
+        "title": "ReviewRequest",
+        "type": "object"
+      },
+      "RunEvent": {
+        "additionalProperties": false,
+        "properties": {
+          "event_id": {
+            "format": "uuid",
+            "title": "Event Id",
+            "type": "string"
+          },
+          "run_id": {
+            "format": "uuid",
+            "title": "Run Id",
+            "type": "string"
+          },
+          "run_seq": {
+            "minimum": 1,
+            "title": "Run Seq",
+            "type": "integer"
+          },
+          "execution_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Execution Id"
+          },
+          "type": {
+            "maxLength": 160,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+            "title": "Type",
+            "type": "string"
+          },
+          "occurred_at": {
+            "format": "date-time",
+            "title": "Occurred At",
+            "type": "string"
+          },
+          "state_version": {
+            "minimum": 1,
+            "title": "State Version",
+            "type": "integer"
+          },
+          "payload": {
+            "additionalProperties": true,
+            "title": "Payload",
+            "type": "object"
+          }
+        },
+        "required": [
+          "event_id",
+          "run_id",
+          "run_seq",
+          "execution_id",
+          "type",
+          "occurred_at",
+          "state_version",
+          "payload"
+        ],
+        "title": "RunEvent",
+        "type": "object"
+      },
+      "RunSnapshot": {
+        "additionalProperties": false,
+        "properties": {
+          "run_id": {
+            "format": "uuid",
+            "title": "Run Id",
+            "type": "string"
+          },
+          "category_id": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Category Id",
+            "type": "string"
+          },
+          "workspace_id": {
+            "format": "uuid",
+            "title": "Workspace Id",
+            "type": "string"
+          },
+          "execution_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Execution Id"
+          },
+          "template_id": {
+            "enum": [
+              "legacy-v1",
+              "agent-v3"
+            ],
+            "title": "Template Id",
+            "type": "string"
+          },
+          "mode": {
+            "enum": [
+              "legacy-compatible",
+              "task-isolated"
+            ],
+            "title": "Mode",
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/RunStatus"
+          },
+          "state_version": {
+            "minimum": 1,
+            "title": "State Version",
+            "type": "integer"
+          },
+          "current_node_ids": {
+            "items": {
+              "enum": [
+                "collect",
+                "keyword",
+                "market",
+                "attribute",
+                "voc",
+                "opportunity",
+                "quality",
+                "report"
+              ],
+              "type": "string"
+            },
+            "title": "Current Node Ids",
+            "type": "array"
+          },
+          "node_summary": {
+            "items": {
+              "$ref": "#/components/schemas/NodeSnapshot"
+            },
+            "title": "Node Summary",
+            "type": "array"
+          },
+          "allowed_actions": {
+            "items": {
+              "$ref": "#/components/schemas/CommandType"
+            },
+            "title": "Allowed Actions",
+            "type": "array"
+          },
+          "wait_reason": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Wait Reason"
+          },
+          "resource_refs": {
+            "items": {
+              "maxLength": 160,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+              "type": "string"
+            },
+            "title": "Resource Refs",
+            "type": "array"
+          },
+          "input_manifest_id": {
+            "format": "uuid",
+            "title": "Input Manifest Id",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          },
+          "last_event_seq": {
+            "minimum": 0,
+            "title": "Last Event Seq",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "run_id",
+          "category_id",
+          "workspace_id",
+          "execution_id",
+          "template_id",
+          "mode",
+          "status",
+          "state_version",
+          "current_node_ids",
+          "node_summary",
+          "allowed_actions",
+          "wait_reason",
+          "resource_refs",
+          "input_manifest_id",
+          "updated_at",
+          "last_event_seq"
+        ],
+        "title": "RunSnapshot",
+        "type": "object"
+      },
+      "RunStatus": {
+        "enum": [
+          "CREATED",
+          "QUEUED",
+          "RUNNING",
+          "WAITING_RESOURCE",
+          "WAITING_HUMAN",
+          "PAUSING",
+          "PAUSED",
+          "STOPPING",
+          "INTERRUPTED",
+          "RECONCILING",
+          "FAILED",
+          "SUCCEEDED",
+          "CANCELLED"
+        ],
+        "title": "RunStatus",
+        "type": "string"
+      },
+      "SaveReviewRevision": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_state_version": {
+            "minimum": 1,
+            "title": "Expected State Version",
+            "type": "integer"
+          },
+          "expected_revision": {
+            "minimum": 1,
+            "title": "Expected Revision",
+            "type": "integer"
+          },
+          "input_manifest_id": {
+            "format": "uuid",
+            "title": "Input Manifest Id",
+            "type": "string"
+          },
+          "content": {
+            "additionalProperties": true,
+            "title": "Content",
+            "type": "object"
+          }
+        },
+        "required": [
+          "expected_state_version",
+          "expected_revision",
+          "input_manifest_id",
+          "content"
+        ],
+        "title": "SaveReviewRevision",
+        "type": "object"
+      },
+      "SchedulerOverview": {
+        "additionalProperties": false,
+        "properties": {
+          "running": {
+            "minimum": 0,
+            "title": "Running",
+            "type": "integer"
+          },
+          "waiting_human": {
+            "minimum": 0,
+            "title": "Waiting Human",
+            "type": "integer"
+          },
+          "waiting_resource": {
+            "minimum": 0,
+            "title": "Waiting Resource",
+            "type": "integer"
+          },
+          "queued": {
+            "minimum": 0,
+            "title": "Queued",
+            "type": "integer"
+          },
+          "workflow_capacity": {
+            "minimum": 1,
+            "title": "Workflow Capacity",
+            "type": "integer"
+          },
+          "worker_capacity": {
+            "minimum": 1,
+            "title": "Worker Capacity",
+            "type": "integer"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "running",
+          "waiting_human",
+          "waiting_resource",
+          "queued",
+          "workflow_capacity",
+          "worker_capacity",
+          "updated_at"
+        ],
+        "title": "SchedulerOverview",
+        "type": "object"
+      },
+      "WorkflowList": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/RunSnapshot"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "maxLength": 512,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "items",
+          "next_cursor",
+          "updated_at"
+        ],
+        "title": "WorkflowList",
+        "type": "object"
+      }
+    }
+  },
+  "x-node-definitions": [
+    {
+      "node_id": "collect",
+      "legacy_steps": [
+        0,
+        1,
+        2,
+        3
+      ],
+      "milestone": "M2",
+      "reviews": [],
+      "actions": []
+    },
+    {
+      "node_id": "keyword",
+      "legacy_steps": [
+        4,
+        5,
+        6,
+        7,
+        8
+      ],
+      "milestone": "M2",
+      "reviews": [],
+      "actions": []
+    },
+    {
+      "node_id": "market",
+      "legacy_steps": [
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15
+      ],
+      "milestone": "M2",
+      "reviews": [],
+      "actions": []
+    },
+    {
+      "node_id": "attribute",
+      "legacy_steps": [
+        16,
+        17,
+        18
+      ],
+      "milestone": "M3",
+      "reviews": [
+        "attribute_spec",
+        "standard_vocabulary"
+      ],
+      "actions": []
+    },
+    {
+      "node_id": "voc",
+      "legacy_steps": [
+        19
+      ],
+      "milestone": "M3",
+      "reviews": [],
+      "actions": [
+        "extract_voc_evidence:M5"
+      ]
+    },
+    {
+      "node_id": "opportunity",
+      "legacy_steps": [],
+      "milestone": "M5",
+      "reviews": [],
+      "actions": [
+        "discover_opportunities",
+        "compose_report_draft"
+      ]
+    },
+    {
+      "node_id": "quality",
+      "legacy_steps": [
+        20
+      ],
+      "milestone": "M3",
+      "reviews": [],
+      "actions": [
+        "validate_evidence_chain:M5"
+      ]
+    },
+    {
+      "node_id": "report",
+      "legacy_steps": [],
+      "milestone": "M3",
+      "reviews": [],
+      "actions": [
+        "read_delivery_manifest"
+      ]
+    }
+  ]
+}

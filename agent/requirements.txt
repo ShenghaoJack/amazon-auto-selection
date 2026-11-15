@@ -1,0 +1,9 @@
+# 类目分析助手(agent 层)独立依赖——**不写入主 requirements.txt**,
+# 建议在独立虚拟环境安装, 避免与主流水线依赖冲突。
+crewai>=0.108
+flask>=3.0
+flask-cors>=4.0
+waitress>=3.0
+# pandas / openpyxl 已随主 requirements 存在
+# 安装后固定一个已验证的 crewai 版本(如 pip install crewai==<已验证版本>),
+# 并把版本号写进 agent/ARCHITECTURE.md 顶部。

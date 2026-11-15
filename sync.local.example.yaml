@@ -1,0 +1,21 @@
+# 分端部署的**机器本地**配置示例(2026-10-08)
+#
+# 为什么单独一个文件: "我这一端是本地还是服务器"是**机器属性**, 不是类目属性 ——
+# 写进 `data/<CAT>/config.yaml` 会被同步带到另一端, 把 role 也一起搬过去。
+#
+# 用法: 把本文件复制成仓库根的 `sync.local.yaml`(每台机器一份, 不要跨机同步/提交),
+#       然后 `scripts/sync_artifacts.py` 的 write/verify/status/push/pull 会自动采用。
+#
+# 优先级: 命令行(--role/--target) > 环境变量(AWP_SYNC_ROLE/AWP_SYNC_TARGET) > 本文件 > 默认
+
+# local  = 跑"要爬数据的步骤"(0/1/9/10/11/12/13)的这台机器
+# server = 跑"LLM/数据处理/MCP 步骤"(2–8、14–19)的那台机器
+role: local
+
+# push/pull 的目标目录: NAS/SMB 共享、网盘同步盘挂载点等都可以
+# 例: \\NAS\awp-share     或   Z:\awp-share    或   /mnt/awp
+target: ""
+
+# 每步产物要不要自动写 manifest(本阶段只做手动 `write`, 保留此键给后续的自动挂钩):
+#   auto = 每步结束由流水线自动写(需后续版本支持); off/缺省 = 只用命令行手动写
+manifest: off

@@ -1,0 +1,40 @@
+# ============================================================
+# 每类目隔离配置模板(多类目并行用)
+# 用法: 复制本文件为项目根 config.<类目>.yaml, 每月/每类目一份, 填好后用
+#       python scripts/parallel_cats.py config.A.yaml config.B.yaml 并行启动。
+# 隔离三要素(并行硬性要求, 启动脚本会校验):
+#   ① 每个类目独立的亚马逊 Profile    -> AMZ_PROFILE
+#   ② 每个类目独立的卖家精灵 Profile   -> SS_PROFILE
+#   ③ 每类目独立的 CDP 端口(留空=各自自动拉起有头 Chrome, 只要 Profile 独立即可)
+#   ④ 卖家精灵账号建议各用各的(共享 50 次/天配额会互抢)
+# ============================================================
+# 必填: 类目名(末尾带月份后缀, 如 xxx-US-202608, 数据/历史按此隔离)
+CAT: "salt and pepper mill sets-US-202608"
+
+# 必填: Best Sellers 规范短链接(step0 启动前预检, 不符合会阻断)
+LIST_URLS: "https://www.amazon.com/gp/bestsellers/kitchen/15850261"
+
+# 站点与月份
+SITE: "美国"
+MARKET: "amazon.com"
+TRAFFIC_MONTH: "2026-07"
+COMPETITOR_MONTH: "2026-07"
+TREND_MONTH: "202607"
+
+# ============ 浏览器隔离(并行必填, 各自独立) ============
+# ① 亚马逊浏览器 Profile(相对项目根; 每个并行类目必须不同)
+AMZ_PROFILE: "data/profiles/amz-profile-salt-202608"
+# ② 卖家精灵 Profile(每个并行类目必须不同)
+SS_PROFILE: "data/profiles/ss-profile-salt-202608"
+# ③ CDP 直连地址: 若用同一个已开 Chrome 调试端口则不能并行; 建议留空让系统为
+#    各自 Profile 自动拉起独立有头 Chrome; 或每个类目各自独立端口如 http://localhost:9223
+SS_CDP_URL: ""
+
+# ============ 卖家精灵账号(并行时建议每类目独立账号, 避免共享 50 次/天配额) ============
+SS_ACCOUNTS:
+  - {account: "your-main@seller.example", password: "填密码", is_main: true, note: "主"}
+  # - {account: "备用@seller.example", password: "填密码", is_main: false, note: "备用1"}
+
+# ============ 其余参数 ============
+DRY_RUN: false
+# LLM 等其余配置项与 config.yaml 一致, 复制自现有配置即可
