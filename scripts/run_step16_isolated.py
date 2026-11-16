@@ -89,8 +89,8 @@ class AuditedStep16(Step16AttributeAnnotation):
         self.rounds = []
         self.fresh = []
 
-    def _extract_attrs(self, ctx, df, round_max=None):
-        keys, desc = super()._extract_attrs(ctx, df, round_max=round_max)
+    def _extract_attrs(self, ctx, df, attr_max=None):
+        keys, desc = super()._extract_attrs(ctx, df, attr_max=attr_max)
         rec = {"attempt": len(self.rounds) + 1, "excel_rows": [int(i) + 2 for i in df.index],
                "asins": df["变体ASIN"].astype(str).tolist() if "变体ASIN" in df else [],
                "rows": len(df), "keys": keys, "descriptions": desc}

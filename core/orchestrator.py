@@ -1,6 +1,6 @@
 """流程编排器 (3.2 执行方式 / 7.3 硬性校验)。
 
-- 全流程 0-20 / 从指定步骤续跑(断点续跑)
+- 全流程 0-19 / 从指定步骤续跑(断点续跑)
 - 步骤标记 DONE 必须以产物实际生成为前提
 - 失败必须阻断流程或显式告警, 禁止静默标成功
 - 每步完成后即时同步归档(3.4 数据保存要求)
@@ -90,7 +90,7 @@ def finish_line(state: RunState, seg_delta, now: datetime | None = None,
 
 
 class PipelineRunner:
-    """按 0-20 顺序执行步骤并维护状态。"""
+    """按 0-19 顺序执行步骤并维护状态。"""
 
     def __init__(self, config: Config, dry_run: bool | None = None):
         if dry_run is not None:
@@ -517,16 +517,6 @@ class PipelineRunner:
             text = self.ctx.finish_step(num, status)
             if text:
                 self.log.info(text)
-            if num == 19:
-                meter = self.ctx.usage()
-                if meter.enabled and meter.jsonl_path and os.path.isfile(meter.jsonl_path):
-                    from tools.voc.phase_usage import summarize
-                    from tools.voc.opportunity import save
-                    report = summarize(meter.jsonl_path, meter.run_id, os.getpid())
-                    save(Path(self.paths.monitor_file("VOC阶段用量.json")), report)
-                    for phase, usage in report["phases"].items():
-                        self.log.info("步骤19阶段用量 %s：%d次，输入%d / 输出%d tokens，预估%.4f元" %
-                                      (phase, usage["calls"], usage["input_tokens"], usage["output_tokens"], usage["cost_cny"]))
         except Exception as exc:  # noqa: BLE001 — 记账失败不得影响步骤状态判定
             self.log.warning(f"步骤 {num:02d} 用量记账失败: {type(exc).__name__}: {exc}")
 

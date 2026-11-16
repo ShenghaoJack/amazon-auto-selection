@@ -5,7 +5,7 @@
 
   ① 步骤8  关键词报告          `data/<CAT>/<CAT>-keyword-report.xlsx`
   ② 步骤18 属性标注-标准化交付  `data/<CAT>/18_标准化/<CAT>-属性标注-标准化交付.xlsx`
-  ③ 步骤19 VOC报告             `data/<CAT>/19_VOC报告/<CAT>-VOC报告.xlsx`
+  ③ 外部提供的 VOC报告        `data/<CAT>/19_VOC报告/<CAT>-VOC报告.xlsx`
 
 用户的硬要求(2026-10-09): "这三个报告缺一个不可, 缺其中一个都无法生成整合报告"。
 
@@ -2173,7 +2173,7 @@ def _voc_evidence(voc_path: str | None, cap: int = 400) -> tuple:
               ["评论ID", "星级", "品牌", "父ASIN", "变体ASIN", "评论日期", "属性", "问题 / 场景",
                "极性", "证据角色", "安全等级", "正文(原文)"],
               out_rows, source_label="VOC 工作簿 · 评论证据库(reviewId 去重)",
-              source_ref="步骤19 VOC报告!评论证据库")
+              source_ref="外部VOC报告!评论证据库")
     note = table("v-evi-note", "证据库口径与收录披露", ["项目", "内容", "口径 / 边界"], [
         ["证据库总量", "%s 条(reviewId 去重, 每条唯一评论一行)" % _fmt_num(len(rows), 0),
          "源表 `评论证据库`; 星级构成 %s" % "、".join("%s★ %d" % (k, v) for k, v in sorted(star_all.items()))],
@@ -2316,7 +2316,7 @@ def _voc_sheet(voc: dict, voc_path: str | None = None) -> dict:
     ]
 
     t_star = table("v-star", "1–5★ 星级构成", ["星级", "评论数", "占比", "口径"],
-                   _voc_star_rows(overview), source_label="步骤19 VOC报告 · VOC分析_总览",
+                   _voc_star_rows(overview), source_label="外部VOC报告 · VOC分析_总览",
                    source_ref="VOC分析_总览!A10:B10")
 
     def _issue_row(r: dict, with_group: bool = False) -> list:
@@ -2341,7 +2341,7 @@ def _voc_sheet(voc: dict, voc_path: str | None = None) -> dict:
     top10 = sorted(issues, key=lambda r: -(_i(r.get("负向优先级分")) or 0))[:10]
     t_core = table("v-core", "差评分析_总览(Top10 问题, 按负向优先级分)",
                    head, [_issue_row(r) for r in top10],
-                   source_label="步骤19 VOC报告 · 差评问题分析", source_ref=ref)
+                   source_label="外部VOC报告 · 差评问题分析", source_ref=ref)
 
     func = [r for r in issues if _voc_group(_s(r.get("所属属性"))) == "功能"]
     exp = [r for r in issues if _voc_group(_s(r.get("所属属性"))) == "体验"]
@@ -2350,11 +2350,11 @@ def _voc_sheet(voc: dict, voc_path: str | None = None) -> dict:
     exp.sort(key=lambda r: -(_i(r.get("负向优先级分")) or 0))
     t_func = (table("v-func", "核心功能性差评(工程口径: 可靠性/性能/安全/兼容)",
                     head, [_issue_row(r) for r in func[:15]],
-                    source_label="步骤19 VOC报告 · 差评问题分析 · 所属属性归口=核心功能性",
+                    source_label="外部VOC报告 · 差评问题分析 · 所属属性归口=核心功能性",
                     source_ref=ref) if func else None)
     t_exp = (table("v-exp", "体验感差评(体验/服务口径: 易用/噪音/清洁/包装/服务/价格)",
                    head, [_issue_row(r) for r in exp[:15]],
-                   source_label="步骤19 VOC报告 · 差评问题分析 · 所属属性归口=体验感",
+                   source_label="外部VOC报告 · 差评问题分析 · 所属属性归口=体验感",
                    source_ref=ref) if exp else None)
 
     scenes = _voc_table_rows(voc.get("path"), "用户场景_人群", "场景(评论明确写出)")
@@ -2363,7 +2363,7 @@ def _voc_sheet(voc: dict, voc_path: str | None = None) -> dict:
     scene_rows.sort(key=lambda r: -(r[1] or 0))
     t_scene = table("v-scene", "用户场景分析(只统计评论中明确写出的场景)",
                     ["场景(评论明确写出)", "评论数", "占比"],
-                    scene_rows[:12], source_label="步骤19 VOC报告 · 用户场景_人群",
+                    scene_rows[:12], source_label="外部VOC报告 · 用户场景_人群",
                     source_ref="用户场景_人群!A1:D%d" % (len(scenes) + 4))
 
     safe = _voc_table_rows(voc.get("path"), "安全与合规风险", "评论ID")
@@ -2382,23 +2382,23 @@ def _voc_sheet(voc: dict, voc_path: str | None = None) -> dict:
         safety_rows = [["未提供", "本类目 VOC 未产出安全风险条目", None, "未提供", "未提供"]]
     t_safety = table("v-safety", "安全与合规风险(按等级 × 机制聚合)",
                      ["安全等级", "机制/风险", "评论条数", "涉及属性", "处理建议"],
-                     safety_rows[:15], source_label="步骤19 VOC报告 · 安全与合规风险",
+                     safety_rows[:15], source_label="外部VOC报告 · 安全与合规风险",
                      source_ref="安全与合规风险!A1:H%d" % (len(safe) + 4))
 
     t_driver = table("v-driver", "好评价值驱动(Top 12)", ["属性", "正向评论数", "正向驱动分", "解读"],
                      [[r.get("属性"), r.get("正向评论数"), r.get("正向驱动分"), r.get("解读")]
-                      for r in drivers[:12]], source_label="步骤19 VOC报告 · 好评价值驱动",
+                      for r in drivers[:12]], source_label="外部VOC报告 · 好评价值驱动",
                      source_ref="好评价值驱动!A1:N%d" % (len(drivers) + 4))
     t_matrix = table("v-matrix", "正负属性对照(象限)",
                      ["属性", "象限", "正向提及率", "负向问题率", "证据合计"],
                      [[r.get("属性"), r.get("象限"), r.get("正向提及率"), r.get("负向问题率"),
                        r.get("证据合计")] for r in matrix[:18]],
-                     source_label="步骤19 VOC报告 · 正负属性对照",
+                     source_label="外部VOC报告 · 正负属性对照",
                      source_ref="正负属性对照!A1:N%d" % (len(matrix) + 4))
     t_claim = (table("v-claim", "Listing 卖点风险",
                      ["宣称方向", "对应属性", "负向证据条数", "风险等级"],
                      [[r.get("宣称方向"), r.get("对应属性"), r.get("负向证据条数"), r.get("风险等级")]
-                      for r in claims], source_label="步骤19 VOC报告 · Listing卖点_风险",
+                      for r in claims], source_label="外部VOC报告 · Listing卖点_风险",
                      source_ref="Listing卖点_风险!A1:D%d" % (len(claims) + 4)) if claims else None)
 
     # ---- VOC总结与洞察(spec §5 Minimum insights, ≥6 条)
@@ -2483,7 +2483,7 @@ def _voc_sheet(voc: dict, voc_path: str | None = None) -> dict:
         hdrs = [h for h in rows[0].keys() if str(h).strip()][:14]
         body = [[_s(r.get(h))[:160] for h in hdrs] for r in rows[:cap]]
         _v3_tabs.append(table(tid, "%s(源表直出%s)" % (title, "" if len(rows) <= cap else ", 前 %d 行" % cap),
-                              hdrs, body, source_label="步骤19 VOC 工作簿 · %s" % sheet_name,
+                              hdrs, body, source_label="外部VOC 工作簿 · %s" % sheet_name,
                               source_ref="VOC报告!%s" % sheet_name))
         _v3_notes.append("%s: 源表 %d 行%s" % (title, len(rows),
                                           "" if len(rows) <= cap else ", 本页展示前 %d 行" % cap))
@@ -2527,7 +2527,7 @@ def _voc_sheet(voc: dict, voc_path: str | None = None) -> dict:
     ]
     return sheet("VOC差评分析", "VOC差评分析",
                  "差评总览 / 核心功能性 vs 体验感 / 用户场景 / 安全风险 / 洞察 "
-                 "(来源: 步骤19 VOC报告 · V3 14 表)", kpis, secs)
+                 "(来源: 外部VOC报告 · V3 14 表)", kpis, secs)
 
 
 RECO_WEIGHTS = {"关键词需求": 20, "价段吸引": 20, "竞争余量": 15,
@@ -3423,7 +3423,7 @@ def _exec_sheet(kw_sheet: dict, market_sheet: dict, voc_sheet: dict, reco_sheet:
          "contract §2: 明确标注样本尺度, 不把源覆盖当全市场"],
     ]
     t_scope = table("e-scope", "决策状态与范围", ["维度", "结论", "口径/基准"], scope_rows,
-                    source_label="步骤8 关键词报告 + 步骤18 交付表 + 步骤19 VOC 报告",
+                    source_label="步骤8 关键词报告 + 步骤18 交付表 + 外部VOC 报告",
                     source_ref="本报告前三张 sheet")
 
     opp_rows = []
@@ -3680,7 +3680,7 @@ def build(cat: str, data_root: str = "data", product: str | None = None,
     step("装配市场大盘模块", 60)
     extra_cols = _read_feature_matrix(getattr(src, "product_path", None), list(src.header or []))
     market_sheet = _market_sheet(src, recs, extra_cols, voc_path=voc)
-    step("解析步骤19 VOC报告", 72)
+    step("解析外部VOC报告", 72)
     voc_data = read_voc_workbook(voc)
     if not voc_data.get("available", True):
         raise ValueError("VOC 工作簿无法解析: %s" % voc_data.get("reason"))
@@ -3695,7 +3695,7 @@ def build(cat: str, data_root: str = "data", product: str | None = None,
     # contract §2: 每个模块必须带状态标签(重新计算/沿用源报告/无法独立复核/数据不足)
     _mark_status(kw_sheet, "模块状态: **重新计算**(四条准入逐条判定) + 沿用源报告(FR-07 原始判定)")
     _mark_status(market_sheet, "模块状态: **重新计算**(分档/集中度/Top20/阶梯均由步骤18 交付表算出)")
-    _mark_status(voc_sheet, "模块状态: **沿用源报告**(步骤19 VOC V3 14 表口径) + "
+    _mark_status(voc_sheet, "模块状态: **沿用源报告**(外部VOC V3 14 表口径) + "
                             "**无法独立复核**(LLM 语义标注)")
     _mark_status(rec_sheet, "模块状态: **重新计算**(机会分/门槛/标签由前三张 sheet 同源事实算出) + "
                             "**数据不足**(成本/工程可行性/认证)")
@@ -3796,12 +3796,12 @@ def main(argv: list[str] | None = None) -> int:
         pass
     ap = argparse.ArgumentParser(
         prog="build_integrated_report_html.py",
-        description="整合市场报告(HTML): 步骤8 关键词 + 步骤18 标准化交付 + 步骤19 VOC, 三份缺一不可")
+        description="整合市场报告(HTML): 步骤8 关键词 + 步骤18 标准化交付 + 外部VOC, 三份缺一不可")
     ap.add_argument("--cat", required=True, help='类目名(如 "Dog Dryer-US-202608")')
     ap.add_argument("--data-root", default="data", help="数据根目录(默认 data)")
     ap.add_argument("--keyword", default=None, help="显式指定步骤8 关键词报告")
     ap.add_argument("--product", default=None, help="显式指定步骤18 属性标注-标准化交付")
-    ap.add_argument("--voc", default=None, help="显式指定步骤19 VOC报告")
+    ap.add_argument("--voc", default=None, help="显式指定外部VOC报告")
     ap.add_argument("--out-dir", default=None, help="输出目录(默认 data/<CAT>/20_整合市场报告/html)")
     ap.add_argument("--check-only", action="store_true", help="只做门槛检查, 不生成")
     ap.add_argument("--no-html", action="store_true", help="只产 report.json, 不产 HTML")

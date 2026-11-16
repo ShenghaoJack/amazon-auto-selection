@@ -1,7 +1,7 @@
 """Amazon 类目选品流水线 CLI 入口。
 
 用法:
-  python main.py run                 # 全流程 0-20(断点续跑; 19=VOC, 20=备份与最终体检)
+  python main.py run                 # 全流程 0-19(断点续跑; 19=备份与最终体检)
   python main.py run --from 5        # 从步骤 5 续跑
   python main.py run --dry-run       # 离线模拟(生成模拟数据, 便于逐步骤审查)
   python main.py step 14             # 单独运行步骤 14(独立审查)

@@ -1058,6 +1058,7 @@ class Step16AttributeAnnotation(BaseStep):
         #   写进 16_产品属性标注/属性合并与删除审查.json，供人工复核（不影响属性集本身）。
         self._merge_audit: list[dict] = []
         self._delete_audit: list[dict] = []
+        self._definition_review: list[dict] = []
         previous_path = ctx.resolve_artifact(self.artifacts[0])
         try:
             previous = load_attr_spec(previous_path, allow_empty=True) if os.path.exists(previous_path) else None
@@ -1121,9 +1122,24 @@ class Step16AttributeAnnotation(BaseStep):
                                            "票数": None, "可恢复": "把配置里的 ATTR_MAX（属性集数量上限）调大后重跑，或手动加回"})
             self.log(ctx, "⚠ 属性数超过 ATTR_MAX=%s → 截断 %d 个(上一份 spec 的属性优先保留): %s"
                      % (max_attrs, len(dropped), dropped))
+        # 自动生成的容积说明进行安全校验；人工改过的定义只提示、不覆盖。
+        from tools.attr_stability.volume_hint_guard import prepare_volume_hints
+        attrs, volume_findings = prepare_volume_hints(attrs)
         # ★ 2026-11-11 维度分组建议: 同一部件同一维度被拆成多列(如 支架有无/高度/档位/调节方式)
         #   时给出分组与收拢建议, **只标记、不删除**, 由人在确认属性集时决定。
         self._propose_dimension_groups(ctx, attrs)
+        # 仅生成待人工确认的建议，不自动改名、拆列或改写属性。
+        from tools.attr_stability.definition_review import definition_findings, review_definitions
+        self._definition_review = definition_findings(attrs)
+        if self._definition_review:
+            try:
+                self._definition_review = review_definitions(attrs, ctx.llm())
+            except Exception as exc:  # noqa: BLE001
+                self.log(ctx, "⚠ 属性定义模型复核失败，保留问题供人工核查: %s" % exc)
+            self.log(ctx, "属性定义待核查: %d 项；仅供人工确认" % len(self._definition_review))
+        self._definition_review.extend(volume_findings)
+        if volume_findings:
+            self.log(ctx, "质量与体积说明待核查: %d 项（人工说明不自动改写）" % len(volume_findings))
         # 属性说明精简: 把每条详细 hint 总结成一句话 hint_short(供步骤17 注入提示词)。
         # 失败不阻断(步骤17 会兜底用完整 hint)。
         self._summarize_hints(ctx, attrs)
@@ -1319,6 +1335,7 @@ class Step16AttributeAnnotation(BaseStep):
             "属性总数": len(attrs),
             "合并": merged,
             "删除": deletes,
+            "定义问题": list(getattr(self, "_definition_review", []) or []),
         }
         out_dir = os.path.join(str(ctx.paths.cat_root), "16_产品属性标注")
         os.makedirs(out_dir, exist_ok=True)
@@ -3001,7 +3018,7 @@ class Step16AttributeAnnotation(BaseStep):
    原文未提不等于否；仅提到一个特征不排除其他特征。低频但有明确依据且有区分度的独立功能保留。
    重复核对从对象/部件、维度、时间和统计口径入手：不同部件的同类指标（如主体容量与附件容量）、
    上限与常用值、总数与单件数分别记录；不按相同示例或共同证据合并。
-   容积和重量不能在没有商品密度证据时互换；每日/每次等周期数值须有对应周期证据。
+   容积和重量不能直接互换，不得按假定密度换算；只有明确的液量盎司 fl oz 才能按体积换算，未限定的 oz 不能默认是液量；每日/每次等周期数值须有对应周期证据。
 1.2 **同一部件同一维度只设一个主属性**: 先问"这个属性描述的是哪个部件的哪个维度";
    同一部件同一维度最多「一个主属性 + 确有必要的独立子属性」, 不要把一件事拆成多列
    (如 有无某部件 / 该部件类型 / 该部件尺寸 / 该部件档位 / 该部件调节方式 各抽一列)。
@@ -3022,6 +3039,8 @@ class Step16AttributeAnnotation(BaseStep):
 2.1 属性可共用证据，但是否同义须比较对象、部件、维度、统计口径和状态含义；示例或判定词重叠只能提示复核，不能单独作为合并依据。
    不同部件的同类指标、同一功能的不同实现方式、能力与随附配件均可能不同；不要合并独立维度。
    对实际值/最大值、整体/分部件等定义不清的情况先明确边界，无法无损合并则保留待复核。
+2.2 属性名、取值形态和说明必须一致：名称以「是否」开头仅输出是/否/未明确；若需记录类别或多个方式，应采用对应维度名称并保留各状态，不能把类别写进是否列。
+   多功能、二合一、组合、一体式等笼统词只是线索，不能单凭词语判定某个具体对象或关系成立；必须有该对象与关系的直接证据，缺失时写未明确，明确相反时才写否。
 
 3. 数量 **{ATTR_ROUND_MIN}-{am} 个**: 少于 {ATTR_ROUND_MIN} 个说明你漏了可区分维度; 多于 {am} 个只保留最能区分的
 4. **hint 必须写详细({ATTR_HINT_MIN}-{ATTR_HINT_MAX} 字), 逐项覆盖**:
@@ -3155,6 +3174,8 @@ class Step16AttributeAnnotation(BaseStep):
    **例外（`是否*` 类属性）**: 属性名以「是否」开头的是**是非题**, 典型取值**一律写 `是 / 否 / 未明确`**,
    **不要写语义写法**(❌ "带汁槽 / 无汁槽"、❌ "双面可用 / 单面使用")—— 下游按**布尔三态**统计,
    语义写法会让每行各写一套、无法汇总; 「没有/不是」写 `否`, 只有确实看不出时才写 `未明确`
+   名称、形态、典型值必须一致；多功能、二合一、组合、一体式只是线索，具体对象及其关系须有直接证据，无法确认时写未明确。
+   质量 kg/lb/g 不得直接换算为体积；仅明确为液量盎司 fl oz 才按液量换算，未限定的 oz 不可默认是液量，体积证据不足时写未明确并保留原文依据。
 4. 一律用中文表示(name 与 hint 都写中文; 只有品牌名/英文专有名词/单位可保留原文)
 5. 只输出 JSON, 不要输出其他任何文字:
 {{"attributes": [{{"key": "...", "name": "...", "hint": "..."}}]}}

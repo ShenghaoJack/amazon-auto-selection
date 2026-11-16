@@ -526,7 +526,7 @@ class Step17AttrAnnotation(BaseStep):
             cache_context=self._annotation_cache_context(ctx),
             input_fields=["xl_row", *TEXT_ANNOTATION_FIELDS],
             compact_attributes=list(rules.attrs), compact_prompt_text=compact_prompt,
-            adjudication_hints={str(a.get("name") or ""): str(a.get("hint_short") or a.get("hint") or "")
+            adjudication_hints={str(a.get("name") or ""): str((a.get("hint") if a.get("use_full_hint") else a.get("hint_short")) or a.get("hint") or a.get("hint_short") or "")
                                 for a in self._spec_attributes})
         self.log(ctx, "开始标注: %d 行 × %d 属性, 跑 %d 遍(每批 %d 行, 完整性硬校验、其余问题只记录)"
                  % (len(rows), len(rules.attrs), n_runs, chunk))

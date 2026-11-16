@@ -234,7 +234,7 @@ def step_files(cat_root: Path, step: int, decls: dict[int, list[str]] | None = N
 def manifest_dir(cat_root: Path) -> Path:
     from core.paths import STEP_DIR_NAMES
 
-    return cat_root / STEP_DIR_NAMES[20] / MANIFEST_SUBDIR
+    return cat_root / STEP_DIR_NAMES[19] / MANIFEST_SUBDIR
 
 
 def manifest_path(cat_root: Path, step: int) -> Path:
@@ -245,7 +245,7 @@ def read_step_status(cat_root: Path, step: int) -> dict:
     """从 `step-status.txt` 取该步那一行(状态/起止/失败数); 缺失则空。"""
     from core.paths import STEP_DIR_NAMES
 
-    p = cat_root / STEP_DIR_NAMES[20] / STEP_STATUS_NAME
+    p = cat_root / STEP_DIR_NAMES[19] / STEP_STATUS_NAME
     if not p.is_file():
         return {}
     try:
@@ -462,7 +462,7 @@ def transfer(cat_root: Path, target: Path, *, direction: str, steps: list[int] |
         p = src_root / rel
         if p.is_file():
             files.append(p)
-    for p in sorted((src_root / STEP_DIR_NAMES[20] / MANIFEST_SUBDIR).glob("*")):
+    for p in sorted((src_root / STEP_DIR_NAMES[19] / MANIFEST_SUBDIR).glob("*")):
         if p.is_file():
             files.append(p)
     uniq = {str(p.relative_to(src_root)).replace("\\", "/"): p for p in files}
@@ -498,7 +498,7 @@ def _resolve_cat_root(args) -> tuple[Path, str, str]:
 
 def _status_rows(cat_root: Path, *, check_hash: bool, decls: dict[int, list[str]] | None = None) -> list[dict]:
     rows = []
-    for step in range(21):        # 0–20(20=VOC 评论分析, 2026-10-09 新增)
+    for step in range(20):        # 0–19，最后一步为备份与最终体检
         man = load_manifest(cat_root, step)
         if man is None:
             rows.append({"step": step, "manifest": None})
@@ -510,7 +510,7 @@ def _status_rows(cat_root: Path, *, check_hash: bool, decls: dict[int, list[str]
 
 def cmd_write(args) -> int:
     cat_root, cat, data_root = _resolve_cat_root(args)
-    steps = [int(x) for x in args.steps] if args.steps else list(range(21))   # 0–20
+    steps = [int(x) for x in args.steps] if args.steps else list(range(20))   # 0–19
     role = resolve_role(args.role)
     out = write_manifests(cat_root, steps, role=role, cat=cat, data_root=data_root)
     if args.json:

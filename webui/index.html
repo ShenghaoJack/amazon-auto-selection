@@ -972,7 +972,7 @@
       <div>
         <div class="overline">08 · Monitor &amp; Alerts</div>
         <h2>监控与告警</h2>
-        <div class="sub">步骤 20 生成的体检报告与运行期告警(流水线最后一步)</div>
+        <div class="sub">步骤 19 生成的体检报告与运行期告警(流水线最后一步)</div>
       </div>
     </div>
     <div class="card-body">
@@ -1298,8 +1298,7 @@ const STEPS = [
  {n:16,t:"属性集提取与确认", d:"FR-16: 属性集 N 次抽取合并 + 同义归并, 固化为 attribute-spec.json 待人工确认", a:["CAT-attribute-spec.json"]},
  {n:17,t:"属性标注", d:"FR-17: 对已确认属性集 N 次补充标注 + 结构闸门(只硬拦完整性) + 一致性表决 + 图片视觉补充(仅未明确) + 词表生成/聚类, 产出单遍原始/唯一值统计/词表聚类报告", a:["17_属性标注/CAT-属性标注-单遍原始.xlsx","17_属性标注/唯一值统计.json"]},
  {n:18,t:"标准化", d:"FR-18: 只读步骤17标注，多值归并、自定义重判、异常与跨列复核；预览确认、JSON版本与回滚，导出含来源与依据的标准化交付", a:["18_标准化/CAT-属性标注-标准化交付.xlsx"]},
- {n:19,t:"VOC评论分析", d:"FR-19: 按父ASIN抓 1–5 星评论(Pangolinfo 主/卖家精灵兜底, 页数见 VOC_PAGES_PER_PARENT) → reviewId 去重 → LLM 归类 → V3 14 表 VOC 工作簿 + 严格校验", a:["19_VOC报告/CAT-VOC报告.xlsx","19_VOC报告/VOC流水线摘要.json"]},
- {n:20,t:"备份与最终体检", d:"FR-20: 全产物体检(抓取质量/连续失败/卡死/完整性/耗时)+预警推送+归档提示(VOC 之后收尾, 报告覆盖 VOC 产物)", a:["17_备份与监控/health-report.json"]}
+ {n:19,t:"备份与最终体检", d:"FR-19: 全产物体检(抓取质量/连续失败/卡死/完整性/耗时)+预警推送+归档提示", a:["20_备份与监控/health-report.json"]}
 ];
 const M = {CAT:"类目名",LIST_URLS:"榜单URL(;分隔)",SITE:"卖家精灵站点名",MARKET:"亚马逊市场站点",
  TRAFFIC_MONTH:"流量来源目标月 YYYY-MM",COMPETITOR_MONTH:"竞品目标月 YYYY-MM",TREND_MONTH:"趋势/挖词月 YYYYMM",
@@ -1332,10 +1331,9 @@ const M = {CAT:"类目名",LIST_URLS:"榜单URL(;分隔)",SITE:"卖家精灵站�
   ATTR_STAB_VOCAB_HINT:"词表口径建议(步骤17 末尾, 步骤18 应用)",ATTR_STAB_AUTO_ONBOARD:"新词全自动写回(步骤17)",
   // ★ 2026-11-12: 明确标注 —— 这是**最终属性集数量上限**（不是单轮抽取上限 ATTR_ROUND_MAX）
   ATTR_MAX:"步骤16: 属性集最终数量上限(0=不截断; 超出会被丢弃, 已确认的属性优先保留)",
-  RECENT_LOG_LINES:"成功率统计窗口(步骤20)",REPORT_FRESH_DAYS:"报告新鲜度天数(步骤20)",
-  STEP_DURATION_MAX_SECONDS:"单步耗时阈值秒(步骤20)",STEP_DURATION_MEAN_MULT:"耗时超均值倍数(步骤20)",STEP_DURATION_MEAN_FLOOR:"耗时均值下限秒(步骤20)",
- VOC_ENABLED:"启用 VOC 评论分析(步骤19)",VOC_PAGES_PER_PARENT:"每个父ASIN爬取的评论页数(步骤19; 约10条/页·5积分/页)",VOC_STAR_MIX:"页数星级分配模板(步骤19; critical:3,four_star:1,five_star:1)",VOC_LLM_BATCH:"VOC 标注批大小(步骤19)",VOC_LLM_WORKERS:"VOC 标注并发线程(步骤19)",VOC_VALIDATE_STRICT:"VOC 严格校验(步骤19)"};
-const BOOL_KEYS = new Set(["LLM_NO_THINK","REVIEW_AUTO","SS_FORCE_RESUBMIT","DRY_RUN","ATTR_STAB_GEN_VOCAB","ATTR_STAB_AUTO_ONBOARD","VOC_ENABLED","VOC_VALIDATE_STRICT"]);
+  RECENT_LOG_LINES:"成功率统计窗口(步骤19)",REPORT_FRESH_DAYS:"报告新鲜度天数(步骤19)",
+  STEP_DURATION_MAX_SECONDS:"单步耗时阈值秒(步骤19)",STEP_DURATION_MEAN_MULT:"耗时超均值倍数(步骤19)",STEP_DURATION_MEAN_FLOOR:"耗时均值下限秒(步骤19)",};
+const BOOL_KEYS = new Set(["LLM_NO_THINK","REVIEW_AUTO","SS_FORCE_RESUBMIT","DRY_RUN","ATTR_STAB_GEN_VOCAB","ATTR_STAB_AUTO_ONBOARD"]);
 const NUM_KEYS = new Set(["GATE_MIN_QUALIFIED","GATE_NEW_SELLERS","LONGTAIL_PER_DIM","MONTHLY_SALES_MIN","BATCH_FILTER","FILTER_JUDGE_TRIES","FILTER_JUDGE_WORKERS","LLM_TIMEOUT","REQUEST_MIN_INTERVAL","REQUEST_MAX_INTERVAL","FETCH_WORKERS","FETCH_ROUND_PAUSE","FETCH_STALL_ROUNDS","FETCH_ASIN_TRIES","QUERY_WAIT_TIMEOUT","FETCH_LONG_EVERY","FETCH_LONG_MIN","FETCH_LONG_MAX","REVIEW_LIMIT","REVIEW_MIN_RATE","EXPORT_STATUS_WAIT","EXPORT_STATUS_INTERVAL","CORE_SEARCH_PAGES","LONGTAIL_SEARCH_PAGES","ATTR_SPEC_RUNS","ATTR_STAB_CHUNK","ATTR_STAB_MAX_ALONE","ATTR_STAB_MAX_RETRY","ATTR_STAB_MIN_RATE","RECENT_LOG_LINES","REPORT_FRESH_DAYS","STEP_DURATION_MAX_SECONDS","STEP_DURATION_MEAN_MULT","STEP_DURATION_MEAN_FLOOR","ATTR_STAB_WORKERS","VOC_PAGES_PER_PARENT","VOC_LLM_BATCH","VOC_LLM_WORKERS"]);
 // 页面不展示的键(代码默认值已固定, 如 CANDIDATE_LIMIT=20; 即使出现在 yaml 也在表单中隐藏, 保存不改动)
 // 注: LONGTAIL_COUNT 是**兼容旧键**(长尾总条数) —— 2026-09-13 起长尾条数以 LONGTAIL_PER_DIM(每维条数, 可见可改)为准,
@@ -1422,11 +1420,11 @@ ATTR_STAB_PROMPT:"步骤17 标注提示词路径(留空=默认 prompts/step17_ge
 ATTR_STAB_GEN_VOCAB:"步骤17 末尾的冷启动词表生成: 对无词表的 enum/multi 属性自动聚类生成规范值(true=开/false=关)",
 ATTR_STAB_VOCAB_HINT:"词表归并口径建议(自然语言, 步骤17 生成/步骤18 应用): 例如「把具体树种(柚木/相思木/胡桃木)合并成木制」",
 ATTR_STAB_AUTO_ONBOARD:"新词写回(步骤17): true=初审后自动写回 rules.json(全自动); false=半自动交人工审(默认)",
-RECENT_LOG_LINES:"步骤20 体检: 最近N条日志的成功率统计窗口(默认20)",
-REPORT_FRESH_DAYS:"步骤20 体检: 报告新鲜度检查天数(默认7)",
-STEP_DURATION_MAX_SECONDS:"步骤20 体检: 单步耗时超过此秒数预警(默认7200=2小时)",
-STEP_DURATION_MEAN_MULT:"步骤20 体检: 单步耗时超过本轮均值N倍预警(默认3)",
-STEP_DURATION_MEAN_FLOOR:"步骤20 体检: 耗时均值下限秒(默认600; 低于此不计入均值)"
+RECENT_LOG_LINES:"步骤19 体检: 最近N条日志的成功率统计窗口(默认20)",
+REPORT_FRESH_DAYS:"步骤19 体检: 报告新鲜度检查天数(默认7)",
+STEP_DURATION_MAX_SECONDS:"步骤19 体检: 单步耗时超过此秒数预警(默认7200=2小时)",
+STEP_DURATION_MEAN_MULT:"步骤19 体检: 单步耗时超过本轮均值N倍预警(默认3)",
+STEP_DURATION_MEAN_FLOOR:"步骤19 体检: 耗时均值下限秒(默认600; 低于此不计入均值)"
 };
 const STATUS_COLOR = {DONE:"#34d399",RUNNING:"#60a5fa",FAILED:"#fb7185",SKIP:"#2dd4bf",PENDING:"#5b6b85",INTERRUPTED:"#f59e0b"};
 
@@ -2343,7 +2341,7 @@ function applyHubView(mode) {
   if (mode !== "tree") { renderHomeGroups(); renderHomeRows(); }
 }
 /* ============ 整合市场报告(HTML, 2026-10-09): 类目中心那行的「📊 整合报告」 ============
- * 用户口径: 步骤8 关键词报告 + 步骤18 属性标注-标准化交付 + 步骤19 VOC报告 **三份缺一不可**;
+ * 用户口径: 步骤8 关键词报告 + 步骤18 属性标注-标准化交付 + 外部VOC报告 **三份缺一不可**;
  * 报告是单文件 HTML, 点开即看(走 /api/integrated-report/view 直吐 HTML, 不用 file:// 链接 ——
  * 浏览器不允许 http 页面点开本地文件)。
  * 状态来自 ①/api/history 每行的 `integrated` 字段(s.d. 见 webui/server.py::integrated_report_status):
@@ -2357,7 +2355,7 @@ function hubDownloadHtml(it) {
    * 缺的那几项置灰(带原因), 不隐藏 —— 用户一眼看出"还差哪份"。 */
   const ir = it.integrated || null;
   if (!ir) return "";
-  const miss = (ir.missing || []).map(m => `步骤${m.step}`);
+  const miss = (ir.missing || []).map(m => m.step === null ? "外部VOC报告" : `步骤${m.step}`);
   const link = (kind, label, ok) => ok
     ? `<a href="/api/integrated-report/download?cat=${encodeURIComponent(it.cat)}&kind=${kind}">${label}</a>`
     : `<span class="miss" title="还缺 ${miss.join("、")}">${label}</span>`;
@@ -2369,7 +2367,7 @@ function hubDownloadHtml(it) {
     link("integrated", "⬇ 整合报告(HTML)", !!ir.html),
     link("keyword", "① 关键词报告.xlsx(步骤8)", !miss.includes("步骤8")),
     link("product", "② 属性标注-标准化交付.xlsx(步骤18)", !miss.includes("步骤18")),
-    link("voc", "③ VOC报告.xlsx(步骤19)", !miss.includes("步骤19")),
+    link("voc", "③ VOC报告.xlsx（外部提供）", !miss.includes("外部VOC报告")),
   ].join("");
   return `<details class="hub-dl"><summary class="btn-sm btn-ghost" title="下载整合报告与三份源数据">⬇ 下载</summary>`
     + `<div class="hub-dl-menu">${items}</div></details>`;
@@ -2377,13 +2375,13 @@ function hubDownloadHtml(it) {
 function hubIntegratedHtml(it) {
   const ir = it.integrated || null;
   if (!ir) return "";                                   // 后端旧版本没有该字段 → 不显示按钮
-  const miss = (ir.missing || []).map(m => `步骤${m.step} ${m.name}`);
+  const miss = (ir.missing || []).map(m => m.step === null ? "外部VOC报告" : `步骤${m.step} ${m.name}`);
   if (ir.html) {
     const tip = `整合报告已生成: ${ir.html.mtime || ""}${ir.html.size ? " · " + Math.round(ir.html.size / 1024) + " KB" : ""}`;
     return ` <button class="btn-sm btn-ok shine" data-act="report-open" data-cat="${esc(it.cat)}" title="${esc(tip)}">📊 整合报告</button>`
       + ` <button class="btn-sm btn-ghost" data-act="report-build" data-cat="${esc(it.cat)}" title="重新生成(覆盖当前 HTML)">↻</button>`;
   }
-  const tip = ir.inputs_ok ? "由步骤8 关键词 + 步骤18 标准化交付 + 步骤19 VOC 生成单文件 HTML"
+  const tip = ir.inputs_ok ? "由步骤8 关键词 + 步骤18 标准化交付 + 外部VOC报告生成单文件 HTML"
     : `缺 ${miss.join("、")}(三份缺一不可) —— 点了会告诉你怎么补`;
   const cls = ir.inputs_ok ? "btn-sm btn-ok" : "btn-sm btn-ghost";
   const label = ir.inputs_ok ? "📊 生成整合报告" : `📊 整合报告(缺${miss.length}份)`;
@@ -3697,10 +3695,10 @@ function renderAttrMergeReview() {
     host.appendChild(box);
   }
   const r = (attrData && attrData.review) || {};
-  const merges = r["合并"] || [], dels = r["删除"] || [];
-  if (!merges.length && !dels.length) { box.hidden = true; return; }
+  const merges = r["合并"] || [], dels = r["删除"] || [], definitions = r["定义问题"] || [];
+  if (!merges.length && !dels.length && !definitions.length) { box.hidden = true; return; }
   box.hidden = false;
-  box.innerHTML = `<summary style="cursor:pointer;font-weight:600;color:#9fb3d9">合并/删除审查：合并 ${merges.length} 组 · 删除 ${dels.length} 个${r["生成时间"] ? "（" + esc(r["生成时间"]) + "）" : ""}</summary>`
+  box.innerHTML = `<summary style="cursor:pointer;font-weight:600;color:#9fb3d9">属性审查：合并 ${merges.length} 组 · 删除 ${dels.length} 个 · 定义待核 ${definitions.length} 项${r["生成时间"] ? "（" + esc(r["生成时间"]) + "）" : ""}</summary>`
     + (merges.length ? `<div style="margin-top:8px"><b>合并</b><ul style="margin:4px 0 8px 18px;line-height:1.8">`
         + merges.slice(0, 60).map(m => `<li><b>${esc(m["规范名"])}</b> ← ${esc((m["并入"] || []).join("、"))}`
           + ` <span style="color:var(--dim)">（${esc(m["依据"] || "")}${m["票数"] != null ? " · 票数 " + m["票数"] : ""}）</span></li>`).join("")
@@ -3709,7 +3707,14 @@ function renderAttrMergeReview() {
         + dels.slice(0, 60).map(d => `<li><b>${esc(d["属性"])}</b> <span style="color:var(--dim)">（${esc(d["原因"] || "")}`
           + `${d["可恢复"] ? "｜恢复：" + esc(d["可恢复"]) : ""}）</span></li>`).join("")
         + `</ul></div>` : "")
-    + (merges.length > 60 || dels.length > 60 ? `<div class="tiny" style="color:var(--dim);margin-top:6px">仅显示前 60 条，完整清单见 16_产品属性标注/属性合并与删除审查.json</div>` : "");
+    + (definitions.length ? `<div style="margin-top:8px"><b>属性定义待人工确认</b><ul style="margin:4px 0 0 18px;line-height:1.8">`
+        + definitions.slice(0, 60).map(d => {
+          const now = (attrData.attributes || []).find(a => a.name === d["属性"]);
+          const changed = !now || String(now.hint || "").trim() !== String(d["审查后的说明"] || d["原说明"] || "").trim();
+          const tips = (d["建议"] || []).map(x => [x["建议名称"] ? "建议名称：" + x["建议名称"] : "", x["建议说明"] ? "建议说明：" + x["建议说明"] : "", x["处理建议"] || ""].filter(Boolean).join("；")).join("；");
+          return `<li><b>${esc(d["属性"] || "")}</b>${changed ? "（当前定义已变化，请重新核对）" : ""}<div>原说明：${esc(d["原说明"] || "")}</div><div>${esc((d["问题"] || []).map(x => x["原因"] || "").join("；"))}</div><div>${esc(tips || "模型建议不可用，请人工确认处理方式。")}</div></li>`;
+        }).join("") + `</ul></div>` : "")
+    + (merges.length > 60 || dels.length > 60 || definitions.length > 60 ? `<div class="tiny" style="color:var(--dim);margin-top:6px">各类仅显示前 60 条，完整清单见 16_产品属性标注/属性合并与删除审查.json</div>` : "");
 }
 
 function updateAttrStatus() {
@@ -4826,7 +4831,7 @@ function renderHealth(data) {
   const sig = JSON.stringify(checks) + (h.exit_code ?? "");
   if (sig === lastHealthSig && box.childElementCount) return;
   lastHealthSig = sig;
-  if (!checks.length) { box.innerHTML = `<div class="empty">暂无体检报告 — 步骤 20 运行后生成</div>`; return; }
+  if (!checks.length) { box.innerHTML = `<div class="empty">暂无体检报告 — 步骤 19 运行后生成</div>`; return; }
   const ico = {OK:"✓", WARN:"!", CRIT:"✕"};
   box.innerHTML = checks.map((ch, i) =>
     `<div class="hitem lv-${esc(ch.level)}" style="animation:pop .5s var(--ease) both;animation-delay:${Math.min(i, 8) * 60}ms">
@@ -5267,7 +5272,7 @@ function renderConfigForm(values) {
   const form = $("cfgForm");
   const known = new Set();
   GROUPS.forEach(g => g.keys.forEach(k => known.add(k)));
-  const extra = Object.keys(values).filter(k => !known.has(k) && !HIDDEN_KEYS.has(k) && !SPECIAL_KEYS.has(k));
+  const extra = Object.keys(values).filter(k => !k.startsWith("VOC_") && !known.has(k) && !HIDDEN_KEYS.has(k) && !SPECIAL_KEYS.has(k));
   // SS_ACTIVE_ACCOUNT 下拉选项: auto/main + 主账号/备用账号
   const opts = [{v: "auto", t: "auto — 自动(主账号优先)"}, {v: "main", t: "main — 主账号"}];
   const seen = new Set(["auto", "main"]);

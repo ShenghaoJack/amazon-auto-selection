@@ -213,13 +213,13 @@
 | 键 | 默认 | 步骤 | 说明 |
 |---|---|---|---|
 | `ATTR_MODE` | auto | 16 | 属性提取模式 auto/manual |
-| ~~`ATTR_SPEC_RUNS`~~ | 3（写死） | 16 | 2026-11-11 起不再是配置项：每价格段固定抽 3 轮 |
+| `ATTR_SPEC_RUNS` | 3 | 16 | N 次抽取属性集 |
 | `ATTR_KEYS` / `ATTR_DESC` | "" | 16 | 人工补充属性 / 说明 |
 | `ATTR_STAB_RUNS` | 5 | 17 | 跑几遍做表决（<2 则 SKIP） |
 | `ATTR_STAB_CHUNK` | 12 | 17 | 单次调用送几行 |
 | `ATTR_STAB_MAX_ALONE` | 10.0 | 17 | 独异格率阈值(%)，超过不进交付 |
 | `ATTR_STAB_MAX_RETRY` | 2 | 17 | （宽松模式下失效）被闸门拒后最多重跑几轮 |
-| ~~`ATTR_STAB_MIN_RATE`~~ | 0（写死） | 17 | 2026-11-11 起不再是配置项：一致率提示门槛固定 0，只提示不阻断 |
+| `ATTR_STAB_MIN_RATE` | 85.0 | 17 | 交付值一致率提示阈值(%)，低于仅告警不阻断（2026-09-24 宽松模式） |
 | `ATTR_STAB_PROMPT` | prompts/23_llm_only_pipeline.md | 17 | 标注提示词路径 |
 | `ATTR_STAB_GEN_VOCAB` | false | 18 | 冷启动词表自动生成开关 |
 | `ATTR_STAB_VOCAB_GRANULARITY` | 50 | 18 | 合并粒度：0=最粗合并 / 100=最细细分 |

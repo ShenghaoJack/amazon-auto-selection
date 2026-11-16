@@ -54,7 +54,7 @@ CONFIG_BACKUP_DIR = PROJECT_ROOT / ".webui" / "config-backups"   # 配置文件�
 RING_MAX = 4000
 LOG_LINE_RE = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) \[(\w+)\] (.*)$")
 
-STEP_COUNT = 21      # 0–20(19=VOC 评论分析, 20=备份与最终体检)
+STEP_COUNT = 20      # 0–19，末步为备份与最终体检
 
 # 配置清单扫描缓存(2026-10-09 性能): 键值指纹见 _scan_configs(); 短 TTL 只为兜住"目录改名"这类
 # 不体现在 config.yaml mtime 上的变化(改配置本身会立刻使指纹失效)。
@@ -80,8 +80,6 @@ ARTIFACT_TABLE: list[tuple[int, str]] = [
     (15, "CAT-初步类目分析报告.xlsx"),
     (16, "CAT-attribute-spec.json"),
     (18, "18_标准化/CAT-属性标注-标准化交付.xlsx"),
-    # 2026-10-09 新增: 步骤19 VOC 工作簿(14 表; 供下载查看/交接)
-    (19, "19_VOC报告/CAT-VOC报告.xlsx"),
 ]
 # 单文件下载大小上限(超出拒绝, 防止误拖超大文件)
 MAX_DOWNLOAD_BYTES = 1_000_000_000
@@ -1273,13 +1271,13 @@ def integrated_report_status(cat: str, data_root: str = "data") -> dict:
     输入(与脚本门槛同口径, 缺一不可):
       步骤8  `<CAT>-keyword-report.xlsx`
       步骤18 `18_标准化/<CAT>-属性标注-标准化交付.xlsx`
-      步骤19 `19_VOC报告/<CAT>-VOC报告.xlsx`
+      外部提供 `19_VOC报告/<CAT>-VOC报告.xlsx`
     """
     cat_dir = cat_root_dir(cat, data_root)
     inputs = (
         (8, "关键词报告", cat_dir / f"{cat}-keyword-report.xlsx"),
         (18, "属性标注-标准化交付", cat_dir / "18_标准化" / f"{cat}-属性标注-标准化交付.xlsx"),
-        (19, "VOC报告", cat_dir / "19_VOC报告" / f"{cat}-VOC报告.xlsx"),
+        (None, "VOC报告", cat_dir / "19_VOC报告" / f"{cat}-VOC报告.xlsx"),
     )
     missing = [{"step": s, "name": n, "path": str(p)} for s, n, p in inputs if not p.is_file()]
     out_dir = cat_dir / INTEGRATED_REPORT_SUBDIR
@@ -2402,7 +2400,7 @@ def cat_usage(mdir: Path | None) -> dict:
                 "last_ts": row.get("last_ts", ""),
                 "status": row.get("status", ""),
             }
-            for num, row in (agg["steps"] or {}).items()
+            for num, row in (agg["steps"] or {}).items() if int(num) != 19
         }
         data = {
             "run_id": agg["run_id"],
@@ -3232,7 +3230,7 @@ class Handler(BaseHTTPRequestHandler):
         """GET /api/integrated-report/download?cat=…&kind=… → 下载整合报告 HTML 或**三份源数据**。
 
         kind: integrated(整合报告 HTML) / keyword(步骤8 关键词报告) / product(步骤18 标准化交付) /
-              voc(步骤19 VOC报告) —— 白名单之外一律拒; 文件不存在则 404(前端据此置灰)。
+              voc(外部提供的 VOC 报告) —— 白名单之外一律拒; 文件不存在则 404(前端据此置灰)。
         """
         cat = safe_cat_name(q.get("cat", [""])[0])
         kind = str(q.get("kind", [""])[0] or "").strip().lower()
@@ -3269,7 +3267,7 @@ class Handler(BaseHTTPRequestHandler):
                 % (prog.get("phase") or "生成中", prog.get("pct", 0)))
         st = integrated_report_status(cat, droot)
         if not st["inputs_ok"]:
-            names = "、".join("步骤%d %s" % (m["step"], m["name"]) for m in st["missing"])
+            names = "、".join("外部VOC报告" if m["step"] is None else "步骤%d %s" % (m["step"], m["name"]) for m in st["missing"])
             raise UserFacingError(
                 "整合报告要求三份输入齐备(缺一不可), 当前缺: %s —— 请先跑对应步骤(可单步), 再回来点生成。"
                 % names)

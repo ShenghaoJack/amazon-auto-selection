@@ -1,4 +1,4 @@
-"""steps 包: 0-20 共 21 个步骤模块。
+"""steps 包: 0-19 共 20 个步骤模块。
 
 每个步骤独立成文件, 可单独审查/单独运行:
   steps/step00_bestsellers.py      FR-00 榜单收集
@@ -20,6 +20,5 @@
   steps/step16_attribute_annotation.py FR-16 属性集提取与确认
   steps/step17_attr_annotation.py  FR-17 属性标注(number=17)
   steps/step18_standardization.py  FR-18 标准化(number=18)
-  steps/step19_voc.py            FR-19 VOC 评论分析(number=19)
-  steps/step17_backup_monitor.py   FR-20 备份+最终体检(number=20, 收尾)
+  steps/step17_backup_monitor.py   FR-19 备份+最终体检(number=19, 收尾)
 """

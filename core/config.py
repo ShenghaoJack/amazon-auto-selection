@@ -174,51 +174,6 @@ class Config:
         # 兜底总开关(唯一需要用户关心的键): auto=直连抓不到就用本机浏览器补回来(默认);
         # off=完全不用浏览器(只直连, 失败如实记为失败)。步骤01 与步骤10 共用它。
         "FALLBACK": "auto",
-        # ============ VOC 评论分析(步骤20, 2026-10-09 新增) ============
-        # 每个父ASIN爬取的**评论页数**(实测 Pangolinfo 每页约 10 条、5 积分/页;
-        # 首次测试批次即为 5 页/父体)。页数按 VOC_STAR_MIX 分摊到各星级层。
-        "VOC_PAGES_PER_PARENT": 5,
-        # 启用开关: false 时步骤20 直接跳过(不消耗任何积分)
-        "VOC_ENABLED": True,
-        "VOC_OPPORTUNITY_ENABLED": True,  # 采集去重→按变体分组方面提取→分类/同义归并→回贴评论→Need/Open
-        # 页数分配模板(critical=1–3星 / four_star / five_star); 按总页数等比缩放, 每层至少 1 页
-        "VOC_STAR_MIX": "critical:3,four_star:1,five_star:1",
-        # 父体范围: **全量写死**(2026-10-09 用户口径"要跑肯定是全量跑") —— 不设上限键;
-        # 积分也**不设熔断**: 额度耗尽由数据源兜底消化(Pangolinfo → 卖家精灵),
-        # 两源都用完时本步记录 stopped_reason=all_sources_exhausted 并用已采集数据出报告。
-        # (2026-10-09 移除 VOC_MAX_PARENTS 与 VOC_POINT_BUDGET 两个配置键)
-        # (2026-10-12 移除 VOC_SOURCE_PRIORITY 与 VOC_SITE 两个配置键 —— 见下)
-        #   数据源顺序：**写死在代码**（就 Pangolinfo → 卖家精灵两个源，没有第三种方式），
-        #     常量 `tools/voc/pipeline.DEFAULT_SOURCE_PRIORITY`。
-        #   Pangolinfo 站点：**由 `SITE` 自适应**（`tools/voc/pipeline.voc_site_of`）——
-        #     原来 `VOC_SITE` 是独立的一份拷贝，`copy_from` 新建类目时跟着被复制，
-        #     实测英国站/德国站的类目里仍是 `amz_us` → **一直在抓美国站评论且无提示**。
-        "VOC_LLM_BATCH": 20,  # 同一归属变体组内的单批片段上限，不跨变体拼批
-        "VOC_EXTRACT_INPUT_TOKENS": 24000,  # UTF-8字节保守估算，含提示/元数据/纠错预留，非精确分词
-        "VOC_EXTRACT_CONTEXT_TOKENS": 65536,  # 调度预算，不代表模型实际容量；切模型时核对
-        "VOC_EXTRACT_OUTPUT_TOKENS": 16000,  # 硬上限；截断交提取层拆批，不扩至全局输出上限
-        "VOC_EXTRACT_WINDOW_CHARS": 10000,
-        "VOC_EXTRACT_OVERLAP_CHARS": 1000,
-        "VOC_EXTRACT_SPLIT_DEPTH": 6,  # 单窗口失败后最多拆分层数；终止后保持pending
-        "VOC_TASK_TIMEOUT": 120,  # VOC整次模型调用等待上限，超时延后，其他独立任务继续
-        "VOC_MCP_TIMEOUT": 120,  # VOC整次MCP工具调用等待上限，含底层重试
-        "VOC_RETRY_ROUNDS": 1,  # 全部独立任务首轮结束后的补试轮数
-        "VOC_QUOTE_REPAIR_ENABLED": True,  # 仅失败项自动重选原文证据，随后独立语义复核
-        "VOC_QUOTE_REPAIR_ATTEMPTS": 2,  # 每个修复片段最多两次选择/复核尝试
-        "VOC_QUOTE_REPAIR_MAX_CALLS": 8,  # 同一失败原片段本次运行的总修复调用上限
-        "VOC_CLASSIFY_BATCH": 24,  # 方面分类正常批量；过预算自动拆小
-        "VOC_CLASSIFY_CATALOG_LIMIT": 64,  # 每次只携带相关候选，完整目录留给独立同义归并
-        "VOC_CLASSIFY_INPUT_TOKENS": 48000,  # 全提示按UTF-8字节保守限额，含纠错预留
-        "VOC_NEED_BATCH": 24,  # 正式流程Need归并并行批量；超预算先缩目录再拆批
-        "VOC_NEED_CATALOG_LIMIT": 48,  # 只输入相关候选Need；允许新建，随后独立同义复核
-        "VOC_NEED_INPUT_TOKENS": 48000,  # UTF-8字节保守预算，包含纠错预留
-        "VOC_NEED_MERGE_BATCH": 24,  # 独立Need同义复核的每批主体数
-        "VOC_NEED_MERGE_CANDIDATES": 8,  # 每个Need的跨批候选数；只由LLM决定是否归并
-        "VOC_SOLUTION_INPUT_TOKENS": 48000,  # 配置核查输入按UTF-8字节保守估算，含纠错预留
-        "VOC_SOLUTION_ALTERNATIVES": 2,  # 每Need额外核查不同配置候选数量；同Need已确认评论变体全部保留
-        "VOC_LLM_WORKERS": 4,
-        "VOC_FETCH_WORKERS": 4,  # 步骤19父体并发采集；1恢复串行，最大16
-        "VOC_VALIDATE_STRICT": True,
         # 浏览器补抓轮数 / 轮间冷却(2026-09-16 用户要求"补抓后还有失败的可以再进行一轮补抓"):
         # 直接请求轮用尽后残余全部转本机浏览器补抓, 补抓后仍有失败会自动再补一轮
         # (默认 2 轮, 每 ASIN 每轮最多 1 次 URL 形态), 轮间冷却默认 30 秒

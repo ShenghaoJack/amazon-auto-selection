@@ -1,6 +1,6 @@
 """Dependency-free execution range shared by CLI, state and the step registry."""
 
-MONITOR_STEP = 20
+MONITOR_STEP = 19
 PIPELINE_STEP_NUMBERS = tuple(range(MONITOR_STEP + 1))
 
 

@@ -26,7 +26,6 @@ from steps.step16_attribute_annotation import Step16AttributeAnnotation
 from steps.step17_attr_annotation import Step17AttrAnnotation
 from steps.step18_standardization import Step18Standardization
 from steps.step17_backup_monitor import Step17BackupMonitor
-from steps.step19_voc import Step19Voc
 
 STEPS: list = [
     Step00Bestsellers,
@@ -48,7 +47,6 @@ STEPS: list = [
     Step16AttributeAnnotation,
     Step17AttrAnnotation,
     Step18Standardization,
-    Step19Voc,
     Step17BackupMonitor,
 ]
 
@@ -57,5 +55,5 @@ def get_steps() -> list:
     """返回按步骤号排序的步骤实例列表。"""
     steps = sorted((cls() for cls in STEPS), key=lambda s: s.number)
     if tuple(step.number for step in steps) != PIPELINE_STEP_NUMBERS:
-        raise ValueError("步骤注册表必须完整且唯一地覆盖 0–20，最终体检必须位于最后")
+        raise ValueError("步骤注册表必须完整且唯一地覆盖 0–19，最终体检必须位于最后")
     return steps

@@ -27,11 +27,6 @@ def sync_step_dir(step_number: int, source_dir: str, snapshot: str, paths: Paths
     if not source_dir or not os.path.isdir(source_dir):
         return
     target = paths.archive_step_dir(snapshot, step_number)
-    if step_number == 19 and os.path.basename(os.path.normpath(source_dir)) == "19_VOC报告":
-        # VOC source responses and multi-aspect/Need/Open outputs live below the
-        # step root. Preserve the whole tree for automatic and manual snapshots.
-        shutil.copytree(source_dir, target, dirs_exist_ok=True)
-        return
     if step_number == 18 and os.path.basename(os.path.normpath(source_dir)) == "版本数据":
         # Keep immutable versions/proposals/jobs and the current pointer together.
         # Locks are process coordination files and can be exclusively held on

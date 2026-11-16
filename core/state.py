@@ -39,7 +39,7 @@ def _span_seconds(start: str, end: str) -> float | None:
 
 
 class RunState:
-    """管理单轮运行中 0-20 各步骤的状态与耗时。"""
+    """管理单轮运行中 0-19 各步骤的状态与耗时。"""
 
     def __init__(self, status_file: str, duration_csv: str):
         self.status_file = status_file

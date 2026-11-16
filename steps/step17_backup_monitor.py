@@ -1,10 +1,8 @@
-"""步骤20 备份 + 最终体检(监控/预警/归档提示) —— **流水线最后一步**。
+"""步骤19 备份 + 最终体检(监控/预警/归档提示) —— **流水线最后一步**。
 
-编号沿革: 本类原为 `number = 19`; 2026-10-09 用户定调"VOC 紧跟步骤18, 备份与体检放最后",
-于是 VOC 取 19、本步改为 20(FR-20)。目录名仍沿用遗留的「20_备份与监控」(按路径引用遍及
-日志/告警/账本/状态文件, 只改号不改名)。
+目录名沿用「20_备份与监控」，以便保留旧数据中的日志、告警和账本。
 
-输入: 全部类目产物(含步骤19 VOC 工作簿) + 归档(编排器每步已完成即时同步, 本步骤不重复做)
+输入: 全部类目产物 + 归档(编排器每步已完成即时同步, 本步骤不重复做)
 输出: 20_备份与监控/health-report.json(体检结果; progress/status/duration 等监控
       文件由编排器/state 自动维护, 本步骤只读)
 
@@ -58,10 +56,9 @@ def _is_not_found_status(status: str) -> bool:
 
 
 class Step17BackupMonitor(BaseStep):
-    # 2026-10-09: 19 → 20 —— VOC 占用 19(紧跟步骤18), 本步收尾(体检才能覆盖 VOC 产物)
-    number = 20
+    number = 19
     title = "备份与最终体检"
-    description = "FR-20: 全产物体检(抓取质量/连续失败/卡死/完整性/耗时)+预警推送+归档提示"
+    description = "FR-19: 全产物体检(抓取质量/连续失败/卡死/完整性/耗时)+预警推送+归档提示"
     artifacts = ["20_备份与监控/health-report.json"]
     archive_dirs = ["20_备份与监控"]
 
@@ -153,7 +150,7 @@ class Step17BackupMonitor(BaseStep):
                 continue
             notify.append_alert(alerts_file, c["level"], f"[{c['name']}] {c['message']}")
             if c["level"] == "CRIT":
-                notify.popup_critical(f"[步骤17体检] {c['name']}: {c['message']}")
+                notify.popup_critical(f"[步骤19体检] {c['name']}: {c['message']}")
         webhook = ctx.config.get("WECOM_WEBHOOK", "")
         if webhook:
             notify.push_alerts(webhook, alerts_file)
@@ -536,7 +533,8 @@ class Step17BackupMonitor(BaseStep):
         for n, row in steps:
             if not row["calls"]:
                 continue
-            txt = f"步骤{int(n):02d}={row['cost_cny']:.4f}元({row['total_tokens']}tok)"
+            label = "历史VOC" if int(n) == 19 else f"步骤{int(n):02d}"
+            txt = f"{label}={row['cost_cny']:.4f}元({row['total_tokens']}tok)"
             chs = _live_channels(row.get("by_channel"))
             if len(chs) > 1:
                 txt += "[" + " + ".join(
