@@ -225,8 +225,9 @@ def create_rules_skeleton(rules_path: str, cat: str,
     规则文件报错。词表由步骤18 冷启动聚类生成并写回 params.values。写回失败抛异常
     (调用方兜底)。
     """
+    from tools.attr_stability.feature_groups import expand_attributes
     attrs = [{"name": str(a.get("name") or "").strip(), "rule": "enum", "params": {}}
-             for a in spec_attrs if str(a.get("name") or "").strip()]
+             for a in expand_attributes(spec_attrs) if str(a.get("name") or "").strip()]
     rules: dict[str, Any] = {
         "_说明": _RULES_SKELETON_NOTE,
         "category": display_cat(cat),
@@ -265,7 +266,8 @@ def sync_rules_from_spec(rules_path: str, spec_attrs: Sequence[Mapping[str, Any]
         str(a.get("name") or "").strip(): a
         for a in (rules.get("attributes") or []) if isinstance(a, dict)
     }
-    spec_names = [str(a.get("name") or "").strip() for a in spec_attrs
+    from tools.attr_stability.feature_groups import expand_attributes
+    spec_names = [str(a.get("name") or "").strip() for a in expand_attributes(spec_attrs)
                   if str(a.get("name") or "").strip()]
     spec_set = set(spec_names)
     # 追加缺失(保持 spec 顺序)

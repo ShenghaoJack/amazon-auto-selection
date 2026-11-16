@@ -236,7 +236,8 @@ def contradiction_sources(spec: Mapping[str, Any], values_by_attr: Mapping[str, 
     优先级：`rules.values`（法条，更权威） > hint 的「典型取值」（例子）。
     """
     out: dict[str, list[str]] = {}
-    for a in (spec.get("attributes") or []):
+    from .feature_groups import iter_attribute_refs
+    for a in iter_attribute_refs(spec.get("attributes") or []):
         name = str(a.get("name") or "")
         if not name:
             continue
@@ -286,7 +287,8 @@ def _strip_all_contradictions_locked(
             raise SpecConcurrentChange("属性集在准备标注期间发生变化，请重新运行步骤17")
     src = contradiction_sources(spec, values_by_attr or {})
     changed: list[tuple[str, list[str]]] = []
-    for a in (spec.get("attributes") or []):
+    from .feature_groups import iter_attribute_refs
+    for a in iter_attribute_refs(spec.get("attributes") or []):
         name = str(a.get("name") or "")
         if not name:
             continue
@@ -337,7 +339,8 @@ def _sync_typical_values_locked(spec_path, values_by_attr, *, expected_revision=
         if spec_revision(spec) != expected_revision:
             raise SpecConcurrentChange("属性集在词表生成期间发生变化，请重新运行步骤17")
     n = 0
-    for a in (spec.get("attributes") or []):
+    from .feature_groups import iter_attribute_refs
+    for a in iter_attribute_refs(spec.get("attributes") or []):
         name = str(a.get("name") or "")
         if name not in values_by_attr:
             continue

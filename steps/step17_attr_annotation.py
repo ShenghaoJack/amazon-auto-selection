@@ -381,7 +381,8 @@ class Step17AttrAnnotation(BaseStep):
         except Exception as exc:  # noqa: BLE001
             raise StepDataError("消除矛盾断言后重读属性集失败 %s: %s"
                                 "（拒绝用旧内存继续，避免「改文件不改内存」）" % (spec_name, exc))
-        self._spec_attributes = [a for a in (spec.get("attributes") or [])
+        from tools.attr_stability.feature_groups import expand_attributes
+        self._spec_attributes = [a for a in expand_attributes(spec.get("attributes") or [])
                                  if isinstance(a, dict) and str(a.get("name") or "").strip()]
         if not self._spec_attributes:
             raise StepDataError("属性集规格为空(无属性), 请先在 Web 补充并确认")

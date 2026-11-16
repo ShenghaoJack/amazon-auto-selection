@@ -1105,7 +1105,8 @@ class Step16AttributeAnnotation(BaseStep):
         #   并集/池合并/同义归并/并入上一份 spec 之后**没有任何上限** —— 实测冷启动
         #   产出 33 个属性(>25)。这里统一截断; **人工确认过的上一份属性优先保留**,
         #   其余按票数(runs)降序, 再按原顺序。
-        prev_names = [str(a.get("name") or "") for a in ((previous or {}).get("attributes") or [])]
+        from tools.attr_stability.feature_groups import expand_attributes
+        prev_names = [str(a.get("name") or "") for a in expand_attributes((previous or {}).get("attributes") or [])]
         # ATTR_MAX 可配置: 默认 0 = 不设上限(价格段抽样会找到更多属性); 0/负数 = 不截断。
         max_attrs = self._cfg_num(ctx, "ATTR_MAX", 0)
         if max_attrs <= 0:
@@ -1143,6 +1144,21 @@ class Step16AttributeAnnotation(BaseStep):
         # 属性说明精简: 把每条详细 hint 总结成一句话 hint_short(供步骤17 注入提示词)。
         # 失败不阻断(步骤17 会兜底用完整 hint)。
         self._summarize_hints(ctx, attrs)
+        # 组仅改变顶层组织方式；步骤17和18使用原有、独立的子属性。
+        from tools.attr_stability.feature_groups import group_boolean_attributes, restore_confirmed_groups
+        attrs = restore_confirmed_groups(attrs, (previous or {}).get("attributes") or [],
+                                        self._parse_attr_exclude(ctx))
+        try:
+            attrs, _feature_groups = group_boolean_attributes(attrs, ctx.llm(),
+                                                                log=lambda message: self.log(ctx, message))
+        except Exception as exc:  # noqa: BLE001
+            self.log(ctx, "⚠ 功能分组失败，保留独立属性: %s" % exc)
+            _feature_groups = []
+        _n_bool = sum(str(a.get("name") or "").startswith("是否") for a in attrs)
+        self.log(ctx, "功能分组 %d 组；顶层是否属性 %d/%d (%.1f%%)，独立子项保留"
+                 % (len(_feature_groups), _n_bool, len(attrs), 100 * _n_bool / len(attrs) if attrs else 0))
+        if attrs and _n_bool / len(attrs) > 1 / 3:
+            self.log(ctx, "⚠ 是否属性比例仍高于三分之一：可分组项不足或需要保留人工定义，不强行删除功能")
         # ★ 2026-11-12: 写「属性合并与删除审查」清单（只记录，不改属性集）
         self._write_merge_review(ctx, attrs)
         spec = dict(previous or {})
@@ -1167,13 +1183,14 @@ class Step16AttributeAnnotation(BaseStep):
         # 一部分，应当在这里用 LLM 提出、写进 rules.json，供步骤17 标注时避开、
         # 供步骤18 校验/纠正。此前是我手写在 rules.json 里的 —— 那不对。
         # 跨属性约束: 属性过多时组合爆炸(73×73), LLM 调用会超时/重试卡死 → 跳过(步骤18 可事后校验)。
-        if len(attrs) <= 50:
+        _physical_attrs = expand_attributes(attrs)
+        if len(_physical_attrs) <= 50:
             try:
-                self._propose_cross_checks(ctx, attrs)
+                self._propose_cross_checks(ctx, _physical_attrs)
             except Exception as exc:  # noqa: BLE001 — 提不出不影响属性集
                 self.log(ctx, f"跨属性约束生成失败(忽略, 步骤18 仍可事后校验): {exc}")
         else:
-            self.log(ctx, "⚠ 属性数 %d > 50, 跳过跨属性约束生成(组合爆炸; 步骤18 可事后校验)" % len(attrs))
+            self.log(ctx, "⚠ 独立属性数 %d > 50, 跳过跨属性约束生成(组合爆炸; 步骤18 可事后校验)" % len(_physical_attrs))
 
     # ------------------------------------------------------------ 跨属性约束(步骤16 产出)
     _XC_SOURCE = "步骤16 自动生成"
@@ -1374,7 +1391,8 @@ class Step16AttributeAnnotation(BaseStep):
                 previous_spec = load_attr_spec(spec_path, allow_empty=True) if os.path.exists(spec_path) else None
                 expected_spec = spec_revision(previous_spec)
                 expected_rules = spec_revision(rules)
-                if previous_spec is not None and previous_spec["attributes"] != attrs:
+                from tools.attr_stability.feature_groups import expand_attributes
+                if previous_spec is not None and expand_attributes(previous_spec["attributes"]) != attrs:
                     self.log(ctx, "跨属性约束未生成：属性集已变化，保留新版，请重跑")
                     return
         except (OSError, ValueError) as exc:
@@ -1872,7 +1890,8 @@ class Step16AttributeAnnotation(BaseStep):
             _old_p = ctx.resolve_artifact(self.artifacts[0])
             if os.path.exists(_old_p):
                 _old_spec = load_attr_spec(_old_p, allow_empty=True)
-                _old_count = len([a for a in (_old_spec.get("attributes") or []) if isinstance(a, dict)])
+                from tools.attr_stability.feature_groups import expand_attributes
+                _old_count = len(expand_attributes(_old_spec.get("attributes") or []))
         except Exception:  # noqa: BLE001
             _old_count = 0
         if _old_count > 0:
@@ -1970,7 +1989,8 @@ class Step16AttributeAnnotation(BaseStep):
                 _old_path = ctx.resolve_artifact(self.artifacts[0])
                 if os.path.exists(_old_path):
                     _old = load_attr_spec(_old_path, allow_empty=True)
-                    for a in (_old.get("attributes") or []):
+                    from tools.attr_stability.feature_groups import expand_attributes
+                    for a in expand_attributes(_old.get("attributes") or []):
                         nm = str(a.get("name") or "").strip()
                         if nm:
                             _old_names.add(nm)
@@ -2179,34 +2199,17 @@ class Step16AttributeAnnotation(BaseStep):
                 self.log(ctx, "典型取值已注入「仅为示例、不限于此」说明: %d 个属性" % _n_tv)
         except Exception as exc:  # noqa: BLE001
             self.log(ctx, "⚠ 典型取值免责说明注入失败(忽略): %s" % exc)
-        # ★ 证据重叠检查(2026-10-21 通用规则, 零类目词): 两条 hint 命中**同一批判定词**
-        #   → 同一段原文能同时证明两者 → 这两个维度大概率重复(或边界没划清)。
-        #   位置: 必须放在 `attrs` 最终构建**之后**(曾放到前面 → NameError: attrs 未赋值)。
-        #   ★ 2026-10-27 用户口径: **只报警、不自动合并** —— 机械检测会误报(共用词常常是
-        #     "区分说明"里的词)且会漏(区分度过滤掉真重复), 只作人工复核提示;
-        #     真正的合并交给上方「全局归并」(含「值覆盖」规则)。
+        # 最终按完整定义找漏掉的同义项，再独立审核；仅共用证据不足以证明同义。
         try:
-            _ev = _evidence_overlap_pairs(attrs, min_shared=1, min_len=5)
-            if _ev:
-                self.log(ctx, "证据重叠: 发现 %d 组属性共用判定词，提交 LLM 判定是否合并" % len(_ev))
-                for _a, _b, _shared in _ev[:10]:
-                    self.log(ctx, "   %s ↔ %s 共用: %s" % (_a, _b, "、".join(_shared[:5])))
-                # ★ 2026-11-12: 把原本「只报警」的证据重叠检查接入 LLM 合并。
-                #   每次最多处理 40 对，避免 prompt 过长；合并失败的组自动保留原样。
-                _by_name = {str(a.get("name") or "").strip(): a for a in attrs}
-                _top_pairs = _ev[:40]
-                _raw = ctx.llm().chat_json(
-                    _build_overlap_judge_prompt(_top_pairs, _by_name),
-                    temperature=0.0, max_tokens=4000)
-                _decisions = _raw.get("decisions") if isinstance(_raw, dict) else None
-                if isinstance(_decisions, list) and _decisions:
-                    attrs, _merged_n = _apply_overlap_merges(attrs, _decisions)
-                    if _merged_n:
-                        self.log(ctx, "证据重叠合并完成: 合并 %d 组属性，剩余 %d 个" % (_merged_n, len(attrs)))
-                else:
-                    self.log(ctx, "⚠ LLM 未返回有效合并判定，证据重叠保持原样")
+            from tools.attr_stability.final_reconcile import reconcile_final_attributes
+            attrs, _verified_merges = reconcile_final_attributes(
+                attrs, ctx.llm(), log=lambda message: self.log(ctx, message))
+            if _verified_merges:
+                self._merge_audit.extend(_verified_merges)
+            self.log(ctx, "最终独立复核：合并 %d 组，剩余 %d 个属性"
+                     % (len(_verified_merges), len(attrs)))
         except Exception as exc:  # noqa: BLE001
-            self.log(ctx, "⚠ 证据重叠合并失败(忽略): %s" % exc)
+            self.log(ctx, "⚠ 最终同义独立复核失败，保留原属性: %s" % exc)
         # ★ 每属性 → 出现过的价格段(供 Web 按「维度 + 价格段」二次分组)。原始名 → 规范名 → 段。
         raw_to_bands: dict[str, set] = {}
         for lbl, names in band_attrs.items():
@@ -2611,7 +2614,8 @@ class Step16AttributeAnnotation(BaseStep):
             old = load_attr_spec(p, allow_empty=True)
         except ValueError as exc:
             raise StepDataError(str(exc)) from exc
-        prev: list[dict] = [a for a in (old.get("attributes") or [])
+        from tools.attr_stability.feature_groups import expand_attributes
+        prev: list[dict] = [a for a in expand_attributes(old.get("attributes") or [])
                             if isinstance(a, dict) and str(a.get("name") or "").strip()]
         if not prev:
             for a in fresh:
@@ -3013,6 +3017,7 @@ class Step16AttributeAnnotation(BaseStep):
    就不要再抽「是否低噪 / 是否静音」这类**没有阈值标准**的布尔; 只有布尔表达的是数值表达不了的**独立功能**
    (如 是否过热保护=安全机制、是否带加热=功能)时才抽。
 1.1 是否类比例以 25%-35% 为软参考，不是数量上限。先保证独立、安全及重要功能完整，不靠删除功能、改名或虚构非布尔属性凑比例。
+   可关联的独立功能在最终汇总时组织成功能组；本轮仍分别抽取各功能，保留各自三态与依据，不把相关功能当同义项。
    优先使用能表达完整状态的类型/方式/规格：例如食物类型保留明确支持、明确排除、未知；识别方式记录具体技术。
    只有主属性能够无损表达该功能的 是/否/未明确 三态及多值共存，且来源与部件一致时，才可省略重复布尔列；否则保留并标注待复核。
    原文未提不等于否；仅提到一个特征不排除其他特征。低频但有明确依据且有区分度的独立功能保留。

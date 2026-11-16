@@ -553,7 +553,8 @@ class Workspace:
         spec = read_json(self.spec_path)
         if spec.get("status") != "confirmed":
             raise ValueError("步骤16属性集尚未确认")
-        attributes = [a for a in spec.get("attributes", []) if isinstance(a, dict) and a.get("name")]
+        from .feature_groups import expand_attributes
+        attributes = [a for a in expand_attributes(spec.get("attributes", [])) if isinstance(a, dict) and a.get("name")]
         names = [a["name"] for a in attributes]
         if not names or len(names) != len(set(names)):
             raise ValueError("属性集为空或有重复属性")

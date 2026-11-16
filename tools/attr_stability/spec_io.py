@@ -71,6 +71,7 @@ def validate_attr_spec(spec, *, allow_empty=False):
     if not spec["attributes"] and not allow_empty:
         raise ValueError("属性集为空，至少需要一个属性")
     names = set()
+    child_names = set()
     for entry in spec["attributes"]:
         if not isinstance(entry, dict):
             raise ValueError("每个属性必须是对象")
@@ -83,6 +84,24 @@ def validate_attr_spec(spec, *, allow_empty=False):
         for field in ("hint", "hint_short"):
             if field in entry and not isinstance(entry[field], str):
                 raise ValueError(f"{name} 的 {field} 必须是字符串")
+        if 'group_members' in entry:
+            children = entry['group_members']
+            if not isinstance(children, list) or len(children) < 2:
+                raise ValueError(f"{name} 的功能组至少需要两个子属性")
+            for child in children:
+                if not isinstance(child, dict) or 'group_members' in child:
+                    raise ValueError(f"{name} 的子属性格式无效")
+                child_name = child.get('name')
+                if not isinstance(child_name, str) or not child_name.strip() or child_name != child_name.strip():
+                    raise ValueError(f"{name} 的子属性名称无效")
+                if child_name in child_names:
+                    raise ValueError(f"子属性名重复: {child_name}")
+                child_names.add(child_name)
+                for field in ('hint', 'hint_short'):
+                    if field in child and not isinstance(child[field], str):
+                        raise ValueError(f"{child_name} 的 {field} 必须是字符串")
+    if names & child_names:
+        raise ValueError('功能组子属性与顶层属性名称冲突: %s' % sorted(names & child_names))
     return spec
 
 
@@ -164,7 +183,8 @@ def write_json_atomic(path, value):
 def assert_rule_alignment(spec, rules):
     validate_attr_spec(spec)
     validate_attr_spec(rules)
-    expected = {a["name"] for a in spec["attributes"]}
+    from tools.attr_stability.feature_groups import expand_attributes
+    expected = {a["name"] for a in expand_attributes(spec["attributes"])}
     actual = {a["name"] for a in rules["attributes"]}
     if actual != expected:
         raise ValueError("属性集与规则不一致: 缺少 %s，多余 %s；请重新保存并确认属性集"
@@ -196,7 +216,8 @@ def commit_attr_spec(cat_root, draft, *, expected_revision=None):
             rules = {"category": root.name, "attributes": []}
             target_rules = root / (cat_rules_stem(root.name) + ".rules.json")
         existing = {a["name"]: a for a in rules["attributes"]}
-        names = [a["name"] for a in spec["attributes"]]
+        from tools.attr_stability.feature_groups import expand_attributes
+        names = [a["name"] for a in expand_attributes(spec["attributes"])]
         added = [n for n in names if n not in existing]
         removed = [n for n in existing if n not in names]
         rules["attributes"] = [existing.get(n, {"name": n, "rule": "enum", "params": {}})
@@ -347,7 +368,8 @@ def verify_annotation_contract(spec, rules, result, rows, *, source_path):
             or len(set(incoming)) != len(incoming) or len(set(outgoing)) != len(outgoing)
             or set(incoming) != set(outgoing)):
         raise ValueError("步骤17交付行号缺失、重复或多余")
-    names = [a["name"] for a in spec["attributes"]]
+    from tools.attr_stability.feature_groups import expand_attributes
+    names = [a["name"] for a in expand_attributes(spec["attributes"])]
     for row in delivered:
         attrs = row.get("attributes")
         if not isinstance(attrs, dict) or any(n not in attrs or n + "_来源" not in attrs for n in names):

@@ -1747,7 +1747,7 @@ function wire() {
   const attrTbl = $("attrRows");
   if (attrTbl) attrTbl.addEventListener("input", ev => {
     if (ev.target && ev.target.classList
-        && (ev.target.classList.contains("attr-name") || ev.target.classList.contains("attr-hint"))) {
+        && (ev.target.classList.contains("attr-name") || ev.target.classList.contains("attr-hint") || ev.target.classList.contains("attr-group-hint"))) {
       if (ev.target.classList.contains("attr-hint")) {
         ev.target.style.height = "auto";
         ev.target.style.height = Math.max(72, ev.target.scrollHeight) + "px";
@@ -1758,6 +1758,8 @@ function wire() {
   if (attrTbl) attrTbl.addEventListener("click", ev => {
     if (ev.target && ev.target.classList && ev.target.classList.contains("attr-del")) {
       deleteAttrRow(ev.target);
+    } else if (ev.target && ev.target.classList && ev.target.classList.contains("attr-ungroup")) {
+      ungroupAttrRow(ev.target);
     } else if (ev.target && ev.target.classList && ev.target.classList.contains("attr-ignore")) {
       ignoreAttrRow(ev.target);
     }
@@ -3445,7 +3447,7 @@ function syncAttrButtons() {
   const saveBtn = $("btnSaveAttr"), confBtn = $("btnConfirmAttr");
   if (saveBtn) saveBtn.disabled = __attrBusy || count === 0 || !__attrDirty;
   if (confBtn) confBtn.disabled = __attrBusy || __attrDirty || count === 0 || status === "confirmed";
-  document.querySelectorAll(".attr-name,.attr-hint,.attr-del,.attr-ignore,[data-ex-res],[data-ex-force],[data-ex-promote],#attrNewName,#attrNewHint,#btnAddAttr").forEach(el => { el.disabled = __attrBusy; });
+  document.querySelectorAll(".attr-name,.attr-hint,.attr-group-hint,.attr-del,.attr-ungroup,.attr-ignore,[data-ex-res],[data-ex-force],[data-ex-promote],#attrNewName,#attrNewHint,#btnAddAttr").forEach(el => { el.disabled = __attrBusy; });
 }
 
 async function applyAttrAction(action) {
@@ -3478,21 +3480,27 @@ function attrDimension(name) {
   return "产品特性";
 }
 
-function attrRow(name, hint, idx, bandHtml, isNew, bands, susp) {
+function attrRow(name, hint, idx, bandHtml, isNew, bands, susp, children) {
   const dn = (isNew === true) ? "1" : (isNew === false ? "0" : "");
   const bj = esc(JSON.stringify(bands || []));
+  const grouped = Array.isArray(children) && children.length > 0;
+  const gj = esc(JSON.stringify(grouped ? children : []));
+  const childPanel = grouped ? `<details style="margin-top:8px"><summary>查看和编辑 ${children.length} 个独立子项</summary>`
+    + children.map((c, i) => `<label style="display:block;margin-top:8px">${esc(c.name)}${c.is_new === true ? "（新增）" : ""}<textarea class="attr-group-hint attr-hint" data-child-index="${i}" rows="2" aria-label="${esc(c.name)}的说明">${esc(c.hint || "")}</textarea></label>`).join("")
+    + `</details><small>子项分别标注和标准化，状态与依据独立保留。</small>` : "";
   // ★ 2026-10-26: 疑似幻觉（高价段文案提及率 0%）—— 只标记，不自动删
   const suspBadge = susp
     ? `<span class="attr-susp" title="高价段文案提及率 0%：可能是模型凭空补充、原文并未出现的维度。请人工确认是否真实存在（系统不会自动删）">⚠ 疑似幻觉</span>`
     : "";
-  return `<tr class="attr-row${susp ? " is-susp" : ""}" data-is-new="${dn}" data-bands="${bj}" data-susp="${susp ? "1" : "0"}">
+  return `<tr class="attr-row${susp ? " is-susp" : ""}" data-is-new="${dn}" data-bands="${bj}" data-group="${gj}" data-susp="${susp ? "1" : "0"}">
     <td class="attr-idx" style="color:var(--txt-2)">${idx}</td>
-    <td><input class="attr-name" value="${esc(name)}" placeholder="属性名(中文)">${suspBadge}</td>
+    <td><input class="attr-name" value="${esc(name)}" placeholder="属性名(中文)" ${grouped ? "readonly title=功能组名称暂不可编辑" : ""}>${suspBadge}</td>
     <td class="attr-band-cell">${bandHtml || ""}</td>
-    <td><textarea class="attr-hint" rows="2" placeholder="判定依据/典型取值/易混区分/未明确">${esc(hint)}</textarea></td>
+    <td><textarea class="attr-hint" rows="2" placeholder="判定依据/典型取值/易混区分/未明确" ${grouped ? "readonly" : ""}>${esc(hint)}</textarea>${childPanel}</td>
     <td>
       <button class="attr-del btn-sm btn-ghost" title="删除该属性(仅本轮, 下轮 AI 可能再抽回)">删除</button>
-      <button class="attr-ignore btn-sm btn-ghost" title="加进不要清单并移除(下轮不再抽回; 范围见下方「已排除属性」)">忽略</button>
+      ${grouped ? `<button class="attr-ungroup btn-sm btn-ghost" title="还原为独立子属性">拆分</button>` : ""}
+      ${grouped ? "" : `<button class="attr-ignore btn-sm btn-ghost" title="加进不要清单并移除(下轮不再抽回; 范围见下方「已排除属性」)">忽略</button>`}
     </td>
   </tr>`;
 }
@@ -3596,11 +3604,11 @@ function renderAttrRows(attrs) {
   const renderGroup = (list) => {
     const groups = {};
     list.forEach(a => {
-      const d = attrDimension(a.name);
+      const d = Array.isArray(a.group_members) ? "功能" : attrDimension(a.name);
       (groups[d] = groups[d] || []).push(a);
     });
     const html = [];
-    const rowOf = (a) => attrRow(a.name, a.hint, 0, hasBand ? bandStrip(a) : "", a.is_new, a.bands, a.疑似幻觉 === true);
+    const rowOf = (a) => attrRow(a.name, a.hint, 0, hasBand ? bandStrip(a) : "", a.is_new, a.bands, a.疑似幻觉 === true, a.group_members);
     ATTR_DIM_ORDER.forEach(d => {
       const l = groups[d];
       if (!l || !l.length) return;
@@ -3709,7 +3717,7 @@ function renderAttrMergeReview() {
         + `</ul></div>` : "")
     + (definitions.length ? `<div style="margin-top:8px"><b>属性定义待人工确认</b><ul style="margin:4px 0 0 18px;line-height:1.8">`
         + definitions.slice(0, 60).map(d => {
-          const now = (attrData.attributes || []).find(a => a.name === d["属性"]);
+          const now = (attrData.attributes || []).flatMap(a => a.group_members || [a]).find(a => a.name === d["属性"]);
           const changed = !now || String(now.hint || "").trim() !== String(d["审查后的说明"] || d["原说明"] || "").trim();
           const tips = (d["建议"] || []).map(x => [x["建议名称"] ? "建议名称：" + x["建议名称"] : "", x["建议说明"] ? "建议说明：" + x["建议说明"] : "", x["处理建议"] || ""].filter(Boolean).join("；")).join("；");
           return `<li><b>${esc(d["属性"] || "")}</b>${changed ? "（当前定义已变化，请重新核对）" : ""}<div>原说明：${esc(d["原说明"] || "")}</div><div>${esc((d["问题"] || []).map(x => x["原因"] || "").join("；"))}</div><div>${esc(tips || "模型建议不可用，请人工确认处理方式。")}</div></li>`;
@@ -3958,6 +3966,15 @@ function collectAttrRows() {
       is_new: dn === "1" ? true : (dn === "0" ? false : undefined),
       bands: bands,
     };
+    let children = [];
+    try { children = JSON.parse(tr.dataset.group || "[]"); } catch (e) { children = []; }
+    if (children.length) {
+      tr.querySelectorAll(".attr-group-hint").forEach(el => {
+        const i = Number(el.dataset.childIndex);
+        if (children[i]) children[i].hint = el.value.trim();
+      });
+      row.group_members = children;
+    }
     if (tr.dataset.susp === "1") row.疑似幻觉 = true;
     out.push(row);
   });
@@ -3980,6 +3997,11 @@ function addAttrRow() {
 
 function deleteAttrRow(btn) {
   const tr = btn && btn.closest("tr");
+  if (tr) {
+    let children = [];
+    try { children = JSON.parse(tr.dataset.group || "[]"); } catch (e) { children = []; }
+    if (children.length && !window.confirm(`删除该功能组会同时删除 ${children.length} 个子属性，确定删除吗？`)) return;
+  }
   if (tr) tr.remove();
   const rows = $("attrRows");
   const remaining = collectAttrRows();
@@ -3990,6 +4012,17 @@ function deleteAttrRow(btn) {
       renderAttrRows(remaining);   // 重新按维度分组(清掉可能为空的组头)
     }
   }
+  markAttrDirty();
+}
+
+function ungroupAttrRow(btn) {
+  const rows = $("attrRows"), tr = btn && btn.closest("tr");
+  if (!rows || !tr) return;
+  const index = Array.from(rows.querySelectorAll("tr.attr-row")).indexOf(tr);
+  const current = collectAttrRows(), group = current[index];
+  if (index < 0 || !group || !Array.isArray(group.group_members)) return;
+  current.splice(index, 1, ...group.group_members.map(c => ({name:c.name, hint:c.hint, is_new:c.is_new, bands:[]})));
+  renderAttrRows(current);
   markAttrDirty();
 }
 

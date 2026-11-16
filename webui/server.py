@@ -4013,7 +4013,8 @@ class Handler(BaseHTTPRequestHandler):
         validate_attr_spec(spec)
         revision = spec_revision(spec) if expected_revision is None else expected_revision
         attrs = [a for a in spec["attributes"] if isinstance(a, dict)]
-        for a in attrs:
+        from tools.attr_stability.feature_groups import iter_attribute_refs
+        for a in attrs + iter_attribute_refs(attrs):
             if str(a.get("name") or "").strip() == name:
                 if hint and not str(a.get("hint") or "").strip():
                     a["hint"] = hint
@@ -4049,6 +4050,11 @@ class Handler(BaseHTTPRequestHandler):
                     "疑似幻觉": bool(a.get("疑似幻觉")),
                     "疑似幻觉原因": str(a.get("疑似幻觉原因") or ""),
                 })
+                if isinstance(a.get("group_members"), list):
+                    attrs[-1]["group_members"] = [{"name": c.get("name", ""), "hint": c.get("hint", ""),
+                                                     "is_new": c.get("is_new") is True}
+                                                    for c in a["group_members"] if isinstance(c, dict)]
+                    attrs[-1]["group_reason"] = str(a.get("group_reason") or "")
         # ★ 属性 → 出现过的价格段(供前端按「维度 + 价格段」二次分组), 无清单则不返回
         bands_map: dict[str, list] = {}
         band_order: list[str] = []
@@ -4421,8 +4427,13 @@ class Handler(BaseHTTPRequestHandler):
         if previous_spec is not None and not isinstance(body.get("expected_revision"), str):
             raise ValueError("保存已有属性集必须携带版本，请刷新页面后再保存")
         prev_by_name: dict[str, dict] = {}
+        prev_top_names: list[str] = []
         if previous_spec is not None:
             prev_by_name = {a["name"]: a for a in previous_spec["attributes"]}
+            prev_top_names = list(prev_by_name)
+            from tools.attr_stability.feature_groups import iter_attribute_refs
+            for child in iter_attribute_refs(previous_spec["attributes"]):
+                prev_by_name.setdefault(child["name"], child)
         attrs: list[dict] = []
         seen: set[str] = set()
         for it in raw:
@@ -4441,6 +4452,23 @@ class Handler(BaseHTTPRequestHandler):
                 hint_short = str(prev.get("hint_short") or "").strip() \
                     if str(prev.get("hint") or "").strip() == hint else ""
                 entry = dict(prev)
+                if isinstance(prev.get("group_members"), list):
+                    supplied = it.get("group_members")
+                    old_children = prev["group_members"]
+                    if (not isinstance(supplied, list) or len(supplied) != len(old_children)
+                            or any(not isinstance(c, dict) for c in supplied)
+                            or [c.get("name") for c in supplied] != [c.get("name") for c in old_children]):
+                        raise ValueError(f"功能组 {name} 的子属性已变化，请刷新后再保存")
+                    children = []
+                    for old_child, new_child in zip(old_children, supplied):
+                        child = dict(old_child)
+                        child_hint = str(new_child.get("hint") or "").strip()
+                        if child_hint != str(old_child.get("hint") or "").strip():
+                            child["hint"] = child_hint
+                            child["modified"] = True
+                            child.pop("hint_short", None)
+                        children.append(child)
+                    entry["group_members"] = children
                 entry.update({
                     "name": name,
                     "hint": hint,
@@ -4467,7 +4495,7 @@ class Handler(BaseHTTPRequestHandler):
         #   "我删了 = 我不要它" → 保存时**自动**写进 `ATTR_EXCLUDE`，不用再点一次。
         #   **范围默认本市场**（写进本运行的 config.yaml）；要全类目排除，另在共享层加。
         #   恢复：Web「已排除」区域移除条目即可（【强制加回】= 移除 + 直接加进属性集）。
-        removed = [n for n in prev_by_name if n not in seen]
+        removed = [n for n in prev_top_names if n not in seen]
         excluded_note = ""
         if removed:
             # 2026-10-19 用户口径: **不再自动写「不要清单」**。原因: 每次抽取的属性名不同,
@@ -4503,7 +4531,8 @@ class Handler(BaseHTTPRequestHandler):
             from datetime import datetime
 
             from tools.attr_stability.synonym_layer import record_spec
-            _rec = record_spec(str(path.parent), cat, spec["attributes"],
+            from tools.attr_stability.feature_groups import expand_attributes
+            _rec = record_spec(str(path.parent), cat, expand_attributes(spec["attributes"]),
                                now=datetime.now().isoformat(timespec="seconds"))
             if _rec.get("ok"):
                 push_cat(cat, "全局词库已更新: %d 规范名 · 新增 %d 别名 · 挖出 %d 条规则"
