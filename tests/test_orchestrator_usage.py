@@ -160,6 +160,45 @@ def test_explicit_run_id_wins_over_snapshot(tmp_path):
     assert r.ctx.usage().run_id == "MY-RUN"
 
 
+def test_repeated_snapshot_does_not_warn_or_lose_usage(tmp_path):
+    r = _runner(tmp_path)
+    snap = r.snapshot_dir()
+    meter = r.ctx.usage()
+    r.ctx.begin_step(7)
+    meter.record(USAGE, channel="text", model="deepseek-flash", at=MON_OFF)
+    r.ctx.finish_step(7, "DONE")
+    r.snapshot_dir()
+    assert meter.run_id == os.path.basename(snap)
+    assert "meter 已创建" not in _log_text(r)
+    assert "tokens 1658" in r._usage_suffix()
+
+
+def test_monitor_sync_uses_configured_final_step(tmp_path, monkeypatch):
+    import core.orchestrator as orch
+    r = _runner(tmp_path)
+    r.snapshot_dir()
+    calls = []
+    monkeypatch.setattr(orch, "sync_step_dir", lambda *args: calls.append(args))
+    monkeypatch.setattr(orch, "MONITOR_STEP", 19)
+    r._sync_monitor_to_snapshot()
+    assert calls and calls[0][0] == 19
+
+
+def test_sellersprite_precheck_failure_is_logged(tmp_path, monkeypatch):
+    from steps.step00_bestsellers import Step00Bestsellers
+
+    r = _runner(tmp_path)
+    monkeypatch.setattr(Step00Bestsellers, "ensure_amazon_login", lambda self, ctx: None)
+    def fail(self, ctx):
+        raise RuntimeError("连接浏览器失败")
+    monkeypatch.setattr(Step00Bestsellers, "ensure_sellersprite_login", fail)
+    with pytest.raises(RuntimeError, match="连接浏览器失败"):
+        r._precheck_login([9, 11])
+    log = _log_text(r)
+    assert "开始检查卖家精灵浏览器和登录态" in log
+    assert "卖家精灵登录态预检查失败: RuntimeError" in log
+
+
 # ------------------------------------------------------------------ Step 2: 完成行与归档
 
 def test_usage_suffix_reads_ledger_by_run_id(tmp_path):

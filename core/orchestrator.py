@@ -301,7 +301,12 @@ class PipelineRunner:
             if need_amazon:
                 s0.ensure_amazon_login(self.ctx)
             if need_ss:
-                s0.ensure_sellersprite_login(self.ctx)
+                self.log.info("开始检查卖家精灵浏览器和登录态")
+                try:
+                    s0.ensure_sellersprite_login(self.ctx)
+                except Exception as exc:
+                    self.log.error("卖家精灵登录态预检查失败: %s: %s", type(exc).__name__, exc)
+                    raise
         self.log.info("登录态预检查通过")
 
     def _precheck_cookie(self) -> None:
@@ -541,7 +546,7 @@ class PipelineRunner:
         if not getattr(self, "_snapshot", None):
             return
         try:
-            sync_step_dir(20, self.paths.monitor_dir(), self._snapshot, self.paths)
+            sync_step_dir(MONITOR_STEP, self.paths.monitor_dir(), self._snapshot, self.paths)
         except Exception as exc:  # noqa: BLE001 — 补同步失败不影响流程结论
             self.log.warning(f"监控目录补同步失败(不阻断): {type(exc).__name__}: {exc}")
 

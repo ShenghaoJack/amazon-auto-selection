@@ -6055,9 +6055,19 @@ class Handler(BaseHTTPRequestHandler):
         if not isinstance(overrides, dict):
             raise ValueError("overrides 必须是对象")
 
-        # ★ 2026-11-12: SS_CDP_URL 留空/auto → 自动分配空闲端口（按用户优先复用），不改配置文件
-        _cdp_probe = str((overrides or {}).get("SS_CDP_URL") or "").strip().lower()
-        if _cdp_probe in ("", "auto"):
+        # 本次显式覆盖 > 类目配置 > 自动分配。旧逻辑只看 overrides，
+        # 将类目配置中的固定端口误覆盖成另一个空闲端口。
+        _cdp_override = str(overrides.get("SS_CDP_URL") or "").strip()
+        _cdp_base = str(load_yaml_file(base).get("SS_CDP_URL") or "").strip()
+        _explicit_auto = _cdp_override.lower() == "auto"
+        if not _cdp_override and _cdp_base and _cdp_base.lower() != "auto":
+            # 前端可能传空值；不让空值覆盖基础配置的有效端口。
+            overrides = dict(overrides)
+            overrides.pop("SS_CDP_URL", None)
+        _needs_auto = _explicit_auto or (
+            not _cdp_override and _cdp_base.lower() in ("", "auto")
+        )
+        if _needs_auto:
             try:
                 from core.ss_lock import pick_port
                 _me = str((getattr(self, "_user", None) or {}).get("name") or "")

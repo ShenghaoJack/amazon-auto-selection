@@ -62,3 +62,24 @@ def test_ensure_timeout_returns_false():
 def test_cdp_alive_false_when_no_server():
     """探测到未监听端口应快速返回 False(不抛异常)。"""
     assert _cdp_alive("http://127.0.0.1:1") is False
+
+
+def test_cli_auto_port_is_stored_and_used(tmp_path, monkeypatch):
+    from core.config import Config
+    from core.paths import Paths
+    from core import ss_lock
+    import steps.base as base
+
+    captured = {}
+    class FakeBrowser:
+        def __init__(self, config, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setattr(ss_lock, "pick_port", lambda username: 9232)
+    monkeypatch.setattr(base, "BrowserAutomation", FakeBrowser)
+    config = Config({"CAT": "UnitTest", "DATA_ROOT": str(tmp_path),
+                     "SS_CDP_URL": "auto", "DRY_RUN": False})
+    ctx = base.StepContext(config, Paths(config))
+    ctx.browser("sellersprite")
+    assert config.get("SS_CDP_URL") == "http://127.0.0.1:9232"
+    assert captured["cdp_url"] == "http://127.0.0.1:9232"

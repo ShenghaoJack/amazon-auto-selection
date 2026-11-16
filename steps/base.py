@@ -80,12 +80,14 @@ class StepContext:
     def set_run_id(self, run_id: str) -> None:
         """设置本轮的账本身份(编排器建立归档快照后立即调用)。
 
-        必须在 meter 首次创建**之前**调用; 已经创建过就忽略并告警(说明调用时机错了)。
+        meter 已绑定同一 run_id 时无需重复绑定；绑定其他 run_id 时不改变既有账目。
         """
         rid = str(run_id or "").strip()
         if not rid:
             return
         if self._usage is not None:
+            if str(self._usage.run_id) == rid:
+                return
             self.log.warning(f"LLM 用量 meter 已创建, run_id={rid} 不会生效(调用时机过早/过晚)")
             return
         self._usage_run_id = rid
@@ -153,14 +155,18 @@ class StepContext:
 
             profile = profile_dir or self.paths.profile_ss()
             cdp_url = str(self.config.get("SS_CDP_URL", "") or "").strip() or None
+            if cdp_url and cdp_url.lower() == "auto":
+                cdp_url = None
             # 2026-11-13: 配置里已不再保留 SS_CDP_URL —— 由系统自动分配空闲 CDP 端口
             #   Web 端启动时已注入；这里兜住 CLI(main.py run) 等其它入口。
             if not cdp_url and use_cdp is not False:
                 try:
                     from core.ss_lock import pick_port
                     cdp_url = 'http://127.0.0.1:%d' % pick_port('')
-                    self.config['SS_CDP_URL'] = cdp_url
-                except Exception:
+                    self.config.set('SS_CDP_URL', cdp_url)
+                except Exception as exc:
+                    self.log.warning("卖家精灵 CDP 自动分配失败，回退有头浏览器: %s: %s",
+                                     type(exc).__name__, exc)
                     cdp_url = None
             wait = float(self.config.get("SS_BROWSER_LOCK_WAIT", DEFAULT_WAIT_SECONDS) or 0)
             if cdp_url and use_cdp is not False:

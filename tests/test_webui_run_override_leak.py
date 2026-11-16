@@ -41,7 +41,7 @@ class _FakeRunner:
         return []
 
     def start(self, cmd, label, base_config, effective_conf, cat, data_root, mode,
-              from_step, overrides, extra_env=None):
+              from_step, overrides, extra_env=None, **kwargs):
         self.started.append({"cmd": cmd, "cat": cat, "env": dict(extra_env or {}),
                              "overrides": dict(overrides or {})})
         return {"active": True, "cat": cat, "pid": 4242, "label": label,
@@ -56,6 +56,8 @@ def server(ws_tmp, monkeypatch):
     monkeypatch.setattr(s, "RUN_DIR", root / ".webui" / "runs")
     s.RUN_DIR.mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(s, "RING", s.RingLog())
+    # 该测试直接构造 Handler 而非经过登录中间件；权限校验由专门的鉴权测试覆盖。
+    monkeypatch.setattr(s.Handler, "_require_run", lambda self, cat: None)
     monkeypatch.setattr(s, "_lock_live_started", lambda cat, droot: (False, None, False))
     runner = _FakeRunner()
     monkeypatch.setattr(s, "RUNNER", runner)
@@ -107,3 +109,33 @@ def test_run_without_override_still_syncs_category_config(server, ws_tmp):
     started = server._test_runner.started[-1]
     assert "--dry-run" not in started["cmd"]
     assert started["env"]["PIPELINE_CONFIG_SOURCE"].endswith(f"data{os.sep}{CAT}{os.sep}config.yaml")
+
+
+@pytest.mark.parametrize(
+    ("base_port", "overrides", "expected", "allocates"),
+    [
+        ("http://127.0.0.1:9222", {}, "http://127.0.0.1:9222", False),
+        ("http://127.0.0.1:9222", {"SS_CDP_URL": ""}, "http://127.0.0.1:9222", False),
+        ("http://127.0.0.1:9222", {"SS_CDP_URL": "http://127.0.0.1:9224"}, "http://127.0.0.1:9224", False),
+        ("http://127.0.0.1:9222", {"SS_CDP_URL": "auto"}, "http://127.0.0.1:9231", True),
+        ("auto", {}, "http://127.0.0.1:9231", True),
+        ("", {}, "http://127.0.0.1:9231", True),
+    ],
+)
+def test_run_uses_configured_cdp_or_explicit_auto(server, ws_tmp, monkeypatch,
+                                                  base_port, overrides, expected, allocates):
+    import core.ss_lock as ss_lock
+    cfg = _cfg_path(ws_tmp)
+    cfg.write_text(cfg.read_text(encoding="utf-8") + f'SS_CDP_URL: "{base_port}"\n', encoding="utf-8")
+    before = cfg.read_text(encoding="utf-8")
+    calls = []
+    monkeypatch.setattr(ss_lock, "pick_port", lambda user: calls.append(user) or 9231)
+    h = server.Handler.__new__(server.Handler)
+    result = h._api_run({"config_file": f"data/{CAT}/config.yaml", "mode": "resume",
+                         "overrides": overrides})
+    assert result["ok"] is True
+    started = server._test_runner.started[-1]
+    conf_path = started["cmd"][started["cmd"].index("--config") + 1]
+    assert server.load_yaml_file(Path(conf_path))["SS_CDP_URL"] == expected
+    assert bool(calls) is allocates
+    assert cfg.read_text(encoding="utf-8") == before
