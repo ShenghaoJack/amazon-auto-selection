@@ -450,8 +450,6 @@ class PipelineRunner:
                 self.log.info(f"断点续跑: 步骤 {from_step}-{start - 1} 已完成, 从步骤 {start} 开始")
             else:
                 self.log.info(f"从步骤 {start} 开始执行")
-            # 交给依赖表判断到底要不要 COOKIE/亚马逊/卖家精灵。
-            self._precheck_login(num for num in PIPELINE_STEP_NUMBERS if num >= start)
         steps = {s.number: s for s in get_steps()}
         self._backfill_synced_steps(start)
         try:
@@ -470,6 +468,11 @@ class PipelineRunner:
                 step = steps.get(num)
                 if step is None:
                     self.log.error(f"步骤 {num} 未注册")
+                    return 2
+                # 步骤 0 自己完成两站登录检查；其余步骤只在实际执行前检查自身依赖。
+                # 避免步骤 11 的卖家精灵问题阻断与之无关的步骤 9/10。
+                if num != 0 and not self._precheck_step_login(num):
+                    self._log_run_summary(f"步骤 {num:02d} 执行前登录检查失败")
                     return 2
                 code = self._run_one(step)
                 if code == 3:
@@ -672,6 +675,18 @@ class PipelineRunner:
             self.log.info("⏸ 步骤 8 已完成，请核对关键词清单并确认后继续。")
         return 0
 
+    def _precheck_step_login(self, num: int) -> bool:
+        """检查单步依赖；失败时保留步骤状态并将原因写入持久日志。"""
+        try:
+            self._precheck_login([num])
+            return True
+        except Exception as exc:
+            msg = (f"步骤 {num:02d} 执行前登录检查失败: "
+                   f"{type(exc).__name__}: {exc}；该步骤尚未开始，请处理后续跑")
+            self.log.exception(msg)
+            notify.append_alert(self.paths.monitor_file("monitor-alerts.txt"), notify.WARN, msg)
+            return False
+
     def _keyword_confirmation_pending(self) -> bool:
         from core import keyword_confirmation as kc
         gate = kc.read(self.paths.cat_root)
@@ -823,7 +838,9 @@ class PipelineRunner:
         # 单步运行只检查**这一步自己**依赖的登录态: 纯本地步骤(2/3/4/7/8/14-19)与
         # MCP 接口步骤(5/6)不弹浏览器也不读 COOKIE, 由 _precheck_login 依赖表直接跳过;
         # 步骤 0/1/9/10 查亚马逊, 0/11/12/13 查卖家精灵, 1/10 另查 COOKIE
-        self._precheck_login([num])
+        if not self._precheck_step_login(num):
+            self._log_run_summary(f"步骤 {num:02d} 执行前登录检查失败")
+            return 2
         if not getattr(self, "_snapshot", None):
             self.snapshot_dir()
         self._log_price_source()
