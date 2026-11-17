@@ -25,6 +25,7 @@ import threading
 import time
 import uuid
 import webbrowser
+import yaml
 from collections import deque
 from functools import lru_cache
 from datetime import datetime
@@ -59,6 +60,7 @@ STEP_COUNT = 20      # 0–19，末步为备份与最终体检
 # 配置清单扫描缓存(2026-10-09 性能): 键值指纹见 _scan_configs(); 短 TTL 只为兜住"目录改名"这类
 # 不体现在 config.yaml mtime 上的变化(改配置本身会立刻使指纹失效)。
 _SCAN_CONFIGS_CACHE: dict = {}
+_RUN_START_LOCK = threading.Lock()
 _SCAN_CONFIGS_TTL = 60.0     # 只用于兜住『目录改名』这类不体现在 config.yaml mtime 上的变化;
                              # 配置内容一改 mtime_ns 即失效, 写配置入口还会显式清缓存
 
@@ -265,6 +267,14 @@ def load_yaml_file(path: Path) -> dict:
     with open(path, "r", encoding="utf-8-sig") as fh:
         data = yaml.safe_load(fh) or {}
     return data if isinstance(data, dict) else {}
+
+
+_PLACEHOLDER_CAT_RE = re.compile(r"(xxx|template|示例|样例|placeholder|YYYYMM|your-category)", re.I)
+
+
+def _is_placeholder_cat_fallback(cat: str) -> bool:
+    """与 core.category_config.is_placeholder_cat 保持一致的降级判断。"""
+    return not cat or bool(_PLACEHOLDER_CAT_RE.search(cat))
 
 
 def invalidate_config_cache() -> None:
@@ -759,7 +769,21 @@ def suggest_free_cdp_port(ignore_cat: str = "") -> int:
     return 9223
 
 
-def run_start_guard(cat: str, data_root: str, runner=None) -> list[dict]:
+def _run_config_values(run: dict) -> dict:
+    """运行中的实际配置优先；自动端口只存在于运行快照中。"""
+    effective = str(run.get("effective_conf") or "").strip()
+    if effective:
+        try:
+            values = load_yaml_file(Path(effective))
+            if not isinstance(values, dict):
+                raise ValueError("运行配置不是映射")
+            return values
+        except Exception as exc:
+            raise UserFacingError("无法读取正在运行任务的实际配置，不能安全判断浏览器端口冲突") from exc
+    return _cat_config_values(str(run.get("cat") or ""), str(run.get("data_root") or "data"))
+
+
+def run_start_guard(cat: str, data_root: str, runner=None, effective_config=None) -> list[dict]:
     """启动前的**并行守门**(2026-09-15, 用户需求: 看板里同时跑多个类目)。
 
     规则:
@@ -793,12 +817,12 @@ def run_start_guard(cat: str, data_root: str, runner=None) -> list[dict]:
     try:
         from core.ss_lock import accounts_of, browser_conflict, primary_account
 
-        mine = _cat_config_values(key, data_root)
+        mine = effective_config if effective_config is not None else _cat_config_values(key, data_root)
         for r in others:
             ocat = str(r.get("cat") or "")
             if not ocat:
                 continue
-            ocfg = _cat_config_values(ocat, str(r.get("data_root") or "data"))
+            ocfg = _run_config_values(r)
             why = browser_conflict(str(mine.get("SS_CDP_URL", "") or ""), primary_account(mine),
                                    accounts_of(mine),
                                    str(ocfg.get("SS_CDP_URL", "") or ""), primary_account(ocfg),
@@ -823,7 +847,7 @@ def run_start_guard(cat: str, data_root: str, runner=None) -> list[dict]:
     return others
 
 
-def ss_parallel_notes(cat: str, data_root: str, others: list[dict]) -> list[str]:
+def ss_parallel_notes(cat: str, data_root: str, others: list[dict], effective_config=None) -> list[str]:
     """并行提示(不阻断): 与在跑类目共用同一个卖家精灵浏览器 → 步骤 0/11/12/13 会排队。"""
     notes: list[str] = []
     if not others:
@@ -831,13 +855,13 @@ def ss_parallel_notes(cat: str, data_root: str, others: list[dict]) -> list[str]
     try:
         from core.ss_lock import normalize_cdp_url, resource_key
 
-        mine = _cat_config_values(cat, data_root)
+        mine = effective_config if effective_config is not None else _cat_config_values(cat, data_root)
         my_cdp = str(mine.get("SS_CDP_URL", "") or "")
         for r in others:
             ocat = str(r.get("cat") or "")
             if not ocat:
                 continue
-            ocfg = _cat_config_values(ocat, str(r.get("data_root") or "data"))
+            ocfg = _run_config_values(r)
             o_cdp = str(ocfg.get("SS_CDP_URL", "") or "")
             if resource_key(my_cdp) == resource_key(o_cdp):
                 where = normalize_cdp_url(my_cdp) or "同一 profile"
@@ -3869,6 +3893,9 @@ class Handler(BaseHTTPRequestHandler):
         month = str(body.get("month") or "").strip()
         if not re.fullmatch(r"20\d{2}", year) or not re.fullmatch(r"(?:0?[1-9]|1[0-2])", month):
             raise ValueError("请选择有效的年份和月份")
+        period_mode = str(body.get("period_mode") or "fixed_month").strip()
+        if period_mode not in ("fixed_month", "recent30"):
+            raise ValueError("请选择固定月份或最近30天")
         account = str(body.get("ss_account") or "").strip()
         password = str(body.get("ss_password") or "").strip()
         if not account or not password:
@@ -3886,11 +3913,11 @@ class Handler(BaseHTTPRequestHandler):
             if parsed_url.netloc.lower() not in allowed_hosts:
                 raise ValueError(f"榜单 URL 站点与所选市场不一致，请使用 {profile['market']}")
         # 兼容用户输入旧式完整目录名，统一采用当前选中的市场与月份。
-        cat = re.sub(r"-(?:US|USA|UK|GB|DE|FR|IT|ES|CA|JP|MX|BR|AU|IN|AE)-20\d{4}$", "", cat, flags=re.I).strip()
+        cat = re.sub(r"-(?:US|USA|UK|GB|DE|FR|IT|ES|CA|JP|MX|BR|AU|IN|AE)-20\d{4}(?:-RECENT30)?$", "", cat, flags=re.I).strip()
         if not cat:
             raise ValueError("请填写类目名称")
         month = f"{int(month):02d}"
-        cat = f"{cat}-{market_code.upper()}-{year}{month}"
+        cat = f"{cat}-{market_code.upper()}-{year}{month}" + ("-RECENT30" if period_mode == "recent30" else "")
         data_root = PROJECT_ROOT / "data"
         target = data_root / cat / "config.yaml"
         if target.exists():
@@ -3908,7 +3935,8 @@ class Handler(BaseHTTPRequestHandler):
         patch = {
             "CAT": cat, "LIST_URLS": list_url,
             "SITE": profile["site"], "MARKET": profile["market"],
-            "TRAFFIC_MONTH": f"{year}-{month}", "COMPETITOR_MONTH": f"{year}-{month}",
+            "TRAFFIC_MONTH": "最近30天" if period_mode == "recent30" else f"{year}-{month}",
+            "COMPETITOR_MONTH": "最近30天" if period_mode == "recent30" else f"{year}-{month}",
             "TREND_MONTH": f"{year}{month}", "SS_ACTIVE_ACCOUNT": "auto",
         }
         out_lines = patch_yaml_lines(lines, patch)
@@ -5849,8 +5877,16 @@ class Handler(BaseHTTPRequestHandler):
         cfgdir = PROJECT_ROOT / "configs"
         cnames = tuple(str(p) for p in sorted(cfgdir.glob("*.yaml"))) if cfgdir.is_dir() else ()
         try:
-            catdirs = tuple(sorted(d.name for d in (PROJECT_ROOT / "data").iterdir()
-                                   if d.is_dir() and d.name != "archive" and not d.name.startswith(".")))
+            catdirs = []
+            for d in (PROJECT_ROOT / "data").iterdir():
+                if not d.is_dir() or d.name == "archive" or d.name.startswith("."):
+                    continue
+                try:
+                    st = (d / "config.yaml").stat()
+                    catdirs.append((d.name, st.st_mtime_ns, st.st_size))
+                except FileNotFoundError:
+                    catdirs.append((d.name, None, None))
+            catdirs = tuple(sorted(catdirs))
         except OSError:
             catdirs = ()
         # 指纹里带上 PROJECT_ROOT(2026-10-09): 单测会把 PROJECT_ROOT 指到临时目录,
@@ -5858,13 +5894,18 @@ class Handler(BaseHTTPRequestHandler):
         sig = (str(PROJECT_ROOT), names, cnames, catdirs)
         hit = _SCAN_CONFIGS_CACHE.get("files")
         if hit and hit[0] == sig:
+            self._config_files_incomplete = False
             return hit[1]
         with _SCAN_LOCK:                       # 单飞: 并发请求只让第一个做全量扫描
             hit = _SCAN_CONFIGS_CACHE.get("files")
             if hit and hit[0] == sig:
+                self._config_files_incomplete = False
                 return hit[1]
             files = self._config_files()
-            _SCAN_CONFIGS_CACHE["files"] = (sig, files)
+            if files and not getattr(self, "_config_files_incomplete", False):
+                _SCAN_CONFIGS_CACHE["files"] = (sig, files)
+            else:
+                _SCAN_CONFIGS_CACHE.pop("files", None)
             return files
 
     def _scan_configs(self) -> list:
@@ -5881,6 +5922,8 @@ class Handler(BaseHTTPRequestHandler):
                    tuple((str(p), p.stat().st_mtime_ns, p.stat().st_size) for p, _ in files))
         except OSError:
             sig = None                      # stat 失败(文件刚被删/改名) → 不走缓存
+        if not files or getattr(self, "_config_files_incomplete", False):
+            sig = None
         if sig is not None:
             hit = _SCAN_CONFIGS_CACHE.get("v")
             if hit and hit[0] == sig:
@@ -5893,12 +5936,13 @@ class Handler(BaseHTTPRequestHandler):
             items = []
             for p, name in files:
                 self._add_config_item(items, p, name)
-            if sig is not None:
+            if sig is not None and items:
                 _SCAN_CONFIGS_CACHE["v"] = (sig, items)
             return items
 
     def _config_files(self) -> list:
         """(路径, 下拉显示名) 清单: 根模板 + configs/ + 各类目 data/<CAT>/config.yaml。"""
+        self._config_files_incomplete = False
         out: list[tuple[Path, str]] = [(p, p.name) for p in sorted(PROJECT_ROOT.glob("*.yaml"))]
         cfgdir = PROJECT_ROOT / "configs"
         if cfgdir.is_dir():   # 月度/类目配置统一放 configs/(2026-09)
@@ -5908,8 +5952,25 @@ class Handler(BaseHTTPRequestHandler):
             from core.category_config import list_category_configs as _lcc
             out += [(cfg, f"data/{cfg.parent.name}/config.yaml")
                     for cfg in _lcc(PROJECT_ROOT / "data")]
-        except Exception:
-            pass
+        except Exception as exc:
+            print(f"[webui] 类目配置扫描降级: {type(exc).__name__}")
+            try:
+                for d in sorted((PROJECT_ROOT / "data").iterdir()):
+                    if not d.is_dir() or d.name == "archive" or d.name.startswith("."):
+                        continue
+                    cfg = d / "config.yaml"
+                    if not cfg.is_file():
+                        continue
+                    try:
+                        cat = str(load_yaml_file(cfg).get("CAT") or "").strip()
+                    except Exception:
+                        self._config_files_incomplete = True
+                        continue
+                    if cat and not _is_placeholder_cat_fallback(cat):
+                        out.append((cfg, f"data/{d.name}/config.yaml"))
+            except Exception as fallback_exc:
+                self._config_files_incomplete = True
+                print(f"[webui] 类目配置兜底扫描失败: {type(fallback_exc).__name__}")
         return out
 
     def _add_config_item(self, items: list, p: Path, name: str) -> None:
@@ -5920,10 +5981,10 @@ class Handler(BaseHTTPRequestHandler):
         # 占位/模板 CAT(如 your-category-US-YYYYMM、无 CAT)不进入运行台列表(2026-09)
         try:
             from core.category_config import is_placeholder_cat as _ph
-            if _ph(str(vals.get("CAT", "") or "").strip()):
-                return
         except Exception:
-            pass
+            _ph = _is_placeholder_cat_fallback
+        if _ph(str(vals.get("CAT", "") or "").strip()):
+            return
         # 防呆(2026-09-13): 标注"CAT 与目录名不一致"的错位配置(前端显示 ⚠ 便于识别, 运行/保存会阻断)
         mismatch = False
         try:
@@ -6075,6 +6136,11 @@ class Handler(BaseHTTPRequestHandler):
             kc.pending(cat_dir, baseline)
 
     def _api_run(self, body: dict) -> dict:
+        # 串行完成分配、冲突检查和进程登记，避免两个请求同时拿到尚未监听的同一端口。
+        with _RUN_START_LOCK:
+            return self._api_run_locked(body)
+
+    def _api_run_locked(self, body: dict) -> dict:
         file = str(body.get("config_file") or "config.yaml")
         base = safe_config_path(file)
         mode = str(body.get("mode") or "resume")  # resume | from | step
@@ -6096,13 +6162,22 @@ class Handler(BaseHTTPRequestHandler):
         )
         if _needs_auto:
             try:
-                from core.ss_lock import pick_port
+                from core.ss_lock import pick_port, normalize_cdp_url
                 _me = str((getattr(self, "_user", None) or {}).get("name") or "")
-                _port = pick_port(_me)
+                _reserved = set()
+                for _run in RUNNER.snapshots():
+                    if _run.get("active"):
+                        _addr = normalize_cdp_url(str(_run_config_values(_run).get("SS_CDP_URL") or ""))
+                        if _addr:
+                            try:
+                                _reserved.add(int(_addr.rsplit(":", 1)[1]))
+                            except (IndexError, ValueError):
+                                pass
+                _port = pick_port(_me, exclude_ports=_reserved)
                 overrides = dict(overrides or {})
                 overrides["SS_CDP_URL"] = "http://127.0.0.1:%d" % _port
-            except Exception as _exc:  # noqa: BLE001 — 分配失败不阻断，退回配置里的端口
-                push_cat("", "⚠ CDP 端口自动分配失败(沿用配置): %s" % _exc, level="WARN")
+            except Exception as _exc:
+                raise UserFacingError(f"CDP 端口自动分配失败，无法安全启动: {_exc}") from _exc
         conf = self._build_run_config(base, overrides)
         eff = self._effective_vals(conf)
         if not eff["CAT"]:
@@ -6113,13 +6188,14 @@ class Handler(BaseHTTPRequestHandler):
         # 不同类目放行(这正是"同时跑多个类目"要的)。
         _cat_key = str(eff["CAT"] or "").strip()
         _data_root = str(eff.get("DATA_ROOT", "data") or "data")
-        _others = run_start_guard(_cat_key, _data_root)
+        _effective_config = load_yaml_file(conf)
+        _others = run_start_guard(_cat_key, _data_root, effective_config=_effective_config)
         # 并行资源提示(不阻断): 卖家精灵浏览器按**资源**互斥(不同端口=真并行; 同端口=排队);
         # 亚马逊抓取会同时占本机 IP(步骤0/1/10 并发时更易触发风控) —— 如实提示, 便于用户取舍。
         # 2026-09-16: 这些提示**先攒起来**, 等 RUNNER.start() 建好本类目缓冲后**只写进本类目**
         # (原先直接 RING.push → mirror 广播进所有在跑类目的控制台, 造成"看 FR 却见到 UK 的消息")。
         _pre_notes: list[tuple[str, str]] = []
-        for _note in ss_parallel_notes(_cat_key, _data_root, _others):
+        for _note in ss_parallel_notes(_cat_key, _data_root, _others, effective_config=_effective_config):
             _pre_notes.append((f"⚠ 并行提示: {_note}", "WARN"))
         if _others:
             _pre_notes.append(("◆ 并行运行: 已有 "

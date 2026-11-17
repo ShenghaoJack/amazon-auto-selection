@@ -431,20 +431,21 @@ def port_in_use(port):
         return True
 
 
-def pick_port(username=""):
+def pick_port(username="", exclude_ports=()):
     """分配一个空闲 CDP 端口；优先该用户上次用的。池满抛 RuntimeError。"""
     d = _ports_load()
     users = d.setdefault("users", {})
     name = str(username or "")
+    reserved = {int(p) for p in exclude_ports}
     if name and users.get(name):
         try:
             cand = int(users[name])
         except (TypeError, ValueError):
             cand = 0
-        if CDP_PORT_MIN <= cand <= CDP_PORT_MAX and not port_in_use(cand):
+        if CDP_PORT_MIN <= cand <= CDP_PORT_MAX and cand not in reserved and not port_in_use(cand):
             return cand
     # 已被**其他用户**占用的端口不再分配（否则两个人都空闲时会拿到同一个端口）
-    taken = set()
+    taken = set(reserved)
     for k, v in users.items():
         if name and str(k) == name:
             continue

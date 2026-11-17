@@ -94,10 +94,16 @@ class Step12CompetitorSubmit(BaseStep):
             self.log(ctx, f"过滤非标准 ASIN {raw_n - len(asins)} 个(纯数字ISBN型/格式异常, "
                           f"卖家精灵无法查询; 原 {raw_n} → {len(asins)})")
         fp = self._fingerprint(asins)
+        self._submission_context = {"site": site, "period": str(ctx.config.get("COMPETITOR_MONTH", "") or "").strip()}
         self.log(ctx, f"变体清单: {len(asins)} 个, 指纹={fp}")
 
         submitted_path = ctx.resolve_artifact(self.artifacts[0])
         old = read_json(submitted_path, default=None)
+        if old and old.get("submission_context") and old["submission_context"] != self._submission_context:
+            raise StepFailedError("竞品站点或数据周期与现有提交记录不同；请核对后使用独立类目或重置对应步骤，避免复用旧周期任务")
+        if old and old.get("groups") and not old.get("submission_context"):
+            self.log(ctx, "⚠ 历史提交记录未记录站点与周期，无法自动核验其口径；请人工确认")
+            self._submission_context = {}  # 不把未经验证的历史记录伪装成当前周期
         force = old is None or old.get("fingerprint") != fp
         groups: list[dict] = []
         if old is not None and old.get("fingerprint") == fp:
@@ -113,7 +119,7 @@ class Step12CompetitorSubmit(BaseStep):
 
         if not batches:
             self.log(ctx, "无变体清单, 写出空提交记录(仅保证 DONE 校验)")
-            write_json(submitted_path, {"fingerprint": fp, "groups": []})
+            self._save_submitted(submitted_path, fp, [])
             return
 
         # 账号计划: SS_ACCOUNTS 统一账号列表(is_main 主账号随时可用; 备用仅窗口后可导出);
@@ -137,7 +143,8 @@ class Step12CompetitorSubmit(BaseStep):
             todo = self._run_account_batches(
                 ctx, acct, todo, site, groups, fp, submitted_path, force
             )
-        write_json(submitted_path, {"fingerprint": fp, "groups": groups})
+        self._save_submitted(submitted_path, fp, groups)
+
         if todo:
             notify_need_new_account(
                 ctx,
@@ -148,6 +155,10 @@ class Step12CompetitorSubmit(BaseStep):
                 f"(剩余 {len(todo)} 组)。请提供新账号加入 config.yaml SS_ACCOUNTS 后重跑续跑。"
             )
         self.log(ctx, f"提交记录已写入: {submitted_path}")
+
+    def _save_submitted(self, path: str, fingerprint: str, groups: list[dict]) -> None:
+        write_json(path, {"fingerprint": fingerprint, "groups": groups,
+                          "submission_context": getattr(self, "_submission_context", {})})
 
     def _run_account_batches(
         self,
@@ -165,7 +176,19 @@ class Step12CompetitorSubmit(BaseStep):
         # 2026-09-16: 必须 `with ... as` 绑定真浏览器 —— ctx.browser 返回的是租约
         # (SsBrowserLease), 直接赋值再用会报没有 new_page。
         backup = acct["kind"] != "main"
-        with ctx.browser(
+        from core.ss_lock import acquire, DEFAULT_WAIT_SECONDS
+        account = str(acct.get("account") or "").strip().lower()
+        if not account:
+            raise StepFailedError("卖家精灵账号为空，无法安全区分导出任务")
+        resource = "export-account:" + hashlib.sha256(account.encode("utf-8")).hexdigest()
+        wait = float(ctx.config.get("SS_BROWSER_LOCK_WAIT", DEFAULT_WAIT_SECONDS) or 0)
+        # 同一账号的导出记录是共享的，即使浏览器端口不同也必须串行创建任务。
+        account_lease = acquire(wait_seconds=wait, label=f"{ctx.config.cat}·竞品导出", resource=resource,
+                                log=lambda msg: self.log(ctx, msg))
+        if account_lease.degraded:
+            account_lease.release()
+            raise StepFailedError("无法获取卖家精灵账号导出锁，停止提交以避免不同任务混淆")
+        with account_lease, ctx.browser(
             "sellersprite",
             profile_dir=(ctx.paths.profile_ss_backup(acct["index"]) if backup else None),
             use_cdp=(False if backup else None),
@@ -187,23 +210,19 @@ class Step12CompetitorSubmit(BaseStep):
                     if old_group is not None:
                         self.log(ctx, f"组{i}: 本地提交记录已存在, 跳过提交")
                         continue
-                    platform_task = self._platform_task_name(ctx, b, page, first_asin)
-                    if platform_task:
-                        self.log(ctx, f"组{i}: 平台已有任务[{platform_task}], 跳过并补记记录")
-                        groups.append(self._make_record(i, platform_task, first_asin, batch_asins))
-                        write_json(submitted_path, {"fingerprint": fp, "groups": groups})
-                        continue
+                    # 仅凭首个 ASIN 无法证明任务的周期、站点和完整商品组一致。
+                    # 本地记录才可作为续跑依据，避免跨类目或跨周期复用平台旧任务。
                 try:
                     task_name = self._submit_group(
                         ctx, b, page, site, batch_asins, first_asin, first_submitted
                     )
                 except QuotaExhausted as exc:
                     self.log(ctx, f"组{i}: [{acct['note']}] 导出配额耗尽({exc}) → 切换账号")
-                    write_json(submitted_path, {"fingerprint": fp, "groups": groups})
+                    self._save_submitted(submitted_path, fp, groups)
                     return [(g, ba) for (g, ba) in todo if g >= i]
                 first_submitted = False
                 groups.append(self._make_record(i, task_name, first_asin, batch_asins))
-                write_json(submitted_path, {"fingerprint": fp, "groups": groups})
+                self._save_submitted(submitted_path, fp, groups)
                 self.log(ctx, f"组{i}: 提交成功, 任务名={task_name}")
             return []
 
@@ -347,9 +366,21 @@ class Step12CompetitorSubmit(BaseStep):
                 continue
         return None
 
+    def _export_task_snapshot(self, b, page) -> set[str]:
+        """读取导出前的任务名，作为识别本次新任务的基线。"""
+        b.goto(page, self.EXPORT_LOG_URL, timeout=60000)
+        b.wait_selector(page, "table", timeout=30000)
+        names = set()
+        for tr in page.locator("table tbody tr, table tr").all():
+            cells = [c.inner_text().strip() for c in tr.locator("td").all()]
+            if len(cells) >= 5 and cells[1].strip():
+                names.add(cells[1].replace("最新", "").strip())
+        return names
+
     def _wait_export_task_created(self, ctx: StepContext, b, page, month: str,
                                   submitted_at: datetime,
-                                  wait_sec: int = 120, interval: int = 10) -> str | None:
+                                  wait_sec: int = 120, interval: int = 10,
+                                  previous_names: set[str] | None = None) -> str | None:
         """点击导出后, 在"我的导出"确认本次提交的任务**已创建**, 返回真实任务名(未创建→None)。
 
         口径与步骤13 的候选过滤一致(列位 2026-09 实测: tds[1]=任务名/t[2]=来源/t[3]=时间/t[4]=状态):
@@ -384,6 +415,8 @@ class Step12CompetitorSubmit(BaseStep):
                     time_raw = (cells[3] or "").split("\n")[0].strip()
                     if not name or not source:
                         continue
+                    if previous_names is not None and name in previous_names:
+                        continue
                     seen += 1
                     if "查竞品" not in source:
                         continue
@@ -393,12 +426,16 @@ class Step12CompetitorSubmit(BaseStep):
                     if t is not None and t < submitted_at - grace:
                         continue
                     matched.append((name, source, time_raw))
+                if len(matched) > 1:
+                    raise StepFailedError("导出后出现多个新竞品任务，无法确认本次任务，请核对平台记录")
                 if matched:
                     name, source, time_raw = matched[0]
                     self.log(ctx, f"导出任务已创建: {name}(来源={source}, 时间={time_raw}; "
                                   f"我的导出共 {seen} 行)")
                     return name
                 self.log(ctx, f"等待导出任务出现... 我的导出 {seen} 行, 暂未匹配到本次提交的查竞品任务")
+            except StepFailedError:
+                raise
             except Exception as exc:  # noqa: BLE001 - 页面异常不致命, 轮询重试
                 self.log(ctx, f"查询'我的导出'异常(将重试): {exc}")
             if time.monotonic() >= deadline:
@@ -437,14 +474,14 @@ class Step12CompetitorSubmit(BaseStep):
         )
         last_err = ""
         for attempt in range(3):
+            submission_may_exist = False
             try:
-                if not force:
-                    existing = self._platform_task_name_real(b, page, first_asin)
-                    if existing:
-                        self.log(ctx, f"重试时发现平台已有任务, 直接复用: {existing}")
-                        return existing
-                else:
+                if force:
                     self.log(ctx, "SS_FORCE_RESUBMIT=true, 跳过平台任务复用, 强制重新提交")
+                try:
+                    previous_names = self._export_task_snapshot(b, page)
+                except Exception as exc:
+                    raise StepFailedError(f"无法读取导出前的任务清单，未提交以避免混淆周期: {exc}") from exc
                 b.goto(page, self.LOOKUP_URL, timeout=60000)
                 time.sleep(self._RENDER_WAIT)                 # 页面导航后等渲染
                 self._select_site(ctx, page, site)
@@ -459,6 +496,7 @@ class Step12CompetitorSubmit(BaseStep):
                 self._uncheck_show_all_variants(ctx, page)
                 time.sleep(self._RENDER_WAIT)                 # 取消勾选后等列表刷新
                 self._check_quota(ctx, page)  # 配额提示"当天剩余0次"→ 抛 QuotaExhausted 换号
+                submission_may_exist = True  # 导出点击可能立即生效；失败后不可盲目重试
                 self._click_export(ctx, page)
                 time.sleep(self._RENDER_WAIT)                 # 点导出后等弹窗渲染
                 self._handle_export_dialog(ctx, page, first_group=is_first_group)
@@ -468,7 +506,7 @@ class Step12CompetitorSubmit(BaseStep):
                 # **不按 ASIN 匹配**——平台任务名常不含 ASIN(实测如 Competitor-US-2026.08-293265),
                 # 按 ASIN 匹配会把"已创建"误判成"未生成"(2026-09-10 实战踩坑)。
                 submitted_at = datetime.now()
-                real = self._wait_export_task_created(ctx, b, page, month, submitted_at)
+                real = self._wait_export_task_created(ctx, b, page, month, submitted_at, previous_names=previous_names)
                 if not real:
                     raise StepFailedError(
                         f"导出任务未在'我的导出'生成(首ASIN={first_asin}, "
@@ -481,6 +519,8 @@ class Step12CompetitorSubmit(BaseStep):
                 # 待弹窗确认(目标月缺失): 立即失败让弹窗出现, 不重试(2026-09-30)
                 if "[MONTH_FALLBACK_CONFIRM]" in str(exc):
                     raise
+                if submission_may_exist:
+                    raise StepFailedError(f"导出可能已提交，但未能唯一确认任务；请先核对平台导出记录，避免重复扣费: {exc}") from exc
                 if "导出任务未在'我的导出'生成" in str(exc):
                     last_err = str(exc)
                     if attempt < 2:

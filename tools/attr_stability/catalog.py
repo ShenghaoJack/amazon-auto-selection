@@ -84,6 +84,9 @@ def parse_cat(cat: Any) -> dict[str, str]:
       · `your-category-US-YYYYMM`     → `YYYYMM` 不是 6 位数字 → 类目=全名
     """
     s = str(cat or "").strip()
+    recent = bool(re.search(r"-RECENT30$", s, flags=re.I))
+    if recent:
+        s = re.sub(r"-RECENT30$", "", s, flags=re.I)
     out = {"类目": s, "市场": "", "年月": ""}
     if not s:
         return out
@@ -97,7 +100,7 @@ def parse_cat(cat: Any) -> dict[str, str]:
         body, mk = m2.group("body"), m2.group("mk")
     if not body.strip():
         return {"类目": s, "市场": "", "年月": ""}      # 拆到空 → 放弃
-    out.update({"类目": body, "市场": mk, "年月": ym})
+    out.update({"类目": body + (" [最近30天]" if recent else ""), "市场": mk, "年月": ym})
     return out
 
 

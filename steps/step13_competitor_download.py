@@ -84,13 +84,18 @@ class Step13CompetitorDownload(BaseStep):
             self.log(ctx, "提交记录无组数据(步骤12无变体清单), 无可下载任务")
             self._write_empty_merged(merged_path)
             return
+        expected_names = {str(g.get("task_name") or "").strip() for g in groups}
+        if "" in expected_names or len(expected_names) != len(groups):
+            raise StepDataError("步骤12提交记录缺少唯一任务名，无法安全区分不同类目或周期；请核对提交记录")
 
         with ctx.browser("sellersprite", downloads_path=step13_dir) as b:
             if ctx.dry_run:
                 mock = b.mock_sellersprite(ctx)
                 tasks = mock.export_log_ready()
-                task_names = self._filter_tasks(ctx, tasks, earliest, latest)
+                task_names = [name for name in self._filter_tasks(ctx, tasks, earliest, latest) if name in expected_names]
                 self.log(ctx, f"导出列表过滤后待下载任务: {task_names}")
+                if set(task_names) != expected_names:
+                    raise StepFailedError("提交记录中的任务未全部匹配，停止下载以避免混入其他周期")
                 if task_names:
                     mock.download_export(task_names, step13_dir)
             else:
@@ -241,6 +246,8 @@ class Step13CompetitorDownload(BaseStep):
                     continue
                 if not self._month_in_name(r.get("task") or "", month):
                     continue
+                if (r.get("task") or "") not in self._known_task_names:
+                    continue
                 t = self._parse_time(r.get("time"))
                 # 时间窗口过滤(2026-09-04):
                 #  下界: 平台导出日志时间只有分钟精度 vs 本地记录含秒, 同批任务创建
@@ -263,8 +270,10 @@ class Step13CompetitorDownload(BaseStep):
         b.wait_selector(page, "table", timeout=60000)
         candidates = _candidates()
         if not candidates:
-            self.log(ctx, "我的导出页无匹配的查竞品任务(来源/月份/时间三过滤)")
-            return []
+            raise StepFailedError("我的导出页没有与本类目提交记录匹配的任务，停止下载以避免误用其他周期")
+        missing_names = self._known_task_names - {r.get("task") for r in candidates}
+        if missing_names:
+            raise StepFailedError(f"提交记录中的 {len(missing_names)} 个任务未出现在导出列表，停止下载以避免混入其他任务")
 
         # ② 状态轮询: 等全部目标任务显示"已完成"
         def _pending(rows):
@@ -286,6 +295,9 @@ class Step13CompetitorDownload(BaseStep):
             b.goto(page, self.EXPORT_LOG_URL, timeout=60000)
             time.sleep(2)
             candidates = _candidates()
+            missing_names = self._known_task_names - {r.get("task") for r in candidates}
+            if missing_names:
+                raise StepFailedError(f"轮询期间有 {len(missing_names)} 个任务不可见，停止下载以避免遗漏或混淆")
             pending = _pending(candidates)
             self.log(
                 ctx,

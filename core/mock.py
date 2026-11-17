@@ -289,6 +289,17 @@ class MockSellersprite:
         return {"task_name": f"mock-task-{asins[0][:8]}", "group": 0}
 
     def export_log_ready(self) -> list[dict]:
+        path = os.path.join(self.ctx.paths.step_dir(12), f"{self.ctx.config.cat}-submitted.json")
+        try:
+            with open(path, encoding="utf-8-sig") as fh:
+                submitted = json.load(fh)
+            groups = submitted.get("groups") or []
+            if groups:
+                return [{"task": g["task_name"], "status": "已完成", "来源": "查竞品",
+                         "time": g.get("time") or datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+                        for g in groups if g.get("task_name")]
+        except (OSError, ValueError, TypeError, AttributeError):
+            pass
         return [{"task": "mock-task-1", "status": "已完成", "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}]
 
     def download_export(self, task_names: list[str], target_dir: str) -> list[str]:

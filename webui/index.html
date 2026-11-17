@@ -747,7 +747,7 @@
 <div id="newCatOverlay" class="overlay" style="display:none">
   <div class="box" role="dialog" aria-modal="true" aria-labelledby="newCatTitle">
     <h3 id="newCatTitle">＋ 新建类目</h3>
-    <p>选择市场和月份后，系统自动生成类目目录，并同步站点与查询月份。</p>
+    <p>选择市场、研究年月和数据周期，系统将为每类数据建立独立目录。</p>
     <div class="frow"><label for="ncCat"><b>类目名(CAT)</b></label>
       <div><div class="secwrap"><input id="ncCat" type="text" placeholder="如 Salt and Pepper Mill Sets" autocomplete="off"></div>
       <div class="hint">自动添加市场与年月后缀，例如 Salt and Pepper Mill Sets-US-202609。</div></div></div>
@@ -762,7 +762,11 @@
         <option value="ae">阿联酋 · AE</option>
       </select></div></div>
     <div class="frow"><label for="ncYear"><b>研究年月</b></label>
-      <div class="nc-date"><select id="ncYear" aria-label="年份"></select><select id="ncMonth" aria-label="月份"></select></div></div>
+      <div><div class="nc-date"><select id="ncYear" aria-label="年份"></select><select id="ncMonth" aria-label="月份"></select></div>
+      <div class="hint">用于类目命名和关键词趋势，临时任务也需选择。</div></div></div>
+    <div class="frow"><label for="ncPeriod"><b>数据周期</b></label>
+      <div><select id="ncPeriod" aria-describedby="ncPeriodHint"><option value="fixed_month">固定月份 · 长期任务</option><option value="recent30">最近30天 · 临时任务</option></select>
+      <div id="ncPeriodHint" class="hint"></div></div></div>
     <div class="frow"><label for="ncFrom"><b>复制自(模板/现有类目)</b></label>
       <div><div class="secwrap"><select id="ncFrom"></select></div>
       <div class="hint">继承模型、阈值及备用账号等配置；本次输入的账号作为主账号。</div></div></div>
@@ -2046,11 +2050,18 @@ async function openNewCatWizard() {
   $("ncYear").value = String(year);
   $("ncMonth").value = String(now.getMonth() + 1).padStart(2, "0");
   $("ncMarket").value = "us";
+  $("ncPeriod").value = "fixed_month"; updateNewCatPeriodHint();
   $("ncCat").value = ""; $("ncList").value = ""; $("ncAccount").value = ""; $("ncPassword").value = "";
   $("ncListError").textContent = "";
   $("newCatOverlay").style.display = "flex";
   setTimeout(() => { const i = $("ncCat"); if (i) i.focus(); }, 60);
 }
+function updateNewCatPeriodHint() {
+  $("ncPeriodHint").textContent = $("ncPeriod").value === "recent30"
+    ? "流量来源和竞品均按最近30天抓取，独立保存；步骤14不能按月补全近6个月趋势。"
+    : "流量来源和竞品均使用所选研究年月，适合长期固定口径。";
+}
+$("ncPeriod").addEventListener("change", updateNewCatPeriodHint);
 function validateNewCategoryListUrl(value, marketCode) {
   if (!value) return "";
   const hosts = {us:"amazon.com", uk:"amazon.co.uk", de:"amazon.de", fr:"amazon.fr",
@@ -2082,7 +2093,7 @@ async function submitNewCat() {
   $("ncList").setAttribute("aria-invalid", listError ? "true" : "false");
   if (listError) { $("ncList").focus(); return; }
   const body = { cat, copy_from: $("ncFrom").value, list_url,
-    market_code: $("ncMarket").value, year: $("ncYear").value, month: $("ncMonth").value,
+    market_code: $("ncMarket").value, year: $("ncYear").value, month: $("ncMonth").value, period_mode: $("ncPeriod").value,
     ss_account, ss_password };
   try {
     $("ncOk").disabled = true;
@@ -2236,6 +2247,8 @@ const HUB_BASE_CAP = 12, HUB_SITE_CAP = 12, HUB_PAGE_SIZE = 20;
 const REGION_TOKENS = new Set(["US","UK","GB","DE","FR","IT","ES","CA","JP","AU","MX","BR","IN","NL","SE","PL","TR","SG","AE"]);
 function hubParts(cat) {
   let c = String(cat || "").trim(), month = "", site = "";
+  const recent = /-RECENT30$/i.test(c);
+  if (recent) c = c.replace(/-RECENT30$/i, "");
   const mm = /-(20\d{4})$/.exec(c);
   if (mm) { c = c.slice(0, c.lastIndexOf("-")); month = mm[1].slice(0, 4) + "-" + mm[1].slice(4); }
   const im = c.lastIndexOf("-");
@@ -2243,7 +2256,7 @@ function hubParts(cat) {
     const tok = c.slice(im + 1);
     if (REGION_TOKENS.has(tok.toUpperCase())) { site = tok; c = c.slice(0, im); }
   }
-  return { base: c || cat, site, month };
+  return { base: c || cat, site, month, recent };
 }
 function hubMatch(it, q) {
   const p = hubParts(it.cat);
@@ -2488,7 +2501,7 @@ function renderHomeRows() {
         : (it.failed && it.failed.length
           ? '<b style="color:#f59e0b">⚠ 卡在步骤' + esc(it.failed[0]) + '</b>'
           : '<b style="color:#7d8bab">待续</b>'));
-    const tag = (p.site ? " · " + esc(p.site) : "") + (p.month ? " · " + esc(p.month) : "");
+    const tag = (p.site ? " · " + esc(p.site) : "") + (p.month ? " · " + esc(p.month) : "") + (p.recent ? " · 最近30天" : "");
     // 累计运行时长(2026-09-15): 与 ②流程状态 的 ⏱「累计执行时长」同口径(同一后端字段
     // dur_sec, 由 core.state.RunState.cumulative_seconds 计算), 格式也复用 fmtClock。
     const durTxt = (typeof it.dur_sec === "number" && it.dur_sec > 0) ? fmtClock(it.dur_sec) : "—";
@@ -4361,6 +4374,10 @@ function sfTable(list) {
   return `<table class="f-tbl"><thead><tr><th>文件(点击下载)</th><th>大小</th><th>更新时间</th></tr></thead>
     <tbody>${sfRows(list)}</tbody></table>`;
 }
+function panelShortcutReady(step, steps) {
+  const prerequisite = {8: 8, 16: 16, 18: 17}[step];
+  return prerequisite !== undefined && (steps || []).some(s => s.number === prerequisite && s.status === "DONE");
+}
 function openStepFiles(n) {
   // 换步骤时先清掉上一个步骤的表格并显示"加载中"(2026-09-15): 否则在新响应到达前会短暂
   // 出现"标题是 STEP 16、内容还是 STEP 00 的文件"这种错觉(实测浏览器核对时看到过)。
@@ -4370,8 +4387,7 @@ function openStepFiles(n) {
   $("sfTitle").textContent = `STEP ${pad(n)} · ${meta.t || "步骤" + n}`;
   $("sfDesc").textContent = meta.d || "";
   const panel = {8:"secKwLists",16:"secAttr",18:"secStd"}[n];
-  const prerequisite = n===18 ? 17 : n;
-  const ready = !!(lastStatus && (lastStatus.steps || []).some(s => s.number===prerequisite && s.status==="DONE"));
+  const ready = panelShortcutReady(n, lastStatus && lastStatus.steps);
   const review = $("sfReview");
   review.style.display = panel && ready ? "" : "none";
   review.textContent = panel ? "查看" + PANEL_NAMES[panel] : "查看处理面板";
@@ -4676,10 +4692,8 @@ function renderSteps(data) {
         button.addEventListener("keydown", event => event.stopPropagation());
         el.appendChild(button);
       }
-      // 标准化面板仍要求步骤17 DONE（没有标注可标准化）；关键词/属性集面板可直接打开看空态
-      const ready = sc.panel === "secStd"
-        ? (data.steps || []).some(step => step.number === 17 && step.status === "DONE")
-        : true;
+      // 等对应产物生成后显示；步骤 8/16 完成后仍可进入人工确认面板。
+      const ready = panelShortcutReady(s.number, data.steps);
       button.style.display = ready ? "" : "none";
     }
     // 计时口径:

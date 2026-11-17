@@ -35,7 +35,7 @@ def _is_suffix(part: str) -> bool:
 
 def display_cat(cat: str) -> str:
     """去掉末尾版本/日期/地区后缀并把 '-' 转空格, 得到 LLM 友好的展示名。"""
-    raw = (cat or "").strip()
+    raw = re.sub(r"-RECENT30$", "", (cat or "").strip(), flags=re.I)
     if not raw:
         return raw
     parts = raw.split("-")
