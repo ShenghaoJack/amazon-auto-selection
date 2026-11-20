@@ -32,6 +32,7 @@ from core import (
     warn_missing,
     write_json,
 )
+from core.errors import WaitingForHuman
 from steps._month_fallback import (  # noqa: E402
     MonthFallbackNeedsConfirm,
     MonthUnavailableError,
@@ -42,12 +43,14 @@ from steps._month_fallback import (  # noqa: E402
 )
 from steps._ss_accounts import (
     QuotaExhausted,
+    account_id,
     account_plan,
+    login_as_account,
     notify_need_new_account,
     read_export_quota,
     wait_until_window,
 )
-from steps._browser_ux import click_by_text, click_verified, first_visible, park_mouse
+from steps._browser_ux import click_by_text, click_verified, dismiss_sellersprite_promotions, first_visible, park_mouse
 from steps.base import BaseStep, StepContext
 
 
@@ -110,11 +113,20 @@ class Step12CompetitorSubmit(BaseStep):
             groups = list(old.get("groups") or [])
             self.log(ctx, f"指纹一致, 沿用本地提交记录 {len(groups)} 组")
         elif old is not None:
-            self.log(ctx, "清单指纹变化, 清空提交记录强制重新提交")
+            if old.get('groups'):
+                raise WaitingForHuman('竞品清单已变化，但旧提交记录仍存在，不能自动覆盖或重复提交', hint='请核对旧任务后按流程重置对应步骤')
+            self.log(ctx, "清单指纹变化，旧记录没有已提交任务")
         else:
             self.log(ctx, "无历史提交记录, 全新提交")
 
         batches = self._batch(asins, batch_size)
+        if groups:
+            for old_group in groups:
+                index = old_group.get('group')
+                if not isinstance(index, int) or index < 0 or index >= len(batches) or old_group.get('asins') != batches[index]:
+                    raise StepFailedError('现有竞品提交记录与当前分组输入不一致或缺少完整输入，请核对后再续跑，避免混组或重复扣费')
+                if old_group.get('status') == 'submitting':
+                    raise WaitingForHuman(f"步骤12组{index}上次提交状态不确定", hint='请核对平台导出记录后再继续，避免重复扣费')
         self.log(ctx, f"变体共 {len(batches)} 组, 本次配额=组数={len(batches)}")
 
         if not batches:
@@ -176,6 +188,7 @@ class Step12CompetitorSubmit(BaseStep):
         # 2026-09-16: 必须 `with ... as` 绑定真浏览器 —— ctx.browser 返回的是租约
         # (SsBrowserLease), 直接赋值再用会报没有 new_page。
         backup = acct["kind"] != "main"
+        shared_profile = bool(str(os.environ.get('PIPELINE_WORKBENCH_USER') or '').strip())
         from core.ss_lock import acquire, DEFAULT_WAIT_SECONDS
         account = str(acct.get("account") or "").strip().lower()
         if not account:
@@ -190,13 +203,13 @@ class Step12CompetitorSubmit(BaseStep):
             raise StepFailedError("无法获取卖家精灵账号导出锁，停止提交以避免不同任务混淆")
         with account_lease, ctx.browser(
             "sellersprite",
-            profile_dir=(ctx.paths.profile_ss_backup(acct["index"]) if backup else None),
-            use_cdp=(False if backup else None),
+            profile_dir=(ctx.paths.profile_ss_backup(acct["index"]) if backup and not shared_profile else None),
+            use_cdp=(False if backup and not shared_profile else None),
         ) as b:
             page = None
             if not ctx.dry_run:
                 page = b.new_page()
-                self._ensure_login_for(ctx, b, page, acct)
+                page = self._ensure_login_for(ctx, b, page, acct) or page
             self.log(ctx, f"账号[{acct['note']}] 开始提交, 剩余待处理组 {len(todo)}")
             first_submitted = True
             for i, batch_asins in todo:
@@ -204,49 +217,50 @@ class Step12CompetitorSubmit(BaseStep):
                 old_group = self._find_group(groups, i)
                 old_task = (old_group or {}).get("task_name")
                 if not force:
-                    if self._group_downloaded(ctx, i, old_task):
-                        self.log(ctx, f"组{i}: 下载目录已有组文件, 跳过提交")
-                        continue
                     if old_group is not None:
                         self.log(ctx, f"组{i}: 本地提交记录已存在, 跳过提交")
                         continue
                     # 仅凭首个 ASIN 无法证明任务的周期、站点和完整商品组一致。
                     # 本地记录才可作为续跑依据，避免跨类目或跨周期复用平台旧任务。
+                record = self._make_record(i, '', first_asin, batch_asins)
+                record['status'] = 'submitting'
+                if not ctx.dry_run:
+                    record['account_id'] = account_id(acct['account'])
+                groups.append(record)
+                self._save_submitted(submitted_path, fp, groups)
                 try:
                     task_name = self._submit_group(
                         ctx, b, page, site, batch_asins, first_asin, first_submitted
                     )
                 except QuotaExhausted as exc:
+                    groups.remove(record)
                     self.log(ctx, f"组{i}: [{acct['note']}] 导出配额耗尽({exc}) → 切换账号")
                     self._save_submitted(submitted_path, fp, groups)
                     return [(g, ba) for (g, ba) in todo if g >= i]
+                except Exception as exc:
+                    if '[MONTH_FALLBACK_CONFIRM]' in str(exc):
+                        groups.remove(record)
+                        self._save_submitted(submitted_path, fp, groups)
+                        raise
+                    if isinstance(exc, StepFailedError) and str(exc).startswith('查竞品提交最终失败'):
+                        # _submit_group_real only emits this after failures before
+                        # the export click; no remote submission needs recovery.
+                        groups.remove(record)
+                        self._save_submitted(submitted_path, fp, groups)
+                        raise
+                    self._save_submitted(submitted_path, fp, groups)
+                    raise StepFailedError(f'步骤12组{i}提交未能确认，请核对平台导出记录后再继续，避免重复扣费：{exc}') from exc
                 first_submitted = False
-                groups.append(self._make_record(i, task_name, first_asin, batch_asins))
+                record['task_name'] = task_name
+                record['time'] = self.now()
+                record['status'] = 'submitted'
                 self._save_submitted(submitted_path, fp, groups)
                 self.log(ctx, f"组{i}: 提交成功, 任务名={task_name}")
             return []
 
     def _ensure_login_for(self, ctx: StepContext, b, page, acct: dict) -> None:
-        """按账号登录: 主账号走原流程; 备用账号独立 Profile + 账号密码自动登录。"""
-        if acct["kind"] == "main":
-            self._ensure_login_real(ctx, b, page)
-            return
-        from core.browser import BrowserAutomation
-        if BrowserAutomation.login_verified(b.profile_dir):
-            self.log(ctx, f"备用账号[{acct['note']}] Profile 已有登录态, 复用")
-            return
-        b.goto(page, "https://www.sellersprite.com/")
-        if b.check_sellersprite_login(page):
-            self.log(ctx, f"备用账号[{acct['note']}] 已登录")
-            return
-        self.log(ctx, f"备用账号[{acct['note']}] 未登录, 自动登录")
-        if b.login_sellersprite(page, acct["account"], acct["password"]):
-            self.log(ctx, f"备用账号[{acct['note']}] 自动登录成功")
-            return
-        if b.check_sellersprite_login(page):
-            self.log(ctx, "自动登录后复查发现实际已登录, 继续")
-            return
-        raise BrowserError(f"备用账号[{acct['note']}] 登录失败(检查 SS_ACCOUNTS 账号密码)")
+        """每次显式建立指定账号的会话，不能仅凭 Profile 已登录推测身份。"""
+        return login_as_account(b, page, acct)
 
     def _load_variants(self, ctx: StepContext, cat: str) -> list[str]:
         """读取变体清单; 缺失时从 results.jsonl 推导(多变体取子体, 单变体取自身)。"""
@@ -484,12 +498,14 @@ class Step12CompetitorSubmit(BaseStep):
                     raise StepFailedError(f"无法读取导出前的任务清单，未提交以避免混淆周期: {exc}") from exc
                 b.goto(page, self.LOOKUP_URL, timeout=60000)
                 time.sleep(self._RENDER_WAIT)                 # 页面导航后等渲染
+                dismiss_sellersprite_promotions(page, lambda m: self.log(ctx, m))
                 self._select_site(ctx, page, site)
                 time.sleep(self._RENDER_WAIT)                 # 选站点后等下拉/页面刷新
                 self._select_month(ctx, page, month)
                 time.sleep(self._RENDER_WAIT)                 # 选月份后等下拉/页面刷新
                 self._fill_asins(ctx, page, batch_asins)
                 time.sleep(self._RENDER_WAIT)                 # 填 ASIN 后等输入框/联动控件渲染
+                dismiss_sellersprite_promotions(page, lambda m: self.log(ctx, m))
                 self._click_by_text(ctx, page, "立即查询", required=True)
                 time.sleep(self._RENDER_WAIT)                 # 点查询后等结果表格/遮罩加载
                 b.wait_selector(page, "table", timeout=60000)
@@ -588,9 +604,12 @@ class Step12CompetitorSubmit(BaseStep):
             option.wait_for(state="visible", timeout=5000)
             option.click(timeout=5000)
             park_mouse(page)
+            selected = first_visible(page, '[class*=market-select] input')
+            if selected is None or site not in str(selected.input_value() or ''):
+                raise BrowserError(f'所选站点无法验证为 {site}')
             self.log(ctx, f"已选择站点: {site}")
         except Exception as exc:
-            self.log(ctx, f"站点选择失败(将使用页面默认): {site}, {exc}")
+            raise BrowserError(f'站点选择或核验失败，停止以避免使用错误站点: {site}') from exc
 
     def _select_month(self, ctx: StepContext, page, month: str) -> None:
         """选月份(需求文档技术路线: 下拉选择; 查竞品页日期为 el-select.date-select)。
@@ -629,6 +648,8 @@ class Step12CompetitorSubmit(BaseStep):
         except MonthUnavailableError as exc:
             raise BrowserError(str(exc)) from exc
         except Exception as exc:
+            if getattr(self, '_strict_retry_context', False):
+                raise BrowserError(f'重导时无法确认原周期 {month}，不允许自动切换周期') from exc
             # 目标月可能尚未被平台提供: 列出可用选项, 再询问是否用最近30天替代
             opts: list[str] = []
             try:
@@ -713,12 +734,12 @@ class Step12CompetitorSubmit(BaseStep):
             pass
         got = [p for p in cur.replace("\n", " ").split(" ") if p.strip()]
         self.log(ctx, f"填入校验: 提交 {len(batch_asins)} 个, 输入框识别 {len(got)} 个, 首={got[0] if got else '(空)'!r}")
-        if got and first in got and len(got) == len(batch_asins):
+        if [x.strip().upper() for x in got] == [str(x).strip().upper() for x in batch_asins]:
             self.log(ctx, f"已填入变体ASIN {len(batch_asins)} 个(空格分隔, 原生写入+读回校验通过)")
             park_mouse(page)     # 填完把鼠标挪回内容区(避免顶栏 hover 菜单盖住按钮)
             return
         raise StepFailedError(
-            f"填 ASIN 不完整: 提交 {len(batch_asins)} 个, 输入框仅识别 {len(got)} 个"
+            f"填 ASIN 不完整或列表不一致: 提交 {len(batch_asins)} 个, 输入框识别 {len(got)} 个"
             f"(首 ASIN {first!r} 完整={first in got}); 实际值前120字符: {cur[:120]!r}, "
             f"疑似输入框类型/分隔符不符, 请人工检查后重跑"
         )

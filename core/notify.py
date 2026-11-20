@@ -18,6 +18,15 @@ RESET = "RESET"
 RESET_MARK = "[RESET]"
 
 
+def with_context(content: str, config=None) -> str:
+    """Attach actual category owner and run actor; never invent missing identities."""
+    cat = str(getattr(config, 'cat', '') or os.environ.get('PIPELINE_CATEGORY_NAME') or '').strip()
+    owner = str(os.environ.get('PIPELINE_CATEGORY_OWNER') or '').strip()
+    actor = str(os.environ.get('PIPELINE_WORKBENCH_USER') or '').strip()
+    return (f"类目：{cat or '未记录'}\n创建人：{owner or '未记录'}\n"
+            f"运行人：{actor or '未记录'}\n{content}")
+
+
 def append_alert(alerts_file: str, level: str, message: str) -> None:
     """追加写预警记录(带时间戳)。"""
     os.makedirs(os.path.dirname(alerts_file), exist_ok=True)
@@ -36,6 +45,8 @@ def push_wecom(webhook: str, content: str) -> bool:
     """企业微信机器人推送。未配置 Webhook 静默返回 False。"""
     if not webhook:
         return False
+    if not str(content).startswith('类目：'):
+        content = with_context(str(content))
     try:
         import httpx
         resp = httpx.post(
@@ -43,12 +54,14 @@ def push_wecom(webhook: str, content: str) -> bool:
             json={"msgtype": "text", "text": {"content": content[:4000]}},
             timeout=10,
         )
-        return resp.status_code == 200
+        if resp.status_code != 200:
+            return False
+        return resp.json().get('errcode') == 0
     except Exception:
         return False
 
 
-def push_alerts(webhook: str, alerts_file: str, limit: int = 8) -> bool:
+def push_alerts(webhook: str, alerts_file: str, limit: int = 8, *, config=None) -> bool:
     """推送预警文件中的前 limit 条 (FR-17: 配置则推送前8条, 未配置静默)。
 
     重置边界: 若文件含 [RESET] 行(步骤重置时写入), 只推送**最近一次 [RESET] 之后**
@@ -72,7 +85,7 @@ def push_alerts(webhook: str, alerts_file: str, limit: int = 8) -> bool:
     if not tail:
         return False
     body = "Amazon选品流水线预警\n" + "\n".join(tail[-limit:])
-    return push_wecom(webhook, body)
+    return push_wecom(webhook, with_context(body, config))
 
 
 def popup_critical(message: str) -> None:

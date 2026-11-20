@@ -17,13 +17,14 @@ from __future__ import annotations
 import os
 import hashlib
 import json
+import shutil
 import time
 import zipfile
 from pathlib import Path
 
 import pandas as pd
 
-from core.errors import BrowserError, DownloadError, StepFailedError
+from core.errors import BrowserError, DownloadError, EmptyExportPause, StepFailedError, WaitingForHuman
 from core.io_utils import df_to_excel, merge_excel_by_rows, read_jsonl, read_txt_lines
 from core.validation import require_file
 from steps._month_fallback import (  # noqa: E402
@@ -36,11 +37,15 @@ from steps._month_fallback import (  # noqa: E402
 )
 from steps._ss_accounts import (
     QuotaExhausted,
+    account_plan,
+    login_as_account,
+    wait_until_window,
     read_export_quota,
     window_end,
     window_start,
 )
-from steps._browser_ux import click_verified, first_visible, park_mouse
+from steps._browser_ux import click_verified, dismiss_sellersprite_promotions, first_visible, park_mouse
+from steps._export_guard import GroupCheckpoint, check_rolling_retry, checksum, identity, workbook_state
 from steps.base import BaseStep, StepContext
 
 _REVERSING_URL = "https://www.sellersprite.com/v3/reversing"
@@ -267,7 +272,8 @@ class Step11TrafficSource(BaseStep):
                 screenshot_every,
                 download_dir,
             )
-        self._merge(ctx, download_dir, merged_path)
+        self._merge(ctx, download_dir, merged_path,
+                    include_names=getattr(self, '_completed_names', None) if not ctx.dry_run else None)
         self.log(ctx, f"FR-11 完成: 合并文件 {merged_path}")
 
     def _load_parents(self, ctx: StepContext) -> list[str]:
@@ -307,32 +313,51 @@ class Step11TrafficSource(BaseStep):
         screenshot_every: int,
         download_dir: str,
     ) -> None:
-        """使用普通 Chrome 的当前登录会话导出；配额耗尽后等待手动换号续跑。"""
+        """依次使用账号计划，同一 Profile 内切换并续跑未完成的组。"""
         self._unconfirmed_download_failures = []
         if not str(ctx.config.get("SS_CDP_URL", "") or "").strip():
             raise StepFailedError("步骤11需要配置 SS_CDP_URL，才能连接普通 Chrome 的当前登录会话")
-        self.log(ctx, "步骤11使用普通 Chrome 当前登录会话；账号切换需在该浏览器中手动完成")
         preexisting = set(os.listdir(download_dir))
+        self._completed_names = set()
         todo: list[tuple[int, list[str]]] = [
             (gi, group)
             for gi, group in enumerate(groups, 1)
             if not self._already_downloaded(group, preexisting, download_dir, site=site, month=month)
         ]
         if not todo:
+            for group in groups:
+                record = GroupCheckpoint(download_dir, identity(group, site, month)).read()
+                if record.get('status') == 'completed':
+                    self._completed_names.add(record['file'])
             self.log(ctx, "所有组已有导出文件, 无需执行")
             return
+        for gi, group in todo:
+            record = GroupCheckpoint(download_dir, identity(group, site, month)).read()
+            if not record and any(n.endswith('.xlsx') and not n.startswith('合并') and group[0] in n for n in preexisting):
+                raise WaitingForHuman(f'步骤11第{gi}组有历史导出文件但缺少完整输入与周期的断点记录，无法确认归属',
+                                      hint='请先核对历史文件，避免重复导出或混用')
         self.log(ctx, f"待导出组 {len(todo)}/{len(groups)}")
-        # 共用一个登录态时不能把仍登录的账号误认成下一账号。
-        current_session = {"kind": "current", "note": "Chrome 当前登录账号"}
-        todo = self._run_groups_on_account(
-            ctx, current_session, todo, site, month, timeout, screenshot_every,
-            download_dir, has_next=False,
-        )
+        accounts = account_plan(ctx.config)
+        if not accounts:
+            raise StepFailedError('未配置卖家精灵账号，无法自动切换')
+        for acct in accounts:
+            if not todo:
+                break
+            if acct['kind'] == 'backup':
+                wait_until_window(ctx, lambda msg: self.log(ctx, msg))
+            todo = self._run_groups_on_account(
+                ctx, acct, todo, site, month, timeout, screenshot_every,
+                download_dir, has_next=False,
+            )
         if todo:
             raise StepFailedError(
-                f"普通 Chrome 当前登录账号的导出配额已耗尽，仍有 {len(todo)} 组未完成。"
-                "请在该 Chrome 中切换到有配额的账号后续跑步骤11；已完成的导出会保留。"
+                f"所有已配置账号的导出配额已耗尽，仍有 {len(todo)} 组未完成。"
+                "请添加有配额的账号后续跑步骤11；已完成的导出会保留。"
             )
+        for group in groups:
+            record = GroupCheckpoint(download_dir, identity(group, site, month)).read()
+            if record.get('status') == 'completed':
+                self._completed_names.add(record['file'])
 
     @staticmethod
     def _account_window_label(ctx: StepContext, acct: dict) -> str:
@@ -363,7 +388,8 @@ class Step11TrafficSource(BaseStep):
         ) as browser:
             page = browser.new_page()
             browser.set_download_dir(page, download_dir)  # CDP: 下载重定向到规定目录
-            self._ensure_login_for(ctx, browser, page, acct)
+            page = self._ensure_login_for(ctx, browser, page, acct) or page
+            browser.set_download_dir(page, download_dir)
             self.log(ctx, f"账号[{acct['note']}] 开始导出, 剩余待处理组 {len(todo)}")
             for gi, group in todo:
                 if self._already_downloaded(group, set(os.listdir(download_dir)), download_dir,
@@ -373,10 +399,12 @@ class Step11TrafficSource(BaseStep):
                 last_err = ""
                 for attempt in range(1, 4):
                     try:
-                        self._run_group(
+                        result_page = self._run_group(
                             ctx, browser, page, gi, group, site, month, timeout,
                             download_dir, acct=acct,
                         )
+                        if result_page is not None:
+                            page = result_page
                         last_err = ""
                         break
                     except QuotaExhausted as exc:
@@ -384,6 +412,8 @@ class Step11TrafficSource(BaseStep):
                         return [(g, grp) for (g, grp) in todo if g >= gi]
                     except SellerSpriteSessionError:
                         # 登录问题不可按查询超时、下载失败或配额耗尽处理。
+                        raise
+                    except WaitingForHuman:
                         raise
                     except DownloadError as exc:
                         # 2026-09-08: 导出下载失败(tooltip 可能读不到配额)按"疑似耗尽"
@@ -430,8 +460,7 @@ class Step11TrafficSource(BaseStep):
             pass
 
     def _ensure_login_for(self, ctx: StepContext, browser, page, acct: dict) -> None:
-        """使用普通 Chrome 当前会话，不能将现有登录态臆测为其他账号。"""
-        self._ensure_login(ctx, browser, page)
+        return login_as_account(browser, page, acct)
 
     def _ensure_tool_session(self, ctx: StepContext, browser, page, acct: dict) -> None:
         """查询页明确显示游客时，清除进程缓存并重新检查实际登录态。"""
@@ -446,7 +475,7 @@ class Step11TrafficSource(BaseStep):
             BrowserAutomation.reset_login_verified(profile)
         self.log(ctx, f"账号[{acct.get('note', '?')}] 查询页显示未登录，重新核验该浏览器会话")
         try:
-            self._ensure_login_for(ctx, browser, page, acct)
+            page = self._ensure_login_for(ctx, browser, page, acct) or page
             browser.goto(page, _REVERSING_URL)
             time.sleep(_RENDER_WAIT)
         except Exception as exc:
@@ -458,6 +487,7 @@ class Step11TrafficSource(BaseStep):
                 f"卖家精灵账号[{acct.get('note', '?')}] 查询页仍显示未登录；"
                 "请检查该浏览器的登录状态后续跑"
             )
+        return page
 
     def _run_group(
         self,
@@ -473,18 +503,27 @@ class Step11TrafficSource(BaseStep):
         acct: dict | None = None,
     ) -> None:
         """单组完整流程: 导航->站点->日期->填ASIN->查询->导出下载。"""
+        ident = identity(group, site, month)
+        check_rolling_retry(download_dir, ident)
+        checkpoint = GroupCheckpoint(download_dir, ident)
+        state = checkpoint.read().get('status', '')
+        if state in ('initial_export_started', 'empty_retry_started', 'paused'):
+            raise EmptyExportPause(f'步骤11第{gi}组重导结果不明确或已连续两次为空', hint='核对该组记录后再处理')
         browser.goto(page, _REVERSING_URL)
         time.sleep(_RENDER_WAIT)                 # 页面导航后等渲染
         if acct is not None:
-            self._ensure_tool_session(ctx, browser, page, acct)
+            page = self._ensure_tool_session(ctx, browser, page, acct) or page
+        dismiss_sellersprite_promotions(page, lambda m: self.log(ctx, m))
         self._shot(ctx, browser, page, gi, "toolpage")
         self._select_site(ctx, browser, page, site)
         self._shot(ctx, browser, page, gi, "site")
+        dismiss_sellersprite_promotions(page, lambda m: self.log(ctx, m))
         self._select_month(ctx, browser, page, month)
         self._shot(ctx, browser, page, gi, "date")
         self._fill_asins(ctx, browser, page, group)
         time.sleep(_RENDER_WAIT)                 # 填 ASIN 后等输入框/联动控件渲染
         self._shot(ctx, browser, page, gi, "filled")
+        dismiss_sellersprite_promotions(page, lambda m: self.log(ctx, m))
         self._click_query(ctx, browser, page)
         self._shot(ctx, browser, page, gi, "queried")
         result = self._wait_results(
@@ -494,6 +533,8 @@ class Step11TrafficSource(BaseStep):
         if result == "error":
             raise BrowserError(f"第{gi}组查询出现平台错误提示，未取得可确认结果")
         if result == "empty":
+            if state == 'first_empty':
+                raise EmptyExportPause(f'步骤11第{gi}组此前导出为空，重查时平台返回无数据', hint='核对平台结果后再处理')
             # 空结果(2026-09-08): 平台对该组父体无流量来源数据 → 提醒并跳过,
             # 不导出不重试; 写 .no-content 标记, 断点续跑时按"已处理"跳过
             self.log(
@@ -502,8 +543,26 @@ class Step11TrafficSource(BaseStep):
                 f"首 ASIN={group[0] if group else '?'})——跳过该组, 继续后续组",
             )
             self._mark_empty_skip(download_dir, gi, group, site=site, month=month)
-            return
-        path = self._export_with_retry(ctx, browser, page, download_dir, timeout)
+            return page
+        dismiss_sellersprite_promotions(page, lambda m: self.log(ctx, m))
+        attempts = 1 if state == 'first_empty' else 0
+        group_dir = Path(download_dir) / '_exports' / checkpoint.key[:20]
+        group_dir.mkdir(parents=True, exist_ok=True)
+        if state in ('', 'new') and any(group_dir.glob('*.xlsx')):
+            raise EmptyExportPause(f'步骤11第{gi}组存在无法确认归属的历史暂存文件', hint='核对后再继续，避免重复导出')
+        browser.set_download_dir(page, str(group_dir))
+        if attempts:
+            checkpoint.save(status='empty_retry_started', retry_before=_download_snapshot(str(group_dir)))
+        else:
+            checkpoint.save(status='initial_export_started')
+        try:
+            path = self._export_with_retry(ctx, browser, page, str(group_dir), timeout, max_attempts=1 if attempts else 3)
+        except QuotaExhausted:
+            if attempts:
+                checkpoint.save(status='first_empty')
+            else:
+                checkpoint.save(status='new')
+            raise
         self._shot(ctx, browser, page, gi, "export")
         if not path:
             raise DownloadError(f"第{gi}组导出下载失败(超时兜底3次仍无文件)")
@@ -511,7 +570,61 @@ class Step11TrafficSource(BaseStep):
         # 无扩展名 → 合并/断点跳过都认不到; 先查是否已有 .xlsx 后缀, 没有才补上
         # (保留原名+补 .xlsx, 用户要求; 不做强制改名)
         path = self._normalize_export_name(path)
+        quality = workbook_state(path)
+        if quality == 'invalid':
+            raise DownloadError(f'第{gi}组导出文件损坏或缺少 ASIN 列，未判为业务空文件')
+        if quality == 'empty':
+            evidence_dir = Path(download_dir) / '_empty' / checkpoint.key[:16]
+            evidence_dir.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(path, evidence_dir / f'empty-{attempts + 1}.xlsx')
+            if attempts:
+                checkpoint.save(status='paused', empty_count=2)
+                raise EmptyExportPause(f'步骤11第{gi}组导出文件连续两次为空；站点={site}，周期={month}，首ASIN={group[0]}', hint='核对该组输入和平台结果')
+            checkpoint.save(status='first_empty', empty_count=1)
+            if not month:
+                raise EmptyExportPause(f'步骤11第{gi}组首次导出为空，但原周期是页面默认值，无法确认重导周期相同', hint='核对原周期后处理')
+            if identity(group, site, month) != checkpoint.ident:
+                raise EmptyExportPause(f'步骤11第{gi}组重导已跨日，无法保证最近30天周期相同', hint='核对原周期后处理')
+            self.log(ctx, f'第{gi}组业务数据为空，使用相同输入重新导出一次')
+            # Re-enter the original query rather than relying on whatever page
+            # state the first export left behind.
+            try:
+                self._strict_retry_context = True
+                self._select_site(ctx, browser, page, site)
+                self._select_month(ctx, browser, page, month)
+                self._fill_asins(ctx, browser, page, group)
+                self._click_query(ctx, browser, page)
+                if self._wait_results(ctx, browser, page, getattr(self, '_query_timeout', timeout)) != 'ok':
+                    raise BrowserError('重查未取得可确认结果')
+            except Exception as exc:
+                raise EmptyExportPause(f'步骤11第{gi}组重导前无法确认原输入、站点和周期', hint='核对页面后再处理') from exc
+            finally:
+                self._strict_retry_context = False
+            if identity(group, site, month) != checkpoint.ident:
+                raise EmptyExportPause(f'步骤11第{gi}组重导已跨日，无法保证最近30天周期相同', hint='核对原周期后处理')
+            checkpoint.save(status='empty_retry_started', retry_before=_download_snapshot(str(group_dir)))
+            try:
+                retry = self._export_with_retry(ctx, browser, page, str(group_dir), timeout, max_attempts=1)
+            except QuotaExhausted:
+                checkpoint.save(status='first_empty')
+                raise
+            if not retry:
+                raise EmptyExportPause(f'步骤11第{gi}组重导未确认，不能安全重复提交', hint='核对平台导出后再处理')
+            path = self._normalize_export_name(retry)
+            quality = workbook_state(path)
+            if quality == 'empty':
+                shutil.copy2(path, evidence_dir / 'empty-2.xlsx')
+                checkpoint.save(status='paused', empty_count=2)
+                raise EmptyExportPause(f'步骤11第{gi}组导出文件连续两次为空；站点={site}，周期={month}，首ASIN={group[0]}', hint='核对该组输入和平台结果')
+            if quality != 'nonempty':
+                raise EmptyExportPause(f'步骤11第{gi}组重导文件损坏或无法核验', hint='核对平台导出后再处理')
+        final_name = f'组{gi}-{checkpoint.key[:16]}.xlsx'
+        final_path = os.path.join(download_dir, final_name)
+        if os.path.abspath(path) != os.path.abspath(final_path):
+            shutil.copy2(path, final_path)
+        checkpoint.save(status='completed', file=final_name, sha256=checksum(final_path))
         self.log(ctx, f"第{gi}组导出文件: {path}")
+        return page
 
     def _normalize_export_name(self, path: str) -> str:
         """下载文件名后缀检查: 已有 .xlsx 原样返回; 没有则在末尾补 .xlsx。"""
@@ -570,6 +683,62 @@ class Step11TrafficSource(BaseStep):
         """
         if not group:
             return False
+        if download_dir:
+            ident = identity(group, site, month)
+            check_rolling_retry(download_dir, ident)
+            checkpoint = GroupCheckpoint(download_dir, ident)
+            record = checkpoint.read()
+            if record.get('status') == 'empty_retry_started':
+                stage = Path(download_dir) / '_exports' / checkpoint.key[:20]
+                before = record.get('retry_before') or {}
+                current = _download_snapshot(str(stage))
+                files = [Path(name) for name, state in current.items()
+                         if name.lower().endswith('.xlsx') and list(state) != list(before.get(name) or [])]
+                if len(files) != 1:
+                    raise EmptyExportPause('步骤11重导中断，无法唯一确认结果', hint='核对平台导出记录，避免重复扣费')
+                quality = workbook_state(files[0])
+                if quality == 'empty':
+                    evidence = Path(download_dir) / '_empty' / checkpoint.key[:16]
+                    evidence.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(files[0], evidence / 'empty-2.xlsx')
+                    checkpoint.save(status='paused', empty_count=2)
+                    raise EmptyExportPause('步骤11该组导出文件连续两次为空', hint='核对该组输入和平台结果')
+                if quality != 'nonempty':
+                    raise EmptyExportPause('步骤11中断后的重导文件损坏或无法核验', hint='核对平台导出记录')
+                name = f'组-{checkpoint.key[:16]}.xlsx'
+                final = Path(download_dir) / name
+                if final.exists() and checksum(final) != checksum(files[0]):
+                    raise WaitingForHuman('步骤11恢复时发现同名文件内容不一致', hint='请核对该组导出')
+                if not final.exists():
+                    shutil.copy2(files[0], final)
+                record = checkpoint.save(status='completed', file=name, sha256=checksum(final))
+            if record.get('status') == 'initial_export_started':
+                stage = Path(download_dir) / '_exports' / checkpoint.key[:20]
+                files = list(stage.glob('*.xlsx')) if stage.exists() else []
+                if len(files) != 1:
+                    raise EmptyExportPause('步骤11中断于导出期间，无法唯一确认文件是否生成', hint='核对该组平台导出记录，避免重复扣费')
+                quality = workbook_state(files[0])
+                if quality == 'nonempty':
+                    name = f'组-{checkpoint.key[:16]}.xlsx'
+                    final = Path(download_dir) / name
+                    if final.exists() and checksum(final) != checksum(files[0]):
+                        raise WaitingForHuman('步骤11恢复时发现同名文件内容不一致', hint='请核对该组导出')
+                    if not final.exists():
+                        shutil.copy2(files[0], final)
+                    record = checkpoint.save(status='completed', file=name, sha256=checksum(final))
+                elif quality == 'empty':
+                    evidence = Path(download_dir) / '_empty' / checkpoint.key[:16]
+                    evidence.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(files[0], evidence / 'empty-1.xlsx')
+                    checkpoint.save(status='first_empty', empty_count=1)
+                    return False
+                else:
+                    raise EmptyExportPause('步骤11中断后的导出文件损坏或无法核验', hint='核对该组平台导出记录')
+            if record.get('status') == 'completed':
+                name = str(record.get('file') or '')
+                path = Path(download_dir) / name
+                return (bool(name) and Path(name).name == name and path.is_file()
+                        and workbook_state(path) == 'nonempty' and checksum(path) == record.get('sha256'))
         first = group[0]
         for name in preexisting:
             if name.startswith("合并"):
@@ -589,13 +758,7 @@ class Step11TrafficSource(BaseStep):
                         and (not is_recent30(month) or marker.get("day") == time.strftime("%Y-%m-%d"))):
                     return True
                 continue
-            if not name.endswith(".xlsx") or first not in name:
-                continue
-            if download_dir:
-                path = os.path.join(download_dir, name)
-                if not _valid_xlsx(path):
-                    continue          # 空文件、未写完或损坏工作簿不算下载成功
-            return True
+            # A filename and its first ASIN alone cannot establish full group identity.
         return False
 
     def _mark_empty_skip(self, download_dir: str, gi: int, group: list[str], *,
@@ -683,6 +846,8 @@ class Step11TrafficSource(BaseStep):
         except MonthUnavailableError as exc:
             raise BrowserError(str(exc)) from exc
         except Exception as exc:
+            if getattr(self, '_strict_retry_context', False):
+                raise BrowserError(f'重导时无法确认原周期 {month}，不允许自动切换周期') from exc
             # 目标月可能尚未被平台提供: 列出可用选项, 再询问是否用最近30天替代
             opts: list[str] = []
             try:
@@ -768,12 +933,12 @@ class Step11TrafficSource(BaseStep):
                 pass
         got = [p.strip() for p in cur.replace("\n", ",").split(",") if p.strip()]
         self.log(ctx, f"填入校验: 提交 {len(group)} 个, 输入框识别 {len(got)} 个, 首={got[0] if got else '(空)'!r}")
-        if got and first in got and len(got) == len(group):
+        if [x.strip().upper() for x in got] == [str(x).strip().upper() for x in group]:
             self.log(ctx, f"已填入 {len(group)} 个父体(逗号分隔, 原生写入+读回校验通过)")
             park_mouse(page)      # 填完把鼠标挪回内容区: 用户看到的"粘贴后下拉挡住页面"就是鼠标停在顶栏造成的
             return
         raise BrowserError(
-            f"填父 ASIN 不完整: 提交 {len(group)} 个, 输入框仅识别 {len(got)} 个"
+            f"填父 ASIN 不完整或列表不一致: 提交 {len(group)} 个, 输入框识别 {len(got)} 个"
             f"(首 ASIN {first!r} 完整={first in got}); 实际值前120字符: {cur[:120]!r}, "
             f"疑似输入框类型/分隔符不符, 请人工检查后重跑"
         )
@@ -867,6 +1032,7 @@ class Step11TrafficSource(BaseStep):
         page,
         download_dir: str,
         timeout: int,
+        max_attempts: int = 3,
     ) -> str | None:
         """真实点击导出 + 下载监听; 超时进入二级导出兜底, 最多 3 次。
 
@@ -907,7 +1073,7 @@ class Step11TrafficSource(BaseStep):
                 raise BrowserError("未能点击导出按钮")
             time.sleep(_RENDER_WAIT)
 
-        for attempt in range(1, 4):
+        for attempt in range(1, max_attempts + 1):
             try:
                 before = _download_snapshot(download_dir)
                 _do_click(attempt)
@@ -918,15 +1084,15 @@ class Step11TrafficSource(BaseStep):
                     return path
             except Exception as exc:
                 self.log(ctx, f"导出点击失败(第{attempt}次): {exc}")
-            self.log(ctx, f"导出下载未成功(第{attempt}/3次, {timeout}s), 重试")
+            self.log(ctx, f"导出下载未成功(第{attempt}/{max_attempts}次, {timeout}s)")
         return None
 
-    def _merge(self, ctx: StepContext, download_dir: str, merged_path: str) -> None:
+    def _merge(self, ctx: StepContext, download_dir: str, merged_path: str, include_names=None) -> None:
         """全部数据按行合并; 无数据文件时写出空合并文件并告警。"""
         merged = merge_excel_by_rows(
             download_dir,
             merged_path,
-            exclude_names=[_MERGED_NAME],
+            exclude_names=([_MERGED_NAME] + ([p.name for p in Path(download_dir).glob('*.xlsx') if p.name not in include_names] if include_names is not None else [])),
         )
         if merged is None:
             self.log(ctx, "告警: 无数据文件可合并, 写出空合并文件(保证 DONE 校验)")

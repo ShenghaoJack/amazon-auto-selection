@@ -1,6 +1,6 @@
 """流程编排器 (3.2 执行方式 / 7.3 硬性校验)。
 
-- 全流程 0-19 / 从指定步骤续跑(断点续跑)
+- 全流程 0-20 / 从指定步骤续跑(断点续跑)
 - 步骤标记 DONE 必须以产物实际生成为前提
 - 失败必须阻断流程或显式告警, 禁止静默标成功
 - 每步完成后即时同步归档(3.4 数据保存要求)
@@ -18,7 +18,7 @@ from pathlib import Path
 from core import notify
 from core.archive import sync_step_dir, sync_step_files
 from core.config import Config
-from core.errors import WaitingForHuman
+from core.errors import EmptyExportPause, WaitingForHuman
 from core.logger import setup_logger
 from core.paths import Paths
 from core.state import RunState, _span_seconds, format_duration
@@ -90,7 +90,7 @@ def finish_line(state: RunState, seg_delta, now: datetime | None = None,
 
 
 class PipelineRunner:
-    """按 0-19 顺序执行步骤并维护状态。"""
+    """按 0-20 顺序执行步骤并维护状态。"""
 
     def __init__(self, config: Config, dry_run: bool | None = None):
         if dry_run is not None:
@@ -105,6 +105,28 @@ class PipelineRunner:
             self.paths.monitor_file("step-duration.csv"),
         )
         self.ctx = StepContext(config, self.paths, self.log, self.state)
+        self._ss_workflow_usage = None
+
+    def _hold_ss_workflow(self) -> None:
+        """Keep a shared browser alive between steps 11, 12 and 13."""
+        if self.config.dry_run or getattr(self, '_ss_workflow_usage', None) is not None:
+            return
+        from core.ss_auto_close import register
+        from core.ss_lock import pick_port, resource_key
+        url = str(self.config.get('SS_CDP_URL', '') or '').strip()
+        if not url or url.lower() == 'auto':
+            user = str(os.environ.get('PIPELINE_WORKBENCH_USER') or '').strip()
+            profile = self.paths.profile_ss() if user else ''
+            port = pick_port(user, profile_dir=profile) if profile else pick_port(user)
+            url = f'http://127.0.0.1:{port}'
+            self.config.set('SS_CDP_URL', url)
+        self._ss_workflow_usage = register(resource_key(url, ''))
+
+    def _release_ss_workflow(self) -> None:
+        handle, self._ss_workflow_usage = getattr(self, '_ss_workflow_usage', None), None
+        if handle:
+            from core.ss_auto_close import unregister
+            unregister(handle, self.log.info)
 
     def snapshot_dir(self) -> str:
         """本轮归档快照目录(所有步骤共享同一轮)。
@@ -368,7 +390,7 @@ class PipelineRunner:
         # 放行: 照样 CRIT 告警 + 企业微信(问题是真的, 该看见), 但**不阻断**本轮 —— 交给兜底链
         self.log.warning(msg)
         notify.append_alert(self.paths.monitor_file("monitor-alerts.txt"), notify.CRIT, msg)
-        notify.push_wecom(self.config.get("WECOM_WEBHOOK", ""), msg)
+        notify.push_wecom(self.config.get("WECOM_WEBHOOK", ""), notify.with_context(msg, self.config))
         self.log.warning("COOKIE 预检查放行: 继续本轮; 直连失败将由 FALLBACK=auto 的浏览器兜底接管"
                          "(无头补抓 → 有头补抓)")
 
@@ -460,6 +482,8 @@ class PipelineRunner:
                     self._log_run_summary("⏸ 步骤 8 完成，请确认关键词清单后继续")
                     return 3
                 if skip_finished and self.state.is_finished(num):
+                    if num == 13:
+                        self._release_ss_workflow()
                     continue
                 gate = self._blocking_manual_gate(num)
                 if gate:
@@ -469,12 +493,16 @@ class PipelineRunner:
                 if step is None:
                     self.log.error(f"步骤 {num} 未注册")
                     return 2
+                if num in (11, 12, 13):
+                    self._hold_ss_workflow()
                 # 步骤 0 自己完成两站登录检查；其余步骤只在实际执行前检查自身依赖。
                 # 避免步骤 11 的卖家精灵问题阻断与之无关的步骤 9/10。
                 if num != 0 and not self._precheck_step_login(num):
                     self._log_run_summary(f"步骤 {num:02d} 执行前登录检查失败")
                     return 2
                 code = self._run_one(step)
+                if num == 13 and code == 0:
+                    self._release_ss_workflow()
                 if code == 3:
                     # ★ 等待人工确认（方案 A 的两个停点）：不是失败，正常"暂停"。
                     #   退出码 3 与 2（失败）区分，供页面/脚本判断"该去确认了"。
@@ -489,6 +517,8 @@ class PipelineRunner:
             self._mark_current_interrupted()
             self._log_run_summary("被中断(Ctrl+C), 中断步骤已标记 INTERRUPTED")
             raise
+        finally:
+            self._release_ss_workflow()
         self._log_run_summary("全部步骤完成")
         # 耗时口径(2026-09-15 统一为"累计执行时长") : 必须与 webui 看板一致, 否则
         # "中断→续跑→再中断→再续跑"分多段跑完时, 只报本进程段会严重少报
@@ -640,6 +670,11 @@ class PipelineRunner:
             self.state.mark_pending(num)
             msg = f"⏸ 等待人工确认: 步骤 {num:02d} {step.title} —— {exc}"
             self.log.info(msg)
+            if isinstance(exc, EmptyExportPause):
+                notify.append_alert(self.paths.monitor_file('monitor-alerts.txt'), notify.CRIT, msg)
+                sent = notify.push_wecom(self.config.get('WECOM_WEBHOOK', ''), notify.with_context(msg, self.config))
+                if not sent:
+                    self.log.warning('企业微信提醒未发送成功：机器人未配置、网络异常或企业微信返回错误')
             self._log_step_usage(num, "WAITING")
             return 3
         except Exception as exc:
@@ -648,7 +683,7 @@ class PipelineRunner:
             self.log.error(msg)
             self._log_step_usage(num, "FAILED")
             notify.append_alert(self.paths.monitor_file("monitor-alerts.txt"), notify.CRIT, msg)
-            notify.push_wecom(self.config.get("WECOM_WEBHOOK", ""), msg)
+            notify.push_wecom(self.config.get("WECOM_WEBHOOK", ""), notify.with_context(msg, self.config))
             notify.popup_critical(msg)
             return 2
         missing = step.missing_artifacts(self.ctx)
@@ -669,6 +704,12 @@ class PipelineRunner:
                 return 2
         self.state.mark_done(num)
         self.log.info(f"步骤 {num:02d} 完成(DONE)(耗时 {self._step_duration_text(num)})")
+        if num == 13 and not self.config.dry_run:
+            try:
+                from core.ss_auto_close import request_close
+                request_close(str(self.config.get('SS_CDP_URL', '') or ''), self.log.info)
+            except Exception as exc:
+                self.log.warning('步骤13完成，关闭浏览器时发生异常（不影响产物）: %s', type(exc).__name__)
         self._log_step_usage(num, "DONE")
         self._sync_after_step(step)
         if num == 8 and not getattr(self, "_refreshing_keywords", False):
@@ -816,6 +857,15 @@ class PipelineRunner:
         self._sync_monitor_to_snapshot()
 
     def run_single(self, num: int) -> int:
+        if num not in (11, 12, 13):
+            return self._run_single_impl(num)
+        self._hold_ss_workflow()
+        try:
+            return self._run_single_impl(num)
+        finally:
+            self._release_ss_workflow()
+
+    def _run_single_impl(self, num: int) -> int:
         """单独运行某个步骤(独立审查入口)。"""
         if num >= 9 and self._keyword_confirmation_pending():
             self.log.info("⏸ 请先确认步骤 8 的关键词清单。")

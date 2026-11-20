@@ -40,6 +40,9 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
+# 启动后台预热和接收请求前，先加载类目配置模块，避免并发首次导入。
+import core.category_config  # noqa: E402,F401
+
 try:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
@@ -1312,6 +1315,7 @@ def integrated_report_status(cat: str, data_root: str = "data") -> dict:
         html_info = {"path": str(html), "size": st.st_size,
                      "mtime": datetime.fromtimestamp(st.st_mtime).strftime("%Y-%m-%d %H:%M:%S")}
     return {"cat": cat, "inputs_ok": not missing, "missing": missing, "html": html_info,
+            "step15_pdf": (cat_dir / f"{cat}-初步类目分析报告.xlsx").is_file(),
             "json": (out_dir / "report.json").is_file(),
             "log": (out_dir / "构建日志.txt").is_file(),
             "dir": str(out_dir), "progress": integrated_progress(cat, data_root)}
@@ -2424,7 +2428,7 @@ def cat_usage(mdir: Path | None) -> dict:
                 "last_ts": row.get("last_ts", ""),
                 "status": row.get("status", ""),
             }
-            for num, row in (agg["steps"] or {}).items() if int(num) != 19
+            for num, row in (agg["steps"] or {}).items()
         }
         data = {
             "run_id": agg["run_id"],
@@ -3291,7 +3295,7 @@ class Handler(BaseHTTPRequestHandler):
                 % (prog.get("phase") or "生成中", prog.get("pct", 0)))
         st = integrated_report_status(cat, droot)
         if not st["inputs_ok"]:
-            names = "、".join("外部VOC报告" if m["step"] is None else "步骤%d %s" % (m["step"], m["name"]) for m in st["missing"])
+            names = "、".join("步骤%d %s" % (m["step"], m["name"]) for m in st["missing"])
             raise UserFacingError(
                 "整合报告要求三份输入齐备(缺一不可), 当前缺: %s —— 请先跑对应步骤(可单步), 再回来点生成。"
                 % names)
@@ -3357,6 +3361,57 @@ class Handler(BaseHTTPRequestHandler):
             return {"ok": False, "error": "文件不存在, 或不在该类目数据目录内"}
         self._send_file(path, os.path.basename(str(name)))
         return None
+
+    def _step15_review_root(self, file):
+        path = safe_config_path(file)
+        raw = load_yaml_file(path)
+        if not str(raw.get("CAT") or "").strip():
+            raise ValueError("类目配置无效，请重新选择类目")
+        cfg = self._status_cfg(file)
+        return cfg, cat_root_dir(cfg["CAT"], cfg["DATA_ROOT"])
+
+    def _api_step15_review(self, q):
+        from core.step15_review import view
+        cfg, root = self._step15_review_root(q.get("file", ["config.yaml"])[0])
+        return {"ok": True, "cat": cfg["CAT"], **view(root)}
+
+    def _api_step15_pdf(self, q):
+        from core.step15_review import view
+        from core.step15_pdf import render_pdf
+        cfg, root = self._step15_review_root(q.get("file", ["config.yaml"])[0])
+        snapshot = view(root)
+        expected = q.get("revision", [""])[0]
+        if expected and expected != snapshot["revision"]:
+            self._json({"ok": False, "error": "报告已更新，请刷新后重新下载"}, 409)
+            return
+        result = render_pdf(cfg["CAT"], snapshot)
+        self._send(200, result, "application/pdf", {"Content-Disposition": f"attachment; filename*=UTF-8''{quote(cfg['CAT'] + '-步骤15选品报告.pdf')}"})
+
+    def _api_step15_settings(self, q):
+        from core.step15_settings import describe
+        cfg, root = self._step15_review_root(q.get("file", ["config.yaml"])[0])
+        return {"ok": True, "cat": cfg["CAT"], **describe(root, q.get("scope", ["global"])[0])}
+
+    def _api_step15_settings_save(self, body):
+        from core.step15_settings import save
+        cfg, root = self._step15_review_root(str(body.get("config_file") or "config.yaml"))
+        self._require_run(cfg["CAT"])
+        scope = str(body.get("scope") or "global")
+        if (getattr(self, "_user", None) or {}).get("role") != "admin":
+            raise Forbidden("只有管理员可以修改通用选品标准")
+        if RUNNER.active_for(cfg["CAT"]) or _lock_live_started(cfg["CAT"], cfg["DATA_ROOT"])[0]:
+            raise ValueError("该类目仍在运行，请先停止再修改标准")
+        rev = save(root, body.get("rules"), body.get("revision"), scope)
+        return {"ok": True, "revision": rev, "scope": scope}
+
+    def _api_step15_review_confirm(self, body):
+        from core.step15_review import confirm
+        cfg, root = self._step15_review_root(str(body.get("config_file") or "config.yaml"))
+        self._require_run(cfg["CAT"])
+        if RUNNER.active_for(cfg["CAT"]) or _lock_live_started(cfg["CAT"], cfg["DATA_ROOT"])[0]:
+            raise ValueError("该类目仍在运行，请等待步骤15暂停后再确认")
+        confirm(root, body.get("revision"))
+        return {"ok": True, "cat": cfg["CAT"]}
 
     def _api_status(self, q, path):
         after_raw = q.get("after", [None])[0]
@@ -3626,6 +3681,12 @@ class Handler(BaseHTTPRequestHandler):
                     self._json(res, 404 if res.get("error", "").startswith("文件不存在") else 400)
             elif path == "/api/status":
                 self._json(self._api_status(q, path))
+            elif path == "/api/step15-review":
+                self._json(self._api_step15_review(q))
+            elif path == "/api/step15-review/pdf":
+                self._api_step15_pdf(q)
+            elif path == "/api/step15-settings":
+                self._json(self._api_step15_settings(q))
             elif path == "/api/keyword-lists":
                 cfg = self._status_cfg(q.get("file", [None])[0])
                 panel = keyword_lists_panel(cfg["CAT"], cfg["DATA_ROOT"])
@@ -3731,6 +3792,10 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"ok": True})
             elif path == "/api/run":
                 self._json(self._api_run(self._read_body()))
+            elif path == "/api/step15-review/confirm":
+                self._json(self._api_step15_review_confirm(self._read_body()))
+            elif path == "/api/step15-settings/save":
+                self._json(self._api_step15_settings_save(self._read_body()))
             elif path == "/api/stop":
                 self._json(self._api_stop(self._read_body()))
 
@@ -3889,13 +3954,20 @@ class Handler(BaseHTTPRequestHandler):
         profile = REGION_PROFILE.get(market_code)
         if not profile or not profile.get("site") or not profile.get("market"):
             raise ValueError("请选择支持的市场")
-        year = str(body.get("year") or "").strip()
-        month = str(body.get("month") or "").strip()
-        if not re.fullmatch(r"20\d{2}", year) or not re.fullmatch(r"(?:0?[1-9]|1[0-2])", month):
-            raise ValueError("请选择有效的年份和月份")
         period_mode = str(body.get("period_mode") or "fixed_month").strip()
         if period_mode not in ("fixed_month", "recent30"):
             raise ValueError("请选择固定月份或最近30天")
+        if period_mode == "recent30":
+            now = datetime.now()
+            year, month = str(now.year), f"{now.month:02d}"
+            trend_year = now.year - (1 if now.month == 1 else 0)
+            trend_month = f"{trend_year}{12 if now.month == 1 else now.month - 1:02d}"
+        else:
+            year = str(body.get("year") or "").strip()
+            month = str(body.get("month") or "").strip()
+            if not re.fullmatch(r"20\d{2}", year) or not re.fullmatch(r"(?:0?[1-9]|1[0-2])", month):
+                raise ValueError("请选择有效的年份和月份")
+            trend_month = f"{year}{int(month):02d}"
         account = str(body.get("ss_account") or "").strip()
         password = str(body.get("ss_password") or "").strip()
         if not account or not password:
@@ -3913,11 +3985,12 @@ class Handler(BaseHTTPRequestHandler):
             if parsed_url.netloc.lower() not in allowed_hosts:
                 raise ValueError(f"榜单 URL 站点与所选市场不一致，请使用 {profile['market']}")
         # 兼容用户输入旧式完整目录名，统一采用当前选中的市场与月份。
-        cat = re.sub(r"-(?:US|USA|UK|GB|DE|FR|IT|ES|CA|JP|MX|BR|AU|IN|AE)-20\d{4}(?:-RECENT30)?$", "", cat, flags=re.I).strip()
+        cat = re.sub(r"-(?:US|USA|UK|GB|DE|FR|IT|ES|CA|JP|MX|BR|AU|IN|AE)-20\d{4}(?:\d{2})?(?:-RECENT30)?$", "", cat, flags=re.I).strip()
         if not cat:
             raise ValueError("请填写类目名称")
         month = f"{int(month):02d}"
-        cat = f"{cat}-{market_code.upper()}-{year}{month}" + ("-RECENT30" if period_mode == "recent30" else "")
+        date_suffix = now.strftime("%Y%m%d") if period_mode == "recent30" else f"{year}{month}"
+        cat = f"{cat}-{market_code.upper()}-{date_suffix}" + ("-RECENT30" if period_mode == "recent30" else "")
         data_root = PROJECT_ROOT / "data"
         target = data_root / cat / "config.yaml"
         if target.exists():
@@ -3937,7 +4010,7 @@ class Handler(BaseHTTPRequestHandler):
             "SITE": profile["site"], "MARKET": profile["market"],
             "TRAFFIC_MONTH": "最近30天" if period_mode == "recent30" else f"{year}-{month}",
             "COMPETITOR_MONTH": "最近30天" if period_mode == "recent30" else f"{year}-{month}",
-            "TREND_MONTH": f"{year}{month}", "SS_ACTIVE_ACCOUNT": "auto",
+            "TREND_MONTH": trend_month, "SS_ACTIVE_ACCOUNT": "auto",
         }
         out_lines = patch_yaml_lines(lines, patch)
         # 清除旧主账号后保留备用账号，避免复制源的 is_main 覆盖本次输入。
@@ -6165,15 +6238,29 @@ class Handler(BaseHTTPRequestHandler):
                 from core.ss_lock import pick_port, normalize_cdp_url
                 _me = str((getattr(self, "_user", None) or {}).get("name") or "")
                 _reserved = set()
+                _same_user_ports = set()
                 for _run in RUNNER.snapshots():
                     if _run.get("active"):
                         _addr = normalize_cdp_url(str(_run_config_values(_run).get("SS_CDP_URL") or ""))
                         if _addr:
                             try:
-                                _reserved.add(int(_addr.rsplit(":", 1)[1]))
+                                _running_port = int(_addr.rsplit(":", 1)[1])
+                                if str(_run.get('user') or '').strip().casefold() == _me.strip().casefold() and _me:
+                                    _same_user_ports.add(_running_port)
+                                else:
+                                    _reserved.add(_running_port)
                             except (IndexError, ValueError):
                                 pass
-                _port = pick_port(_me, exclude_ports=_reserved)
+                from core.profile_isolate import user_ss_profile_path
+                _profile = str(user_ss_profile_path(_me)) if _me else ''
+                if len(_same_user_ports) > 1 or (_same_user_ports & _reserved):
+                    raise RuntimeError('当前工作台用户的浏览器端口状态冲突，请先检查在跑任务')
+                if _same_user_ports:
+                    # The first run owns the reservation even while Chrome starts.
+                    _port = next(iter(_same_user_ports))
+                else:
+                    _port = (pick_port(_me, exclude_ports=_reserved, profile_dir=_profile)
+                             if _profile else pick_port(_me, exclude_ports=_reserved))
                 overrides = dict(overrides or {})
                 overrides["SS_CDP_URL"] = "http://127.0.0.1:%d" % _port
             except Exception as _exc:
@@ -6262,10 +6349,18 @@ class Handler(BaseHTTPRequestHandler):
                     percat = sync_category_config(conf, eff["DATA_ROOT"], eff["CAT"])
         except Exception:
             pass
+        try:
+            from webui import auth as _run_auth
+            _category_owner = str((_run_auth.owner_of(eff['CAT']) or {}).get('owner') or '')
+        except Exception:
+            _category_owner = ''
         info = RUNNER.start(cmd, label, file, conf,
                             eff["CAT"], eff["DATA_ROOT"], mode,
                             int(body.get("from_step", 0) or 0), overrides,
-                            extra_env={"PIPELINE_CONFIG_SOURCE": str(percat)},
+                            extra_env={"PIPELINE_CONFIG_SOURCE": str(percat),
+                                       "PIPELINE_CATEGORY_NAME": str(eff["CAT"]),
+                                       "PIPELINE_CATEGORY_OWNER": _category_owner,
+                                       "PIPELINE_WORKBENCH_USER": str((getattr(self, "_user", None) or {}).get("name") or "")},
                             user=str((getattr(self, "_user", None) or {}).get("name") or ""))
         info.pop("effective_conf", None)
         info["dry_run"] = eff["DRY_RUN"]

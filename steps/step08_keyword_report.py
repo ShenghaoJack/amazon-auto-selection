@@ -243,7 +243,7 @@ class Step08KeywordReport(BaseStep):
     def _build_core_sheet(self, core_words: list[str], kw_map: dict, screen_map: dict,
                           monthly: dict, season_threshold: float,
                           manual_core: set | None = None) -> pd.DataFrame:
-        cols = ["关键词", "站内月搜索量", "站内同比%", "Google指数", "Google同比%",
+        cols = ["关键词", "站内月搜索量", "站内数据月份", "站内同比%", "Google指数", "Google同比%",
                 "CPC", "CPC下限", "CPC上限", "达标判定", "Google季节性", "站内季节性", "Google数据口径", "Google数据范围"]
         if not core_words:
             return pd.DataFrame(columns=cols)
@@ -260,6 +260,7 @@ class Step08KeywordReport(BaseStep):
             rows.append([
                 w,
                 _to_int(rec.get("monthly_search_volume")),
+                rec.get("station_trend_month") or ("旧记录未标注" if rec.get("monthly_search_volume") is not None else "无数据"),
                 _r1(rec.get("mom_yoy")),
                 _r1(evidence.get("index") if valid else google_index_latest(gidx)),
                 _r1(gyoy),
@@ -296,7 +297,7 @@ class Step08KeywordReport(BaseStep):
         return pd.DataFrame(rows, columns=cols)
 
     def _build_table_sheet(self, table_keywords: list[str], kw_map: dict, screen_map: dict) -> pd.DataFrame:
-        cols = ["关键词", "站内月搜索量", "站内同比%", "Google同比%", "CPC", "判定", "原因", "Google数据口径", "Google数据范围"]
+        cols = ["关键词", "站内月搜索量", "站内数据月份", "站内同比%", "Google同比%", "CPC", "判定", "原因", "Google数据口径", "Google数据范围"]
         if not table_keywords:
             return pd.DataFrame(columns=cols)
         rows = []
@@ -307,6 +308,7 @@ class Step08KeywordReport(BaseStep):
             rows.append([
                 w,
                 _to_int(rec.get("monthly_search_volume")),
+                rec.get("station_trend_month") or ("旧记录未标注" if rec.get("monthly_search_volume") is not None else "无数据"),
                 _r1(rec.get("mom_yoy")),
                 _r1(rec["google_evidence"].get("yoy") if isinstance(rec.get("google_evidence"), dict) and rec["google_evidence"].get("target_month") == getattr(self, "_trend_month", None) else google_yoy(rec.get("google_monthly_index") or {}, getattr(self, "_trend_month", None))),
                 _r2(rec.get("cpc")),

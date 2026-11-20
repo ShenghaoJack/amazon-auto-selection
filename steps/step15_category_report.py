@@ -2,7 +2,7 @@
 
 输入: 拆分结果(14_流量拆分/流量拆分数据-需人工补充.xlsx 的"自动补充表" sheet)
       + 关键词报告(<CAT>-keyword-report.xlsx 的"核心词分析" sheet)
-输出: <CAT>-初步类目分析报告.xlsx, 4 sheet: 综合分析/关键词与季节性/变体明细/口径说明
+输出: <CAT>-初步类目分析报告.xlsx，含综合分析、关键词与季节性、变体明细、口径说明、选品指标判定和AI市场建议。
 
 逻辑: 表格生成库动态计算 KPI/类目门禁/品牌排名/季节性;
       达标行绿色 / 不达标红色 / 数据不足橙色高亮; Top5 品牌行底色标记。
@@ -10,17 +10,21 @@
 """
 from __future__ import annotations
 
+import os
 import re
 
 import pandas as pd
 from openpyxl import load_workbook
-from openpyxl.styles import PatternFill
+from openpyxl.styles import PatternFill, Alignment
+from openpyxl.utils import get_column_letter
 
 from core import StepDataError, df_to_excel, read_excel_sheet, require_file, warn_missing
 from core.currency import SITE_CURRENCY, CURRENCY_NAMES
 from steps.step14_traffic_split import _positive_price, _validate_price_currency
 from steps._month_fallback import display as _month_display  # noqa: E402
 from steps.base import BaseStep, StepContext
+from tools.step15_indicator_assessment import advice as indicator_advice
+from tools.step15_market_assessment import assess as assess_indicators, COLUMNS as INDICATOR_COLUMNS
 
 SPLIT_FILE = "14_流量拆分/流量拆分数据-需人工补充.xlsx"
 SPLIT_SHEET = "AI已补充"
@@ -88,7 +92,7 @@ VARIANT_COLS = [
 class Step15CategoryReport(BaseStep):
     number = 15
     title = "初步类目分析报告"
-    description = "FR-15: 基于流量拆分与关键词报告生成 4 sheet 初步类目分析报告"
+    description = "FR-15: 生成初步类目分析、选品指标判定和AI市场建议"
 
     def validate_upstream(self, ctx: StepContext) -> None:
         self._cat = ctx.config.cat
@@ -99,7 +103,7 @@ class Step15CategoryReport(BaseStep):
 
     @property
     def artifacts(self) -> list[str]:
-        return [f"{self._cat}-初步类目分析报告.xlsx"]
+        return [f"{self._cat}-初步类目分析报告.xlsx", "15_选品报告确认.json"]
 
     def run(self, ctx: StepContext) -> None:
         cat = self._cat
@@ -116,17 +120,33 @@ class Step15CategoryReport(BaseStep):
         df_s2 = pd.DataFrame(kw_full, columns=KW_COLS)
         df_s3 = self._variant_detail(variants)
         df_s4 = self._build_notes(ctx, cat)
+        from core.step15_settings import load as load_standards, digest as standards_digest
+        standards = load_standards(ctx.paths.cat_root)
+        standards_revision = standards_digest(standards)
+        site = str(ctx.config.get("SITE", "") or "").strip()
+        indicator_rows = assess_indicators(split_df, kw_df, ctx.paths.cat_root, cat,
+                                           SITE_CURRENCY.get(site, ""), site, standards,
+                                           str(ctx.config.get("TREND_MONTH", "") or ""))
+        advice_rows = indicator_advice(ctx, indicator_rows)
         path = ctx.resolve_artifact(self.artifacts[0])
-        df_to_excel(
+        written_path = df_to_excel(
             path,
             {
                 "综合分析": df_s1,
                 "关键词与季节性": df_s2,
                 "变体明细": df_s3,
                 "口径说明": df_s4,
+                "选品指标判定": pd.DataFrame(indicator_rows, columns=INDICATOR_COLUMNS),
+                "AI市场建议": pd.DataFrame(advice_rows, columns=["项目", "内容"]),
             },
         )
+        if os.path.abspath(written_path) != os.path.abspath(path):
+            raise StepDataError(f"步骤15目标文件被占用，已写入临时名称 {written_path}；请关闭原报告后重跑，以免下游读取旧文件")
         self._apply_highlights(path)
+        if standards_digest(load_standards(ctx.paths.cat_root)) != standards_revision:
+            raise StepDataError("选品标准在生成报告期间发生变化，请重新运行步骤15")
+        from core.step15_review import mark_pending
+        mark_pending(ctx.paths.cat_root, standards_revision)
         self.log(ctx, f"初步类目分析报告已写入: {path}")
 
     def _read_split(self, ctx: StepContext) -> pd.DataFrame:
@@ -416,6 +436,7 @@ class Step15CategoryReport(BaseStep):
             ("类目门禁规则", "① Top5品牌销额占比<=60% ② 价格中位数>USD 35，非美元站未换汇时标数据不足 ③ AMZ配送品牌占比<20%(按品牌数) "
                           "④ 新品BuyBox卖家数>阈值(取'新老品=新品'的行对 BuyBox卖家 去重后的个数; "
                           "阈值=config GATE_NEW_SELLERS, 默认10; 新品行或卖家名缺失标'数据不足')"),
+            ("选品指标说明", "综合分析中的既有四项门禁沿用原口径；新指标的冲突、缺失与市场进入初判请查看选品指标判定和AI市场建议，不可混同。"),
             ("限制说明", "Google指数为归一化 0-100 指数, 非搜索量; 关键词判定沿用步骤7筛选结论"),
             ("季节性判定依据", "关键词报告的 Google季节性/站内季节性 列(步骤8 季节性分析), 缺失时留空"),
         ]
@@ -450,6 +471,32 @@ class Step15CategoryReport(BaseStep):
                 fill = _verdict_fill(row[verdict_col - 1].value)
                 if fill is not None:
                     row[verdict_col - 1].fill = fill
+        if "选品指标判定" in wb:
+            ws = wb["选品指标判定"]
+            ws.freeze_panes = "C2"
+            ws.auto_filter.ref = ws.dimensions
+            for i, width in enumerate((12, 25, 35, 50, 46, 14, 60, 18, 18), 1):
+                ws.column_dimensions[get_column_letter(i)].width = width
+            headers = {str(c.value): c.column for c in ws[1] if c.value is not None}
+            for row in ws.iter_rows(min_row=2):
+                for item in row:
+                    item.alignment = Alignment(vertical="top", wrap_text=True)
+                ws.row_dimensions[row[0].row].height = 56
+                cell = row[headers["判定"] - 1]
+                fill = _verdict_fill(cell.value) or (WARN_FILL if cell.value == "待确认" else None)
+                if fill is not None:
+                    cell.fill = fill
+        if "AI市场建议" in wb:
+            ws = wb["AI市场建议"]
+            ws.freeze_panes = "B2"
+            ws.column_dimensions["A"].width = 18
+            ws.column_dimensions["B"].width = 100
+            for row in ws.iter_rows(min_row=2):
+                for cell in row:
+                    cell.alignment = Alignment(vertical="top", wrap_text=True)
+                ws.row_dimensions[row[0].row].height = min(120, max(30, 18 * ((len(str(row[1].value or "")) // 70) + 1)))
+        from core.step15_display import format_workbook
+        format_workbook(wb)
         wb.save(path)
 
 

@@ -180,3 +180,37 @@ def click_by_text(page, text: str, what: str = "", *, timeout: int = 6000, log=N
     """按文本点(等价旧写法 `page.get_by_text(text, exact=False).first.click()`)。"""
     return click_verified(page, f"text={text}", what=what or f"文本「{text}」",
                           timeout=timeout, log=log, skip_header=skip_header)
+def dismiss_sellersprite_promotions(page, log=None) -> bool:
+    """Close only a clearly identified live-course promotion, never workflow dialogs."""
+    try:
+        anchors = page.get_by_text('报名观看', exact=False)
+        for i in range(min(anchors.count(), 5)):
+            anchor = anchors.nth(i)
+            if not anchor.is_visible():
+                continue
+            ancestors = anchor.locator('xpath=ancestor::*')
+            for j in range(ancestors.count() - 1, -1, -1):
+                container = ancestors.nth(j)
+                text = container.inner_text(timeout=1000)
+                if len(text) > 1200 or '报名观看' not in text:
+                    continue
+                if not any(term in text for term in ('直播亮点', '实战课堂', '直播课程')):
+                    continue
+                controls = container.locator(
+                    '[class*="close" i], [aria-label*="关闭"], [aria-label*="close" i], '
+                    '[title*="关闭"], [title*="close" i], img[src*="close" i], '
+                    'button:has-text("×"), button:has-text("✕")')
+                for k in range(min(controls.count(), 8)):
+                    control = controls.nth(k)
+                    if not control.is_visible():
+                        continue
+                    control.click(timeout=1500)
+                    if not anchor.is_visible():
+                        if log:
+                            log('已关闭卖家精灵直播课程推广弹窗')
+                        return True
+    except Exception:
+        # A failed promotional dismissal must not be mistaken for success.
+        return False
+    return False
+

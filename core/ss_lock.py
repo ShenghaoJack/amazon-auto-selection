@@ -325,6 +325,7 @@ class SsBrowserLease:
         self._resource = resource
         self._account = str(account or "").strip().lower()
         self._lock: SsBrowserLock | None = None
+        self._usage = None
 
     def _note_account(self) -> None:
         """**账号自检**(2026-09-15, 用户"给不同类目配不同账号"): 同一浏览器资源上次是谁在用?
@@ -349,14 +350,19 @@ class SsBrowserLease:
         write_owner(self._resource, self._label, self._account)
 
     def __enter__(self):
-        self._lock = acquire(wait_seconds=self._wait, label=self._label, log=self._log,
-                             resource=self._resource)
+        from .ss_auto_close import register, unregister
         try:
+            self._usage = register(self._resource)
+            self._lock = acquire(wait_seconds=self._wait, label=self._label, log=self._log,
+                                 resource=self._resource)
             self._note_account()
             return self._browser.__enter__()
         except BaseException:
-            self._lock.release()
-            self._lock = None
+            if self._lock is not None:
+                self._lock.release()
+                self._lock = None
+            unregister(self._usage, self._log)
+            self._usage = None
             raise
 
     def __exit__(self, exc_type, exc, tb):
@@ -366,6 +372,9 @@ class SsBrowserLease:
             if self._lock is not None:
                 self._lock.release()
                 self._lock = None
+            from .ss_auto_close import unregister
+            unregister(self._usage, self._log)
+            self._usage = None
 
     def __getattr__(self, name: str):
         """把"误把租约当浏览器用"换成看得懂的报错(2026-09-16)。
@@ -431,12 +440,52 @@ def port_in_use(port):
         return True
 
 
-def pick_port(username="", exclude_ports=()):
+def find_profile_cdp_port(profile_dir):
+    """Identify a local listening Chrome by user-data-dir; never guess ownership."""
+    import psutil
+    from .browser import _cdp_alive
+    wanted = os.path.normcase(os.path.realpath(str(profile_dir)))
+    matches = set()
+    for proc in psutil.process_iter(['name', 'cmdline']):
+        try:
+            if str(proc.info.get('name') or '').lower() not in ('chrome.exe', 'chrome', 'chromium', 'chromium.exe'):
+                continue
+            args = proc.info.get('cmdline') or []
+            if any(a.startswith('--type=') for a in args):
+                continue
+            paths = [a.split('=', 1)[1].strip('"') for a in args if a.startswith('--user-data-dir=')]
+            if len(paths) != 1 or os.path.normcase(os.path.realpath(paths[0])) != wanted:
+                continue
+            ports = [a.split('=', 1)[1] for a in args if a.startswith('--remote-debugging-port=')]
+            if not ports:
+                raise RuntimeError('该工作台用户的 Chrome 已打开但没有调试端口，请关闭该窗口后重试')
+            port = int(ports[0])
+            listeners = proc.net_connections(kind='inet')
+            if any(c.status == psutil.CONN_LISTEN and c.laddr and c.laddr.port == port for c in listeners) and _cdp_alive(f'http://127.0.0.1:{port}'):
+                matches.add(port)
+            else:
+                raise RuntimeError('用户 Chrome 的调试端口尚未就绪，无法安全复用')
+        except (psutil.NoSuchProcess, psutil.ZombieProcess):
+            continue
+        except psutil.AccessDenied as exc:
+            raise RuntimeError('无法核验 Chrome 进程归属，请检查进程权限') from exc
+    if len(matches) > 1:
+        raise RuntimeError('同一用户 Profile 对应多个 Chrome 端口，请先检查运行状态')
+    return next(iter(matches), None)
+
+
+def pick_port(username="", exclude_ports=(), profile_dir=""):
     """分配一个空闲 CDP 端口；优先该用户上次用的。池满抛 RuntimeError。"""
     d = _ports_load()
     users = d.setdefault("users", {})
     name = str(username or "")
     reserved = {int(p) for p in exclude_ports}
+    if profile_dir:
+        active = find_profile_cdp_port(profile_dir)
+        if active is not None:
+            if active in reserved:
+                raise RuntimeError('该用户 Chrome 端口已被其他用户任务占用，无法安全复用')
+            return active
     if name and users.get(name):
         try:
             cand = int(users[name])

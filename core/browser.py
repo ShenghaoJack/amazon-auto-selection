@@ -127,7 +127,7 @@ def ensure_download_permissions(profile_dir: str, origins: tuple[str, ...] = (
         return False
 
 
-def launch_ss_chrome(config, port: int, url: str = "https://www.sellersprite.com/v2/welcome") -> bool:
+def launch_ss_chrome(config, port: int, url: str = "https://www.sellersprite.com/v2/welcome", *, managed: bool = False) -> bool:
     """启动卖家精灵后台 Chrome(持久 Profile + 远程调试端口), Popen 后台拉起。
 
     返回 True=已发出启动命令; 端口是否真正就绪由 ensure_ss_chrome 轮询确认
@@ -147,7 +147,10 @@ def launch_ss_chrome(config, port: int, url: str = "https://www.sellersprite.com
             "--no-first-run",
             url,
         ]
-        subprocess.Popen(cmd)
+        process = subprocess.Popen(cmd)
+        if managed:
+            from .ss_auto_close import record_auto_launch
+            record_auto_launch(config, port, profile, process.pid)
         return True
     except Exception:
         return False
@@ -174,7 +177,7 @@ def ensure_ss_chrome(config, log=None, timeout: float = 60.0) -> bool:
         return True
     port = cdp_port_from_url(cdp_url)
     _log(f"CDP Chrome 未启动({cdp_url}), 自动启动中…")
-    if not launch_ss_chrome(config, port):
+    if not launch_ss_chrome(config, port, managed=True):
         _log("自动启动 Chrome 失败(请手动运行 python scripts/start_ss_chrome.py 排查)")
         return False
     deadline = time.monotonic() + timeout
@@ -328,6 +331,11 @@ class BrowserAutomation:
                         "请运行 python scripts/start_ss_chrome.py 并保持 Chrome 运行, "
                         "或检查 SS_CDP_URL / 是否同 Profile 已被其它 Chrome 占用"
                     )
+            if os.environ.get('PIPELINE_WORKBENCH_USER'):
+                from .ss_lock import find_profile_cdp_port
+                actual = find_profile_cdp_port(self.profile_dir)
+                if actual != cdp_port_from_url(self.cdp_url):
+                    raise BrowserError('CDP 端口不属于当前工作台用户的 Profile，停止连接以避免账号混用')
             self._browser = self._pw.chromium.connect_over_cdp(self.cdp_url)
             self._context = (
                 self._browser.contexts[0]

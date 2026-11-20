@@ -79,6 +79,10 @@ def pending_gates(cat_root, statuses):
         pending = status(8) == 'DONE'
     if pending:
         return [{'kind':'keywords','after':8,'message':'请核对并确认关键词清单后继续。'}]
+    if status(15) == 'DONE':
+        from core.step15_review import pending as report_pending
+        if report_pending(root):
+            return [{'kind':'market_report','after':15,'message':'请查看步骤15选品指标及AI建议，确认后继续。'}]
     spec = resolve_spec_path(root.parent, root.name)
     if status(16) == 'DONE':
         try:
@@ -97,8 +101,8 @@ def blocking_gate(cat_root, statuses, target):
     if target <= 8:
         return None
     pending = pending_gates(cat_root, statuses)
-    for step in (8, 16, 17, 18):
-        if target > step and statuses.get(step) != 'DONE':
+    for step in (8, 15, 16, 17, 18):
+        if step != 15 and target > step and statuses.get(step) != 'DONE':
             return {'kind':'prerequisite','after':step,'message':f'请先完成步骤 {step}，再进行后续步骤。'}
         if target > step and pending and pending[0]['after'] == step:
             return pending[0]

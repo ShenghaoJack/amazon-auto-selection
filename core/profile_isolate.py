@@ -16,6 +16,7 @@ amz-profile), 两个进程会同时 launch_persistent_context 同一个 user-dat
 from __future__ import annotations
 
 import logging
+import hashlib
 import os
 import re
 import shutil
@@ -234,6 +235,11 @@ def resolve_ss_profile_dir(config, profile_root) -> Path:
       * 显式把 `SS_PROFILE` 配成**非默认**路径 = 用户自定义, 保持原行为(逃生舱)。
     """
     profile_root = Path(profile_root)
+    user = str(os.environ.get('PIPELINE_WORKBENCH_USER') or '').strip().casefold()
+    if user:
+        # Never clone a shared or category profile into a different user's
+        # namespace: its cookies may belong to another SellerSprite account.
+        return user_ss_profile_path(user)
     shared = (profile_root / "ss-profile").resolve()
     configured = Path(config.ss_profile_dir).resolve()
     cat = str(getattr(config, "cat", "") or "").strip()
@@ -257,6 +263,8 @@ def resolve_ss_backup_profile_dir(config, profile_root, index: int) -> Path:
     隔离后的 `<isolated>-b<index>`; 不存在则由浏览器按既有账号密码自动登录。
     """
     main = resolve_ss_profile_dir(config, profile_root)
+    if str(os.environ.get('PIPELINE_WORKBENCH_USER') or '').strip():
+        return main
     index = int(index)
     configured_backup = Path(f"{Path(config.ss_profile_dir).resolve()}-b{index}")
     target = Path(f"{main}-b{index}")
@@ -270,3 +278,15 @@ def resolve_ss_backup_profile_dir(config, profile_root, index: int) -> Path:
     except Exception:  # noqa: BLE001
         pass
     return target.resolve()
+
+
+USER_SS_PROFILE_ROOT = Path(__file__).resolve().parent.parent / 'data' / 'profiles' / 'workbench-users'
+
+
+def user_ss_profile_path(username: str) -> Path:
+    """A stable private profile for a workbench user, independent of category."""
+    name = str(username or '').strip().casefold()
+    if not name:
+        raise ValueError('工作台用户为空，不能分配用户 Profile')
+    digest = hashlib.sha256(name.encode('utf-8')).hexdigest()[:24]
+    return (USER_SS_PROFILE_ROOT / ('ss-user-' + digest)).resolve()

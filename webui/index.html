@@ -415,6 +415,7 @@
   #newCatOverlay .frow{grid-template-columns:190px minmax(0,1fr);padding:10px 0}
   #newCatOverlay input,#newCatOverlay select{width:100%;min-width:0}
   #newCatOverlay .nc-date{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  #ncResearchRow[hidden]{display:none}
   @media(max-width:700px){
     #newCatOverlay{padding:12px}
     #newCatOverlay .box{max-height:calc(100vh - 24px);padding:20px}
@@ -425,6 +426,7 @@
   .f-tbl{width:100%;border-collapse:collapse;font-size:12.5px}
   .f-tbl th{text-align:left;color:var(--dim);font-weight:600;padding:7px 10px;border-bottom:1px solid var(--line);white-space:nowrap}
   .f-tbl td{padding:7px 10px;border-bottom:1px solid var(--line);vertical-align:top;word-break:break-all}
+  #secMarketReport .f-tbl td{word-break:normal;overflow-wrap:anywhere;line-height:1.5}
   .f-tbl tr:last-child td{border-bottom:none}
   .f-tbl .f-step{color:var(--dim);white-space:nowrap;font-family:var(--mono)}
   .f-tbl a.dl{color:#7aa2ff;text-decoration:none;font-weight:600}
@@ -692,6 +694,99 @@
 .workbench-dialog-body:focus-visible{outline:none;box-shadow:none}
 .workbench-dialog-body>.card{display:block;margin:0;opacity:1;transform:none}
 .workbench-dialog-note{color:var(--txt-2);padding:0 8px 10px}
+/* 步骤15报告：局部采用安静的中性色与清晰的状态层级。 */
+#secMarketReport{--mr-bg:#111114;--mr-surface:#18181d;--mr-line:#303038;--mr-text:#ededf1;--mr-muted:#a4a4b2;--mr-violet:#b5adfa;
+  color:var(--mr-text);background:var(--mr-bg);border:1px solid var(--mr-line);border-radius:12px;box-shadow:none;padding:0;overflow:visible}
+#secMarketReport .mr-content{padding:28px 32px 36px}
+#secMarketReport .mr-title{display:flex;justify-content:space-between;align-items:flex-start;gap:20px;margin-bottom:24px}
+#secMarketReport .mr-title h2{font-size:21px;line-height:1.3;letter-spacing:-.02em;font-weight:650;margin:0 0 6px;color:var(--mr-text)}
+#secMarketReport .mr-title p{font-size:13px;line-height:1.6;color:var(--mr-muted);margin:0}
+#secMarketReport .mr-overview{display:grid;grid-template-columns:minmax(210px,.8fr) minmax(0,2fr);border:1px solid var(--mr-line);border-radius:10px;background:var(--mr-surface);overflow:hidden}
+#secMarketReport .mr-decision,#secMarketReport .mr-ai{padding:20px 22px;min-width:0}
+#secMarketReport .mr-decision{border-right:1px solid var(--mr-line)}
+#secMarketReport .mr-label{color:var(--mr-muted);font-size:12px;font-weight:600;line-height:1.4;margin:0 0 12px}
+#secMarketReport .mr-decision-text{font-size:16px;font-weight:650;line-height:1.65;color:var(--mr-text);overflow-wrap:anywhere}
+#secMarketReport .mr-ai-text{color:#d1d1dc;font-size:13px;line-height:1.85;max-width:100ch;overflow-wrap:anywhere}
+#secMarketReport .mr-ai-text p{margin:0 0 9px}#secMarketReport .mr-ai-text p:last-child{margin-bottom:0}
+#secMarketReport .mr-ai-section{margin-top:16px;padding-top:14px;border-top:1px solid var(--mr-line)}
+#secMarketReport .mr-ai-section h4{margin:0 0 6px;color:#e7e7f1;font-size:13px}
+#secMarketReport .mr-ai-section ul{margin:0;padding-left:19px}
+#secMarketReport .mr-ai-section li{padding:2px 0}
+#secMarketReport .mr-ai-empty{color:#9698a9}
+#secMarketReport .mr-status-bar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:20px 0 5px}
+#secMarketReport .mr-status-label{font-size:12px;color:var(--mr-muted);font-weight:600;margin-right:5px}
+#secMarketReport .mr-filter{display:inline-flex;align-items:center;gap:7px;border:1px solid transparent;border-radius:6px;background:transparent;color:#bbbcc8;padding:6px 9px;font:inherit;font-size:12px;line-height:1.2;cursor:pointer}
+#secMarketReport .mr-filter:hover{background:#25252c;color:#f2f2f6}
+#secMarketReport .mr-filter[aria-pressed="true"]{background:#2a2937;border-color:#454257;color:#f0edff}
+#secMarketReport .mr-filter:focus-visible,#secMarketReport summary:focus-visible,#secMarketReport button:focus-visible{outline:2px solid #b5adfa;outline-offset:2px}
+#secMarketReport .mr-count{color:inherit;opacity:.76;font-variant-numeric:tabular-nums}
+#secMarketReport .mr-dot{width:6px;height:6px;border-radius:50%;background:#9b9ba8;flex:none}
+#secMarketReport .mr-dot.pass{background:#70c6a3}#secMarketReport .mr-dot.fail{background:#f08a88}#secMarketReport .mr-dot.wait{background:#e4bd77}#secMarketReport .mr-dot.info{background:#aaa0f2}
+#secMarketReport .mr-section{margin-top:29px}
+#secMarketReport .mr-section-head{display:flex;align-items:baseline;gap:10px;margin-bottom:12px}
+#secMarketReport .mr-section-head h3{font-size:15px;line-height:1.4;font-weight:650;margin:0;color:var(--mr-text)}
+#secMarketReport .mr-section-head span{font-size:12px;color:var(--mr-muted)}
+#secMarketReport .mr-table-wrap{border:1px solid var(--mr-line);border-radius:9px;overflow-x:auto;background:#151519}
+#secMarketReport .mr-table{border-collapse:collapse;width:100%;table-layout:fixed;text-align:left;font-size:13px}
+#secMarketReport .mr-table th{background:#1b1b20;color:#a4a4b2;font-size:11px;font-weight:600;text-align:left;padding:11px 14px;border-bottom:1px solid var(--mr-line)}
+#secMarketReport .mr-table td{vertical-align:top;padding:15px 14px;line-height:1.6;border-bottom:1px solid #29292f;overflow-wrap:anywhere;word-break:normal}
+#secMarketReport .mr-table tr:last-child td{border-bottom:0}#secMarketReport .mr-table tbody tr:hover{background:#1c1c22}
+#secMarketReport .mr-row[hidden],#secMarketReport .mr-trend-row[hidden],#secMarketReport .mr-section[hidden]{display:none!important}
+#secMarketReport .mr-name{font-weight:600;color:#eeeeF3}#secMarketReport .mr-value{color:#f1f1f5;font-variant-numeric:tabular-nums}
+#secMarketReport .mr-standard{color:#babac7;font-variant-numeric:tabular-nums}
+#secMarketReport .mr-badge{display:inline-flex;align-items:center;gap:6px;font-size:12px;white-space:nowrap;font-weight:600;color:#c8c8d2}
+#secMarketReport .mr-badge.pass{color:#8ad5b4}#secMarketReport .mr-badge.fail{color:#f4a3a1}#secMarketReport .mr-badge.wait{color:#e9c990}#secMarketReport .mr-badge.info{color:#c5befb}
+#secMarketReport .mr-evidence summary,#secMarketReport .mr-more summary{list-style:none;cursor:pointer;color:#bcb5fa;font-size:12px;font-weight:600;line-height:1.6}
+#secMarketReport .mr-evidence summary::-webkit-details-marker,#secMarketReport .mr-more summary::-webkit-details-marker{display:none}
+#secMarketReport .mr-evidence summary::before,#secMarketReport .mr-more summary::before{content:'›';display:inline-block;margin-right:7px;font-size:16px;line-height:1;transition:transform .15s ease}
+#secMarketReport details[open]>summary::before{transform:rotate(90deg)}
+#secMarketReport .mr-evidence-content{margin:10px 0 0;color:#bcbcc8;font-size:12px;line-height:1.75;white-space:pre-wrap;overflow-wrap:anywhere}
+#secMarketReport .mr-trend-toggle{display:block;border:0;background:transparent;color:#bcb5fa;font:inherit;font-size:12px;font-weight:600;line-height:1.6;text-align:left;cursor:pointer;padding:0;box-shadow:none}
+#secMarketReport .mr-trend-toggle:focus:not(:focus-visible){outline:none;box-shadow:none}
+#secMarketReport .mr-trend-toggle:hover{color:#e2defe}
+#secMarketReport .mr-trend-toggle::before{content:'›';display:inline-block;margin-right:7px;font-size:16px;line-height:1;transition:transform .15s ease}
+#secMarketReport .mr-trend-toggle[aria-expanded="true"]::before{transform:rotate(90deg)}
+#secMarketReport .mr-trend-row>td{padding:18px 22px 22px;background:#19191f}
+#secMarketReport .mr-trend-heading{font-size:13px;font-weight:650;color:#e9e9ef;margin:0 0 12px}
+#secMarketReport .mr-trend-scroll{overflow-x:auto}
+#secMarketReport .mr-trend-grid{min-width:560px;display:grid;grid-template-columns:minmax(190px,1.7fr) repeat(3,minmax(100px,1fr));font-variant-numeric:tabular-nums}
+#secMarketReport .mr-trend-grid [role="row"]{display:contents}
+#secMarketReport .mr-trend-grid [role="columnheader"],#secMarketReport .mr-trend-grid [role="cell"]{padding:10px 12px;border-bottom:1px solid #303038;text-align:right;font-size:12px;line-height:1.5}
+#secMarketReport .mr-trend-grid [role="columnheader"]{color:#a4a4b2;font-weight:600}
+#secMarketReport .mr-trend-grid [role="cell"]{color:#dedee6}
+#secMarketReport .mr-trend-grid [data-first="true"]{text-align:left;overflow-wrap:anywhere}
+#secMarketReport .mr-trend-grid .mr-trend-total{font-weight:650;color:#f1f1f5}
+#secMarketReport .mr-trend-mean{display:flex;justify-content:space-between;gap:20px;padding:12px;color:#f1f1f5;font-size:12px;font-weight:650}
+#secMarketReport .mr-trend-note{margin:4px 0 14px;color:#a4a4b2;font-size:12px;line-height:1.7}
+#secMarketReport .mr-more{margin-top:26px;border-top:1px solid var(--mr-line);padding-top:19px}
+#secMarketReport .mr-more summary{font-size:13px;color:#d4d1f5}
+#secMarketReport .mr-more-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px 30px;margin-top:16px}
+#secMarketReport .mr-more-item{padding:9px 0;color:#c2c2ce;font-size:13px;line-height:1.75;overflow-wrap:anywhere}
+#secMarketReport .mr-more-item strong{display:block;margin-bottom:4px;color:#a6a6b5;font-size:11px}
+#secMarketReport .mr-alert{padding:13px 16px;margin-bottom:20px;border:1px solid #735b35;border-radius:8px;background:#2b241b;color:#f0d2a1;font-size:13px;line-height:1.6}
+#secMarketReport .mr-state{padding:32px;color:var(--mr-muted);font-size:13px;line-height:1.7}
+#secMarketReport .mr-actions{position:sticky;bottom:0;z-index:2;display:flex;justify-content:space-between;align-items:center;gap:16px;padding:14px 32px;background:#18181d;border-top:1px solid var(--mr-line);border-radius:0 0 11px 11px}
+#secMarketReport .mr-actions span{color:var(--mr-muted);font-size:12px;line-height:1.5;margin-right:auto}
+#secMarketReport .mr-actions a[hidden]{display:none}
+#secMarketReport .mr-actions button,#secMarketReport .mr-actions a{border:1px solid #c0baff;background:#d6d2ff;color:#191827;border-radius:7px;padding:9px 15px;font-size:13px;font-weight:650;cursor:pointer;text-decoration:none;line-height:normal}
+#secMarketReport .mr-actions button:hover:not(:disabled),#secMarketReport .mr-actions a:hover{background:#e6e3ff}#secMarketReport .mr-actions button:disabled{opacity:.48;cursor:not-allowed}
+@media(max-width:800px){
+  #secMarketReport .mr-content{padding:20px 18px 26px}#secMarketReport .mr-overview{grid-template-columns:1fr}
+  #secMarketReport .mr-decision{border-right:0;border-bottom:1px solid var(--mr-line)}
+  #secMarketReport .mr-decision,#secMarketReport .mr-ai{padding:17px 18px}
+  #secMarketReport .mr-more-list{grid-template-columns:1fr}#secMarketReport .mr-actions{padding:13px 18px}
+  #secMarketReport .mr-table,#secMarketReport .mr-table tbody,#secMarketReport .mr-table tr,#secMarketReport .mr-table td{display:block;width:100%}
+  #secMarketReport .mr-table colgroup,#secMarketReport .mr-table thead{display:none}
+  #secMarketReport .mr-table tr{padding:14px 15px;border-bottom:1px solid var(--mr-line)}#secMarketReport .mr-table tr:last-child{border-bottom:0}
+  #secMarketReport .mr-table td{display:grid;grid-template-columns:80px minmax(0,1fr);gap:10px;padding:4px 0;border:0}
+  #secMarketReport .mr-table td::before{content:attr(data-label);color:var(--mr-muted);font-size:11px;font-weight:600}
+  #secMarketReport .mr-table .mr-trend-row{padding:0}
+  #secMarketReport .mr-table .mr-trend-row>td{display:block;padding:15px}
+  #secMarketReport .mr-table .mr-trend-row>td::before{content:none}
+  #secMarketReport .mr-trend-grid{min-width:0;grid-template-columns:minmax(85px,1.2fr) repeat(3,minmax(0,1fr))}
+  #secMarketReport .mr-trend-grid [role="columnheader"],#secMarketReport .mr-trend-grid [role="cell"]{padding:8px 4px;font-size:10.5px}
+  #secMarketReport .mr-actions span{max-width:50%}
+}
 .workbench-actions{display:flex;gap:8px;flex-wrap:wrap;margin-left:auto}
 #workbenchClose[hidden]{display:none!important}
 </style>
@@ -747,7 +842,7 @@
 <div id="newCatOverlay" class="overlay" style="display:none">
   <div class="box" role="dialog" aria-modal="true" aria-labelledby="newCatTitle">
     <h3 id="newCatTitle">＋ 新建类目</h3>
-    <p>选择市场、研究年月和数据周期，系统将为每类数据建立独立目录。</p>
+    <p>选择市场和数据周期，系统将为每类数据建立独立目录。</p>
     <div class="frow"><label for="ncCat"><b>类目名(CAT)</b></label>
       <div><div class="secwrap"><input id="ncCat" type="text" placeholder="如 Salt and Pepper Mill Sets" autocomplete="off"></div>
       <div class="hint">自动添加市场与年月后缀，例如 Salt and Pepper Mill Sets-US-202609。</div></div></div>
@@ -761,15 +856,15 @@
         <option value="au">澳大利亚 · AU</option><option value="in">印度 · IN</option>
         <option value="ae">阿联酋 · AE</option>
       </select></div></div>
-    <div class="frow"><label for="ncYear"><b>研究年月</b></label>
+    <div class="frow" id="ncResearchRow"><label for="ncYear"><b>研究年月</b></label>
       <div><div class="nc-date"><select id="ncYear" aria-label="年份"></select><select id="ncMonth" aria-label="月份"></select></div>
-      <div class="hint">用于类目命名和关键词趋势，临时任务也需选择。</div></div></div>
+      <div class="hint">用于类目命名和关键词趋势。</div></div></div>
     <div class="frow"><label for="ncPeriod"><b>数据周期</b></label>
       <div><select id="ncPeriod" aria-describedby="ncPeriodHint"><option value="fixed_month">固定月份 · 长期任务</option><option value="recent30">最近30天 · 临时任务</option></select>
       <div id="ncPeriodHint" class="hint"></div></div></div>
     <div class="frow"><label for="ncFrom"><b>复制自(模板/现有类目)</b></label>
       <div><div class="secwrap"><select id="ncFrom"></select></div>
-      <div class="hint">继承模型、阈值及备用账号等配置；本次输入的账号作为主账号。</div></div></div>
+      <div class="hint">继承模板配置并自动填入主账号，可修改。</div></div></div>
     <div class="frow"><label for="ncAccount"><b>卖家精灵账号</b></label>
       <div><input id="ncAccount" type="text" autocomplete="off" placeholder="请输入主账号"></div></div>
     <div class="frow"><label for="ncPassword"><b>卖家精灵密码</b></label>
@@ -831,6 +926,10 @@
       <button id="btnNewCatHome" class="btn-run shine">＋ 新建类目</button>
     </div>
     <div class="card-body">
+      <div role="group" aria-label="任务类型" style="display:flex;gap:8px;flex-wrap:wrap;margin:0 0 12px">
+        <button id="homeLongTasks" type="button" class="btn-sm btn-ok shine" aria-pressed="true">长期任务</button>
+        <button id="homeRecentTasks" type="button" class="btn-sm btn-ghost" aria-pressed="false">临时任务</button>
+      </div>
       <div id="homeHint" class="hint" style="margin-bottom:8px">加载中…</div>
       <div style="display:flex;gap:8px;align-items:center;margin:0 0 8px;flex-wrap:wrap">
         <span class="secwrap" style="flex:1;max-width:380px"><input id="homeSearch" type="text" placeholder="搜索类目 / 站点 / 月份(精准优先, 模糊兜底)…"></span>
@@ -901,6 +1000,7 @@
         <button id="btnResetStep" class="btn-sm">重置步骤 N 及下游</button>
         <button id="btnArchive" class="btn-sm">手动快照归档</button>
         <button id="btnRefreshCfg" class="btn-sm btn-ghost" title="重新读取所选配置文件">↻ 重读配置</button>
+        <button id="openStep15Settings" class="btn-sm btn-ghost" title="独立设置选品指标标准">选品指标标准</button>
       </div>
       <details class="runhist" id="histWrap"><summary id="histToggle">最近运行记录</summary><div id="runHistory" style="margin-top:10px"></div></details>
     </div>
@@ -976,7 +1076,7 @@
       <div>
         <div class="overline">08 · Monitor &amp; Alerts</div>
         <h2>监控与告警</h2>
-        <div class="sub">步骤 19 生成的体检报告与运行期告警(流水线最后一步)</div>
+        <div class="sub">步骤 20 生成的体检报告与运行期告警(流水线最后一步)</div>
       </div>
     </div>
     <div class="card-body">
@@ -1276,6 +1376,16 @@
     <div id="workbenchBody" class="workbench-dialog-body"></div>
   </div>
 </div>
+<section class="card" id="secMarketReport" style="display:none">
+  <div id="marketReportBody" aria-live="polite">加载中…</div>
+  <div class="mr-actions"><span>查看指标与依据后确认报告</span><a id="marketReportPdf" class="btn" hidden>下载 PDF</a><button type="button" id="marketReportConfirm" disabled>确认报告并继续</button></div>
+</section>
+<section class="card" id="secStep15Settings" style="display:none">
+  <p class="muted">所有类目共用一套标准，由管理员修改；标准改动后，已生成的报告须重跑步骤15。</p>
+  <div id="step15SettingsBody" aria-live="polite">加载中…</div>
+  <p id="step15SettingsNote" class="muted"></p>
+  <button type="button" id="step15SettingsSave" class="btn-primary" disabled>保存指标标准</button>
+</section>
 <div id="workbenchParking" hidden></div>
 <div id="toasts"></div>
 
@@ -1298,7 +1408,7 @@ const STEPS = [
  {n:12,t:"查竞品提交", d:"FR-12: 变体分批提交查竞品导出任务并记录提交记录", a:["12_查竞品/CAT-submitted.json"]},
  {n:13,t:"竞品数据下载", d:"FR-13: 我的导出页下载查竞品任务, 解压按组归档并自动合并", a:["13_查竞品下载/合并-13_查竞品下载.xlsx"]},
  {n:14,t:"流量拆分", d:"FR-14: 变体明细/流量来源/竞品数据关联合并, 流量占比拆分与缺失字段补齐", a:["14_流量拆分/流量拆分数据-需人工补充.xlsx"]},
- {n:15,t:"初步类目分析报告", d:"FR-15: 基于流量拆分与关键词报告生成 4 sheet 初步类目分析报告", a:["CAT-初步类目分析报告.xlsx"]},
+ {n:15,t:"初步类目分析报告", d:"FR-15: 生成选品指标判断和 AI 市场建议，查看确认后继续", a:["CAT-初步类目分析报告.xlsx"]},
  {n:16,t:"属性集提取与确认", d:"FR-16: 属性集 N 次抽取合并 + 同义归并, 固化为 attribute-spec.json 待人工确认", a:["CAT-attribute-spec.json"]},
  {n:17,t:"属性标注", d:"FR-17: 对已确认属性集 N 次补充标注 + 结构闸门(只硬拦完整性) + 一致性表决 + 图片视觉补充(仅未明确) + 词表生成/聚类, 产出单遍原始/唯一值统计/词表聚类报告", a:["17_属性标注/CAT-属性标注-单遍原始.xlsx","17_属性标注/唯一值统计.json"]},
  {n:18,t:"标准化", d:"FR-18: 只读步骤17标注，多值归并、自定义重判、异常与跨列复核；预览确认、JSON版本与回滚，导出含来源与依据的标准化交付", a:["18_标准化/CAT-属性标注-标准化交付.xlsx"]},
@@ -1424,11 +1534,11 @@ ATTR_STAB_PROMPT:"步骤17 标注提示词路径(留空=默认 prompts/step17_ge
 ATTR_STAB_GEN_VOCAB:"步骤17 末尾的冷启动词表生成: 对无词表的 enum/multi 属性自动聚类生成规范值(true=开/false=关)",
 ATTR_STAB_VOCAB_HINT:"词表归并口径建议(自然语言, 步骤17 生成/步骤18 应用): 例如「把具体树种(柚木/相思木/胡桃木)合并成木制」",
 ATTR_STAB_AUTO_ONBOARD:"新词写回(步骤17): true=初审后自动写回 rules.json(全自动); false=半自动交人工审(默认)",
-RECENT_LOG_LINES:"步骤19 体检: 最近N条日志的成功率统计窗口(默认20)",
-REPORT_FRESH_DAYS:"步骤19 体检: 报告新鲜度检查天数(默认7)",
-STEP_DURATION_MAX_SECONDS:"步骤19 体检: 单步耗时超过此秒数预警(默认7200=2小时)",
-STEP_DURATION_MEAN_MULT:"步骤19 体检: 单步耗时超过本轮均值N倍预警(默认3)",
-STEP_DURATION_MEAN_FLOOR:"步骤19 体检: 耗时均值下限秒(默认600; 低于此不计入均值)"
+RECENT_LOG_LINES:"步骤20 体检: 最近N条日志的成功率统计窗口(默认20)",
+REPORT_FRESH_DAYS:"步骤20 体检: 报告新鲜度检查天数(默认7)",
+STEP_DURATION_MAX_SECONDS:"步骤20 体检: 单步耗时超过此秒数预警(默认7200=2小时)",
+STEP_DURATION_MEAN_MULT:"步骤20 体检: 单步耗时超过本轮均值N倍预警(默认3)",
+STEP_DURATION_MEAN_FLOOR:"步骤20 体检: 耗时均值下限秒(默认600; 低于此不计入均值)"
 };
 const STATUS_COLOR = {DONE:"#34d399",RUNNING:"#60a5fa",FAILED:"#fb7185",SKIP:"#2dd4bf",PENDING:"#5b6b85",INTERRUPTED:"#f59e0b"};
 
@@ -2030,6 +2140,7 @@ async function loadConfigs() {
 /* ============ 新建类目向导(2026-09) ============ */
 let __cfgListCache = [];
 let __cfgList = [];          // /api/configs 的最新快照(标签渲染用, 2026-09-15)
+let __newCatTemplateRequest = 0;
 async function openNewCatWizard() {
   try {
     if (!__cfgListCache.length) { const d = await api("/api/configs"); __cfgListCache = d.configs || []; }
@@ -2054,14 +2165,34 @@ async function openNewCatWizard() {
   $("ncCat").value = ""; $("ncList").value = ""; $("ncAccount").value = ""; $("ncPassword").value = "";
   $("ncListError").textContent = "";
   $("newCatOverlay").style.display = "flex";
+  loadNewCatTemplateAccount();
   setTimeout(() => { const i = $("ncCat"); if (i) i.focus(); }, 60);
 }
 function updateNewCatPeriodHint() {
+  $("ncResearchRow").hidden = $("ncPeriod").value === "recent30";
   $("ncPeriodHint").textContent = $("ncPeriod").value === "recent30"
-    ? "流量来源和竞品均按最近30天抓取，独立保存；步骤14不能按月补全近6个月趋势。"
+    ? "流量来源和竞品按最近30天抓取；目录使用创建年月日，关键词趋势使用上一个自然月。"
     : "流量来源和竞品均使用所选研究年月，适合长期固定口径。";
 }
 $("ncPeriod").addEventListener("change", updateNewCatPeriodHint);
+async function loadNewCatTemplateAccount() {
+  const request = ++__newCatTemplateRequest;
+  const file = $("ncFrom").value;
+  $("ncAccount").value = ""; $("ncPassword").value = "";
+  if (!file) return;
+  try {
+    const d = await api("/api/config?file=" + encodeURIComponent(file));
+    if (request !== __newCatTemplateRequest || $("ncFrom").value !== file || $("newCatOverlay").style.display === "none") return;
+    const main = (d.lists?.SS_ACCOUNTS || []).find(a => a.is_main);
+    if (!$("ncAccount").value && !$("ncPassword").value) {
+      $("ncAccount").value = String(main ? main.account || "" : d.values?.SS_ACCOUNT || "");
+      $("ncPassword").value = String(main ? main.password || "" : d.values?.SS_PASSWORD || "");
+    }
+  } catch (e) {
+    if (request === __newCatTemplateRequest && $("newCatOverlay").style.display !== "none") toast("无法读取模板账号，请手动填写", "err");
+  }
+}
+$("ncFrom").addEventListener("change", loadNewCatTemplateAccount);
 function validateNewCategoryListUrl(value, marketCode) {
   if (!value) return "";
   const hosts = {us:"amazon.com", uk:"amazon.co.uk", de:"amazon.de", fr:"amazon.fr",
@@ -2093,7 +2224,7 @@ async function submitNewCat() {
   $("ncList").setAttribute("aria-invalid", listError ? "true" : "false");
   if (listError) { $("ncList").focus(); return; }
   const body = { cat, copy_from: $("ncFrom").value, list_url,
-    market_code: $("ncMarket").value, year: $("ncYear").value, month: $("ncMonth").value, period_mode: $("ncPeriod").value,
+    market_code: $("ncMarket").value, year: $("ncPeriod").value === "recent30" ? "" : $("ncYear").value, month: $("ncPeriod").value === "recent30" ? "" : $("ncMonth").value, period_mode: $("ncPeriod").value,
     ss_account, ss_password };
   try {
     $("ncOk").disabled = true;
@@ -2115,8 +2246,8 @@ async function submitNewCat() {
 
 /* ============ 视图切换: 类目中心 / 运行台(2026-09) ============ */
 const RUN_CARDS = ["secRun", "secState"];
-const PANEL_NAMES = {secKwLists:"关键词清单",secAttr:"步骤16 属性集提取与确认",secStd:"步骤18 标准化",secMon:"监控与告警",secCfg:"配置中心",secLog:"实时日志"};
-const GATE_PANELS = {keywords:"secKwLists",attributes:"secAttr",standardization:"secStd"};
+const PANEL_NAMES = {secKwLists:"关键词清单",secMarketReport:"步骤15 选品报告",secStep15Settings:"选品指标标准",secAttr:"步骤16 属性集提取与确认",secStd:"步骤18 标准化",secMon:"监控与告警",secCfg:"配置中心",secLog:"实时日志"};
+const GATE_PANELS = {keywords:"secKwLists",market_report:"secMarketReport",attributes:"secAttr",standardization:"secStd"};
 let __openWorkbenchPanel = "", __mandatoryGate = "", __dismissedManualGate = "", __manualGateMessage = "", __panelReturnFocus = null;
 function initWorkbenchPanels() {
   const parking = $("workbenchParking");
@@ -2125,6 +2256,9 @@ function initWorkbenchPanels() {
   $("openConfig").onclick=()=>openWorkbenchPanel("secCfg");
   $("openLog").onclick=()=>openWorkbenchPanel("secLog");
   $("workbenchClose").onclick=()=>closeWorkbenchPanel();
+  if ($("marketReportConfirm")) $("marketReportConfirm").onclick=confirmMarketReport;
+  if ($("openStep15Settings")) $("openStep15Settings").onclick=()=>openWorkbenchPanel("secStep15Settings");
+  if ($("step15SettingsSave")) $("step15SettingsSave").onclick=saveStep15Settings;
 }
 function closeWorkbenchPanel(force=false) {
   if (!force && __mandatoryGate && __openWorkbenchPanel === GATE_PANELS[__mandatoryGate]) {
@@ -2153,6 +2287,8 @@ function openWorkbenchPanel(id, mandatory=false, message="") {
     $("workbenchBody").appendChild(panel);
     __openWorkbenchPanel=id;
     if(id==="secKwLists") loadKeywordPanel(true);
+    else if(id==="secMarketReport") loadMarketReport();
+    else if(id==="secStep15Settings") loadStep15Settings();
     else if(id==="secAttr") loadAttrSpec(true);
     else if(id==="secStd") loadStdVocab(true);
   }
@@ -2169,6 +2305,205 @@ function openWorkbenchPanel(id, mandatory=false, message="") {
   document.body.style.overflow="hidden";
   $("workbenchBody").tabIndex=-1;
   if(!$("workbenchOverlay").contains(document.activeElement)) $("workbenchBody").focus({preventScroll:true});
+}
+let step15SettingsState = null;
+async function loadStep15Settings() {
+  const file = selFile, scope = "global";
+  const box = $("step15SettingsBody"), button = $("step15SettingsSave");
+  step15SettingsState = null; button.disabled = true; box.textContent = "正在读取标准…";
+  try {
+    const d = await api(`/api/step15-settings?file=${encodeURIComponent(file)}&scope=${encodeURIComponent(scope)}`);
+    if (file !== selFile || __openWorkbenchPanel !== "secStep15Settings") return;
+    step15SettingsState = {file, scope, revision:d.revision, rules:d.rules};
+    $("step15SettingsNote").textContent = "修改后对所有类目生效；保存需要管理员权限。该设置独立于类目配置文件。";
+    box.innerHTML = d.rules.map((r,i) => `<article style="border-bottom:1px solid var(--line);padding:14px 0">
+      <label><input type="checkbox" data-enabled="${i}" ${r.enabled ? "checked" : ""}> <strong>${esc(r.name)}</strong> · ${esc(r.priority)}</label>
+      <p style="margin:5px 0">计算公式：${esc(r.formula)}</p>
+      <p class="muted" style="margin:5px 0">${esc(r.automatic_note)}</p>
+      ${r.automatic ? `<label>自动判定阈值 <input type="number" step="any" data-limit="${i}" value="${esc(r.limit)}"></label><p class="muted">标准依据阈值自动生成</p>` : `<p>标准：${esc(r.standard)}</p>`}
+      ${r.second_limit ? `<label>新品销额占比阈值（%） <input type="number" step="any" min="0" max="100" data-limit2="${i}" value="${esc(r.limit2)}"></label>` : ""}
+      <p class="muted" style="margin:5px 0">原表：${esc(r.original_standard)}；${esc(r.note)}</p>
+    </article>`).join("");
+    button.disabled = false;
+  } catch (e) { if (file === selFile) box.textContent = "读取失败：" + (e.message || e); }
+}
+async function saveStep15Settings() {
+  const state = step15SettingsState;
+  if (!state || state.file !== selFile) return;
+  const rules = {};
+  for (let i = 0; i < state.rules.length; i++) {
+    const r = state.rules[i], enabled = document.querySelector(`[data-enabled="${i}"]`).checked;
+    const standardInput = document.querySelector(`[data-standard="${i}"]`);
+    const item = {enabled, standard: standardInput ? standardInput.value : r.standard};
+    if (r.automatic) {
+      const field = document.querySelector(`[data-limit="${i}"]`);
+      if (!field.value.trim() || !Number.isFinite(Number(field.value))) { toast(r.name + "：请输入有效数字", "err"); return; }
+      item.limit = Number(field.value);
+    }
+    if (r.second_limit) {
+      const field = document.querySelector(`[data-limit2="${i}"]`);
+      if (!field.value.trim() || !Number.isFinite(Number(field.value))) { toast(r.name + "：请输入有效的新品销额占比阈值", "err"); return; }
+      item.limit2 = Number(field.value);
+    }
+    rules[r.name] = item;
+  }
+  const button = $("step15SettingsSave"); button.disabled = true;
+  try {
+    await api("/api/step15-settings/save", {method:"POST", body:{config_file:state.file, scope:state.scope, revision:state.revision, rules}});
+    if (state.file !== selFile) return;
+    toast("指标标准已保存；如已有报告，请重新运行步骤15", "ok");
+    await loadStep15Settings(); pollNow();
+  } catch (e) { toast("保存失败：" + (e.message || e), "err"); button.disabled = false; }
+}
+let marketReportRevision = "", marketReportFile = "";
+async function loadMarketReport() {
+  const file = selFile, box = $("marketReportBody"), button = $("marketReportConfirm");
+  const pdfLink = $("marketReportPdf"); if (pdfLink) pdfLink.hidden = true;
+  marketReportRevision = ""; marketReportFile = "";
+  button.disabled = true; box.innerHTML = '<div class="mr-state" role="status">正在读取选品报告…</div>';
+  try {
+    const data = await api(`/api/step15-review?file=${encodeURIComponent(file)}`);
+    if (file !== selFile || __openWorkbenchPanel !== "secMarketReport") return;
+    marketReportRevision = data.revision; marketReportFile = file;
+    if (pdfLink) { pdfLink.href = `/api/step15-review/pdf?file=${encodeURIComponent(file)}&revision=${encodeURIComponent(data.revision)}`; pdfLink.hidden = false; }
+    const safe = v => esc(String(v == null || v === "" ? "—" : v));
+    const compactAmount = (n, precise = false) => {
+      const divisor = Math.abs(n) >= 1e9 ? 1e9 : 1e6;
+      const suffix = divisor === 1e9 ? "B" : "M";
+      return new Intl.NumberFormat("en-US", {minimumFractionDigits: 1, maximumFractionDigits: precise ? 9 : 1, useGrouping: false}).format(n / divisor) + suffix;
+    };
+    const siteCurrency = String(((data["指标"] || []).find(r => r["指标"] === "类目GMV估算") || {})["单位"] || "").split("/")[0];
+    const currencyText = value => String(value || "")
+      .replace(/\b(\d+(?:\.\d+)?)\s*(百万|千万|万)\s*美元/g, (_, n, scale) => `USD ${compactAmount(Number(n) * ({"万":1e4,"百万":1e6,"千万":1e7})[scale])}`)
+      .replace(/(?<![A-Za-z])\$\s*(\d+(?:\.\d+)?)/g, (match, n) => siteCurrency ? `${siteCurrency} ${n}` : match)
+      .replace(/(\d+(?:,\d{3})*(?:\.\d+)?)\s*(?:美元|美金)/g, 'USD $1');
+    const groups = ["不达标", "待确认", "数据不足", "达标", "仅展示", "未启用"];
+    const rows = data["指标"] || [], suggestions = data["建议"] || [];
+    const oldSeasonRule = rows.some(r => r["指标"] === "季节波动系数" && String(r["原表标准"] || "").includes("各词每年峰谷比"));
+    const reportOutdated = !!data.report_outdated || oldSeasonRule || (rows.length > 0 && (!rows.some(r => r["板块"]) || rows.some(r => Object.prototype.hasOwnProperty.call(r, "影响"))));
+    const ai = suggestions.find(x => x["项目"] === "AI建议");
+    const details = suggestions.filter(x => ["主要依据", "主要风险", "待验证"].includes(x["项目"]));
+    const oldDecision = suggestions.find(x => x["项目"] === "规则初判");
+    const legacyAdvice = reportOutdated || rows.some(r => /否决|降级/.test(String(r["影响"] || ""))) || /否决|降级/.test(String(oldDecision && oldDecision["内容"] || ""));
+    const passed = rows.filter(r => r["判定"] === "达标").length;
+    const failed = rows.filter(r => r["判定"] === "不达标").length;
+    const decision = passed + failed ? `已判定 ${passed + failed} 项，其中 ${passed} 项达标、${failed} 项不达标。` : "暂无可判定指标。";
+    const tone = s => s === "达标" ? "pass" : s === "不达标" ? "fail" : ["待确认", "数据不足"].includes(s) ? "wait" : s === "仅展示" ? "info" : "";
+    const paragraphs = text => {
+      const sentences = currencyText(text).match(/[^。！？\n]+[。！？]*|[。！？]+|\n/g) || [];
+      const chunks = []; let current = "";
+      for (const sentence of sentences) {
+        if (sentence === "\n") { if (current) chunks.push(current); current = ""; continue; }
+        current += sentence;
+        if (current.length >= 130) { chunks.push(current); current = ""; }
+      }
+      if (current) chunks.push(current);
+      return chunks.length ? chunks.map(s => `<p>${safe(s)}</p>`).join("") : "<p>暂无 AI 建议。</p>";
+    };
+    const aiSections = () => {
+      let content = `<section class="mr-ai-section"><h4>能否进入</h4>${paragraphs(ai && ai["内容"])}</section>`;
+      for (const label of ["主要依据", "主要风险", "待验证"]) {
+        const items = details.filter(x => x["项目"] === label && String(x["内容"] || "").trim());
+        const heading = label === "主要依据" ? "主要依据：市场需求与竞争格局" : label === "待验证" ? "下一步怎么办（待验证）" : label;
+        content += `<section class="mr-ai-section"><h4>${heading}</h4>${items.length ? `<ul>${items.map(x => `<li>${safe(currencyText(x["内容"]))}</li>`).join("")}</ul>` : '<p class="mr-ai-empty">暂无单独记录；旧报告可重新运行步骤15生成。</p>'}</section>`;
+      }
+      return content;
+    };
+    let html = `<div class="mr-content">`;
+    if (reportOutdated) html += '<div class="mr-alert" role="status">当前为旧版指标报告，暂不符合现行的市场需求和竞争格局口径。请单独重新运行步骤15，生成新版报告后再确认。</div>';
+    html += `<div class="mr-title"><div><h2>市场进入评估</h2><p>查看指标结果、AI 分析与各项指标依据。</p></div></div>`;
+    html += `<section class="mr-overview" aria-label="报告结论"><div class="mr-decision"><div class="mr-label">指标概况</div><div class="mr-decision-text">${safe(decision)}</div></div><div class="mr-ai"><div class="mr-label">AI 市场建议</div><div class="mr-ai-text">${legacyAdvice ? "<p>该报告的 AI 建议基于旧规则，请重新运行步骤15生成新的建议。</p>" : aiSections()}</div></div></section>`;
+    html += `<div class="mr-status-bar" role="group" aria-label="按判定筛选指标"><span class="mr-status-label">指标筛选</span><button type="button" class="mr-filter" data-mr-filter="全部" aria-pressed="true">全部 <span class="mr-count">${rows.length}</span></button>`;
+    html += groups.map(s => ({name:s, count:rows.filter(r => r["判定"] === s).length})).filter(x => x.count).map(x => `<button type="button" class="mr-filter" data-mr-filter="${safe(x.name)}" aria-pressed="false"><span class="mr-dot ${tone(x.name)}" aria-hidden="true"></span>${safe(x.name)} <span class="mr-count">${x.count}</span></button>`).join("") + `</div>`;
+    const foundSections = [...new Set(rows.map(r => r["板块"] || "其他指标"))];
+    const sections = ["市场需求", "竞争格局", ...foundSections.filter(s => !["市场需求", "竞争格局"].includes(s))].filter(s => foundSections.includes(s));
+    let trendIndex = 0;
+    for (const section of sections) {
+      const items = rows.filter(r => (r["板块"] || "其他指标") === section);
+      html += `<section class="mr-section"><div class="mr-section-head"><h3>${safe(section)}</h3><span>${items.length} 项</span></div><div class="mr-table-wrap"><table class="mr-table"><colgroup><col style="width:18%"><col style="width:13%"><col style="width:22%"><col style="width:21%"><col style="width:26%"></colgroup><thead><tr><th scope="col">指标</th><th scope="col">判定</th><th scope="col">实际值</th><th scope="col">标准</th><th scope="col">指标定义</th></tr></thead><tbody>`;
+      html += items.map(r => {
+        const status = r["判定"] || "未标注", klass = tone(status);
+        const rawValue = r["实际值"];
+        const isSingleDecimal = r["单位"] === "%" || ["评分", "季节波动系数"].includes(r["指标"]);
+        const numeric = typeof rawValue === "number" ? rawValue : (typeof rawValue === "string" && /^[+-]?\d+(?:\.\d+)?$/.test(rawValue.trim()) ? Number(rawValue) : NaN);
+        const isTrend = ["趋势方向（站内）", "趋势方向（Google）"].includes(r["指标"]);
+        const isDemand = r["指标"] === "月需求量估算", isGmv = r["指标"] === "类目GMV估算";
+        let shownValue = isSingleDecimal && Number.isFinite(numeric) ? new Intl.NumberFormat("en-US", {useGrouping:false, minimumFractionDigits:1, maximumFractionDigits:1}).format(numeric) : rawValue;
+        if (isDemand && Number.isFinite(numeric)) shownValue = new Intl.NumberFormat("en-US", {useGrouping:false, maximumFractionDigits:0}).format(numeric);
+        if (isGmv && Number.isFinite(numeric)) shownValue = compactAmount(numeric);
+        if (isTrend && Number.isFinite(numeric) && numeric >= 0) shownValue = `+${shownValue}`;
+        let shownUnit = r["单位"] || "";
+        if (isGmv && Number.isFinite(numeric)) { const code = String(shownUnit).split("/")[0] || "币种未知"; shownValue = `${code} ${shownValue}/月`; shownUnit = ""; }
+        if (r["指标"] === "平均客单价" && Number.isFinite(numeric) && shownUnit) { shownValue = `${shownUnit} ${shownValue}`; shownUnit = ""; }
+        if (r["指标"] === "CPC竞价" && typeof shownValue === "string") shownValue = currencyText(shownValue);
+        let shownStandard = currencyText(r["原表标准"]);
+        if (isGmv && !/\d\s*[MB](?:\/月)?/i.test(shownStandard)) shownStandard = shownStandard.replace(/([<>≥≤]=?)\s*(?:USD\s*)?([\d,]+(?:\.\d+)?)\s*(?:USD|美元|美金)?\s*(?:\/月)?/g, (_, op, n) => `${op} USD ${compactAmount(Number(n.replace(/,/g, "")), true)}/月`);
+        const unit = rawValue != null && rawValue !== "" && shownUnit ? (shownUnit === "%" ? "%" : ` ${safe(shownUnit)}`) : "";
+        const actual = safe(shownValue) + unit;
+        const trend = (data["趋势明细"] || {})[r["指标"]];
+        const hasTrend = trend && Array.isArray(trend.months) && trend.months.length === 3 && Array.isArray(trend.words) && Array.isArray(trend.total) && trend.total.length === 3;
+        const trendId = hasTrend ? `mr-trend-${trendIndex++}` : "";
+        const indicatorName = r["指标"] === "老品占比" ? "上架超3年链接销额占比" : r["指标"];
+        const definition = `<details class="mr-evidence"><summary>查看定义</summary><div class="mr-evidence-content">${safe(r["业务定义"] || "暂无业务定义")}${r["原表备注及口径"] ? `<br>计算口径：${safe(r["原表备注及口径"])}` : ""}</div></details>`;
+        const proof = definition + (hasTrend ? `<button type="button" class="mr-trend-toggle" aria-expanded="false" aria-controls="${trendId}">查看明细</button>` : "");
+        let result = `<tr class="mr-row" data-mr-status="${safe(status)}"><td data-label="指标" class="mr-name">${safe(indicatorName)}</td><td data-label="判定"><span class="mr-badge ${klass}"><span class="mr-dot ${klass}" aria-hidden="true"></span>${safe(status)}</span></td><td data-label="实际值" class="mr-value">${actual}</td><td data-label="标准" class="mr-standard">${safe(shownStandard)}</td><td data-label="指标定义">${proof}</td></tr>`;
+        if (hasTrend) {
+          const headings = trend.months.map(month => `<span role="columnheader">${safe(month)}同比</span>`).join("");
+          const wordRows = trend.words.map(word => `<div role="row"><span role="cell" data-first="true">${safe(word.name)}</span>${(word.values || []).map(value => `<span role="cell">${safe(value)}</span>`).join("")}</div>`).join("");
+          const total = trend.total.map(value => `<span role="cell" class="mr-trend-total">${safe(value)}</span>`).join("");
+          const coverage = String(r["证据与限制"] || "").match(/有效核心词\s*(\d+\s*\/\s*\d+)/);
+          const coverageNote = coverage ? `有效核心词 ${safe(coverage[1])}；数据不完整的词不参与加总。` : "";
+          result += `<tr class="mr-trend-row" id="${trendId}" hidden><td colspan="5"><div class="mr-trend-heading">${safe(r["指标"])} · 近三个月同比</div><div class="mr-trend-scroll"><div class="mr-trend-grid" role="table" aria-label="${safe(r["指标"])}明细"><div role="row"><span role="columnheader" data-first="true">核心词</span>${headings}</div>${wordRows}<div role="row"><span role="cell" data-first="true" class="mr-trend-total">各词加总</span>${total}</div></div></div><div class="mr-trend-mean"><span>汇总（3 个月均值）</span><span>${safe(trend.mean)}</span></div><p class="mr-trend-note">${coverageNote}当前标准：${safe(r["原表标准"])}。先按月合计，再计算同比和三个月均值；按未取整的均值判定。</p><details class="mr-evidence"><summary>查看完整依据</summary><div class="mr-evidence-content">${safe(r["证据与限制"])}</div></details></td></tr>`;
+        }
+        return result;
+      }).join("");
+      html += `</tbody></table></div></section>`;
+    }
+    if (!rows.length) html += '<div class="mr-state">报告中没有可展示的指标，请重新运行步骤15。</div>';
+    html += `</div>`;
+    box.innerHTML = html;
+    box.querySelectorAll(".mr-trend-toggle").forEach(toggle => toggle.addEventListener("click", () => {
+      const detail = box.querySelector(`#${toggle.getAttribute("aria-controls")}`);
+      const open = toggle.getAttribute("aria-expanded") !== "true";
+      toggle.setAttribute("aria-expanded", String(open));
+      if (detail) detail.hidden = !open;
+    }));
+    box.querySelectorAll("[data-mr-filter]").forEach(filter => filter.addEventListener("click", () => {
+      const selected = filter.dataset.mrFilter;
+      box.querySelectorAll("[data-mr-filter]").forEach(item => item.setAttribute("aria-pressed", String(item === filter)));
+      box.querySelectorAll(".mr-row").forEach(row => { row.hidden = selected !== "全部" && row.dataset.mrStatus !== selected; });
+      box.querySelectorAll(".mr-trend-toggle").forEach(toggle => {
+        const detail = box.querySelector(`#${toggle.getAttribute("aria-controls")}`);
+        if (detail) detail.hidden = toggle.closest(".mr-row").hidden || toggle.getAttribute("aria-expanded") !== "true";
+      });
+      box.querySelectorAll(".mr-section").forEach(section => {
+        const visible = Array.from(section.querySelectorAll(".mr-row")).filter(row => !row.hidden).length;
+        section.hidden = !visible;
+        section.querySelector(".mr-section-head span").textContent = `${visible} 项`;
+      });
+    }));
+    button.disabled = !data.pending || !!data.settings_stale || reportOutdated;
+    button.textContent = data.settings_stale || reportOutdated ? "请重新运行步骤15" : (data.pending ? "确认报告并继续" : "报告已确认");
+  } catch (error) {
+    if (file === selFile) box.innerHTML = `<div class="mr-state" role="alert">报告读取失败：${safeReportError(error)}</div>`;
+  }
+}
+function safeReportError(error) { return esc(String(error && error.message || error)); }
+async function confirmMarketReport() {
+  const file = marketReportFile, revision = marketReportRevision;
+  if (!file || file !== selFile || !revision) return;
+  const button = $("marketReportConfirm"); button.disabled = true;
+  try {
+    await api("/api/step15-review/confirm", {method:"POST", body:{config_file:file, revision}});
+    if (file !== selFile) return;
+    toast("步骤15报告已确认，正在继续流程", "ok");
+    closeWorkbenchPanel(true);
+    await startRun("resume");
+    pollNow();
+  } catch (error) {
+    toast("确认失败：" + (error.message || error), "err");
+    if (file === selFile) await loadMarketReport();
+  }
 }
 function syncManualGate(data) {
   if(!__viewIsRun()) return;
@@ -2242,15 +2577,15 @@ function enterRunWith(file) {
   });
 }
 /* ============ 类目中心: 两级分组(基类目卡片 → 站点 → 下方列表) 2026-09 ============ */
-const __hub = { items: [], base: "", site: "", q: "", openOnly: false, page: 1, showAllBase: false, showAllSite: false, mode: "cards" };
+const __hub = { items: [], base: "", site: "", q: "", openOnly: false, page: 1, showAllBase: false, showAllSite: false, mode: "cards", taskType: "long" };
 const HUB_BASE_CAP = 12, HUB_SITE_CAP = 12, HUB_PAGE_SIZE = 20;
 const REGION_TOKENS = new Set(["US","UK","GB","DE","FR","IT","ES","CA","JP","AU","MX","BR","IN","NL","SE","PL","TR","SG","AE"]);
 function hubParts(cat) {
   let c = String(cat || "").trim(), month = "", site = "";
   const recent = /-RECENT30$/i.test(c);
   if (recent) c = c.replace(/-RECENT30$/i, "");
-  const mm = /-(20\d{4})$/.exec(c);
-  if (mm) { c = c.slice(0, c.lastIndexOf("-")); month = mm[1].slice(0, 4) + "-" + mm[1].slice(4); }
+  const mm = /-(20\d{4}(?:\d{2})?)$/.exec(c);
+  if (mm) { c = c.slice(0, c.lastIndexOf("-")); month = mm[1].slice(0, 4) + "-" + mm[1].slice(4, 6) + (mm[1].length === 8 ? "-" + mm[1].slice(6) : ""); }
   const im = c.lastIndexOf("-");
   if (im >= 0) {
     const tok = c.slice(im + 1);
@@ -2258,6 +2593,17 @@ function hubParts(cat) {
   }
   return { base: c || cat, site, month, recent };
 }
+function hubTaskItems() {
+  return __hub.items.filter(it => hubParts(it.cat).recent === (__hub.taskType === "recent"));
+}
+function setHubTaskType(type) {
+  __hub.taskType = type === "recent" ? "recent" : "long";
+  __hub.base = ""; __hub.site = ""; __hub.page = 1;
+  __hub.showAllBase = false; __hub.showAllSite = false;
+  renderHomeGroups(); renderHomeRows();
+}
+$('homeLongTasks').addEventListener('click', () => setHubTaskType('long'));
+$('homeRecentTasks').addEventListener('click', () => setHubTaskType('recent'));
 function hubMatch(it, q) {
   const p = hubParts(it.cat);
   const hay = ((it.cat || "") + " " + p.base + " " + p.site + " " + p.month).toLowerCase();
@@ -2293,7 +2639,7 @@ function hubLeafHtml(it) {
 }
 function renderHomeTree() {
   const tree = $("homeTree"), hint = $("homeHint");
-  let list = __hub.items;
+  let list = hubTaskItems();
   if (__hub.openOnly) list = list.filter(it => !(it.done >= it.total) || (it.running && it.running.length));
   const q = (__hub.q || "").trim().toLowerCase();
   if (q) {
@@ -2356,7 +2702,7 @@ function applyHubView(mode) {
   if (mode !== "tree") { renderHomeGroups(); renderHomeRows(); }
 }
 /* ============ 整合市场报告(HTML, 2026-10-09): 类目中心那行的「📊 整合报告」 ============
- * 用户口径: 步骤8 关键词报告 + 步骤18 属性标注-标准化交付 + 外部VOC报告 **三份缺一不可**;
+ * 整合报告依赖关键词报告、标准化交付及外部评论报告。
  * 报告是单文件 HTML, 点开即看(走 /api/integrated-report/view 直吐 HTML, 不用 file:// 链接 ——
  * 浏览器不允许 http 页面点开本地文件)。
  * 状态来自 ①/api/history 每行的 `integrated` 字段(s.d. 见 webui/server.py::integrated_report_status):
@@ -2370,7 +2716,7 @@ function hubDownloadHtml(it) {
    * 缺的那几项置灰(带原因), 不隐藏 —— 用户一眼看出"还差哪份"。 */
   const ir = it.integrated || null;
   if (!ir) return "";
-  const miss = (ir.missing || []).map(m => m.step === null ? "外部VOC报告" : `步骤${m.step}`);
+  const miss = (ir.missing || []).map(m => `步骤${m.step}`);
   const link = (kind, label, ok) => ok
     ? `<a href="/api/integrated-report/download?cat=${encodeURIComponent(it.cat)}&kind=${kind}">${label}</a>`
     : `<span class="miss" title="还缺 ${miss.join("、")}">${label}</span>`;
@@ -2380,17 +2726,43 @@ function hubDownloadHtml(it) {
   const items = [
     open,
     link("integrated", "⬇ 整合报告(HTML)", !!ir.html),
-    link("keyword", "① 关键词报告.xlsx(步骤8)", !miss.includes("步骤8")),
+    ir.step15_pdf && it.run_file
+      ? `<a href="/api/step15-review/pdf?file=${encodeURIComponent(it.run_file)}">① 选品报告.pdf(步骤15)</a>`
+      : `<span class="miss" title="请先完成步骤15生成选品报告">① 选品报告.pdf(步骤15)</span>`,
     link("product", "② 属性标注-标准化交付.xlsx(步骤18)", !miss.includes("步骤18")),
     link("voc", "③ VOC报告.xlsx（外部提供）", !miss.includes("外部VOC报告")),
   ].join("");
   return `<details class="hub-dl"><summary class="btn-sm btn-ghost" title="下载整合报告与三份源数据">⬇ 下载</summary>`
     + `<div class="hub-dl-menu">${items}</div></details>`;
 }
+function initHubDownloadDismissal() {
+  document.addEventListener("click", event => {
+    const target = event.target instanceof Element ? event.target : null;
+    const current = target && target.closest("details.hub-dl");
+    const selectedLink = target && target.closest(".hub-dl-menu a");
+    document.querySelectorAll("details.hub-dl[open]").forEach(menu => {
+      if (menu !== current || selectedLink) menu.open = false;
+    });
+  });
+  document.addEventListener("toggle", event => {
+    const menu = event.target;
+    if (!(menu instanceof HTMLDetailsElement) || !menu.matches("details.hub-dl") || !menu.open) return;
+    document.querySelectorAll("details.hub-dl[open]").forEach(other => { if (other !== menu) other.open = false; });
+  }, true);
+  document.addEventListener("keydown", event => {
+    if (event.key !== "Escape") return;
+    document.querySelectorAll("details.hub-dl[open]").forEach(menu => {
+      const returnFocus = menu.contains(document.activeElement);
+      menu.open = false;
+      if (returnFocus) menu.querySelector("summary")?.focus();
+    });
+  });
+}
+initHubDownloadDismissal();
 function hubIntegratedHtml(it) {
   const ir = it.integrated || null;
   if (!ir) return "";                                   // 后端旧版本没有该字段 → 不显示按钮
-  const miss = (ir.missing || []).map(m => m.step === null ? "外部VOC报告" : `步骤${m.step} ${m.name}`);
+  const miss = (ir.missing || []).map(m => `步骤${m.step} ${m.name}`);
   if (ir.html) {
     const tip = `整合报告已生成: ${ir.html.mtime || ""}${ir.html.size ? " · " + Math.round(ir.html.size / 1024) + " KB" : ""}`;
     return ` <button class="btn-sm btn-ok shine" data-act="report-open" data-cat="${esc(it.cat)}" title="${esc(tip)}">📊 整合报告</button>`
@@ -2453,7 +2825,8 @@ async function buildIntegratedReport(cat, btn) {
 }
 function renderHomeRows() {
   const rows = $("homeHistRows"), hint = $("homeHint");
-  let list = __hub.items;
+  if (__hub.mode === "tree") { renderHomeTree(); return; }
+  let list = hubTaskItems();
   if (__hub.openOnly) {
     list = list.filter(it => !(it.done >= it.total) || (it.running && it.running.length));
   }
@@ -2522,9 +2895,18 @@ function renderHomeRows() {
 function renderHomeGroups() {
   const barB = $("homeBaseBar"), barS = $("homeSiteBar");
   if (!barB) return;
+  const taskItems = hubTaskItems();
+  const recentCount = __hub.items.filter(it => hubParts(it.cat).recent).length;
+  for (const [id, type, count, label] of [["homeLongTasks", "long", __hub.items.length - recentCount, "长期任务"], ["homeRecentTasks", "recent", recentCount, "临时任务"]]) {
+    const btn = $(id); if (!btn) continue;
+    const selected = __hub.taskType === type;
+    btn.className = "btn-sm " + (selected ? "btn-ok shine" : "btn-ghost");
+    btn.setAttribute("aria-pressed", String(selected));
+    btn.textContent = `${label} (${count})`;
+  }
   // ---- 基类目卡片(折叠 >HUB_BASE_CAP; 状态色点 + 数量) ----
   const bases = {};
-  __hub.items.forEach(it => {
+  taskItems.forEach(it => {
     const p = hubParts(it.cat);
     const k = p.base.toLowerCase();
     bases[k] = bases[k] || { label: p.base, n: 0, items: [] };
@@ -2532,7 +2914,7 @@ function renderHomeGroups() {
   });
   const keys = Object.keys(bases).sort();
   const visible = __hub.showAllBase ? keys : keys.slice(0, HUB_BASE_CAP);
-  const parts = [`<button class="btn-sm ${__hub.base ? "btn-ghost" : "btn-ok shine"}" data-base="">全部类目 (${__hub.items.length})</button>`];
+  const parts = [`<button class="btn-sm ${__hub.base ? "btn-ghost" : "btn-ok shine"}" data-base="">全部类目 (${taskItems.length})</button>`];
   visible.forEach(k => {
     const b = bases[k];
     const rank = it => ({ run: 1, bad: 2, done: 3, todo: 4 }[hubStatus(it)] || 4);
@@ -2556,7 +2938,7 @@ function renderHomeGroups() {
   if (!__hub.base) { barS.style.display = "none"; barS.innerHTML = ""; return; }
   // ---- 站点卡片(折叠 >HUB_SITE_CAP) ----
   const sites = {};
-  __hub.items.filter(it => hubParts(it.cat).base.toLowerCase() === __hub.base.toLowerCase())
+  taskItems.filter(it => hubParts(it.cat).base.toLowerCase() === __hub.base.toLowerCase())
     .forEach(it => { const s = hubParts(it.cat).site || "—"; sites[s] = (sites[s] || 0) + 1; });
   const siteKeys = Object.keys(sites).sort();
   const svis = __hub.showAllSite ? siteKeys : siteKeys.slice(0, HUB_SITE_CAP);
@@ -4375,7 +4757,7 @@ function sfTable(list) {
     <tbody>${sfRows(list)}</tbody></table>`;
 }
 function panelShortcutReady(step, steps) {
-  const prerequisite = {8: 8, 16: 16, 18: 17}[step];
+  const prerequisite = {8: 8, 15: 15, 16: 16, 18: 17}[step];
   return prerequisite !== undefined && (steps || []).some(s => s.number === prerequisite && s.status === "DONE");
 }
 function openStepFiles(n) {
@@ -4386,7 +4768,7 @@ function openStepFiles(n) {
   const meta = STEPS[n] || {};
   $("sfTitle").textContent = `STEP ${pad(n)} · ${meta.t || "步骤" + n}`;
   $("sfDesc").textContent = meta.d || "";
-  const panel = {8:"secKwLists",16:"secAttr",18:"secStd"}[n];
+  const panel = {8:"secKwLists",15:"secMarketReport",16:"secAttr",18:"secStd"}[n];
   const ready = panelShortcutReady(n, lastStatus && lastStatus.steps);
   const review = $("sfReview");
   review.style.display = panel && ready ? "" : "none";
@@ -4676,6 +5058,7 @@ function renderSteps(data) {
     // 原来只有步骤18 有「打开标准化面板」，用户反馈关键词清单与步骤16 卡片上没有按钮。
     const PANEL_SHORTCUTS = {
       8:  { panel: "secKwLists", cls: "open-kw-panel",   label: "打开关键词清单面板" },
+      15: { panel: "secMarketReport", cls: "open-market-panel", label: "查看选品报告" },
       16: { panel: "secAttr",    cls: "open-attr-panel", label: "打开属性集面板" },
       18: { panel: "secStd",     cls: "open-std-panel",  label: "打开标准化面板" },
     };
@@ -4878,7 +5261,7 @@ function renderHealth(data) {
   const sig = JSON.stringify(checks) + (h.exit_code ?? "");
   if (sig === lastHealthSig && box.childElementCount) return;
   lastHealthSig = sig;
-  if (!checks.length) { box.innerHTML = `<div class="empty">暂无体检报告 — 步骤 19 运行后生成</div>`; return; }
+  if (!checks.length) { box.innerHTML = `<div class="empty">暂无体检报告 — 步骤 20 运行后生成</div>`; return; }
   const ico = {OK:"✓", WARN:"!", CRIT:"✕"};
   box.innerHTML = checks.map((ch, i) =>
     `<div class="hitem lv-${esc(ch.level)}" style="animation:pop .5s var(--ease) both;animation-delay:${Math.min(i, 8) * 60}ms">
@@ -5319,7 +5702,7 @@ function renderConfigForm(values) {
   const form = $("cfgForm");
   const known = new Set();
   GROUPS.forEach(g => g.keys.forEach(k => known.add(k)));
-  const extra = Object.keys(values).filter(k => !k.startsWith("VOC_") && !known.has(k) && !HIDDEN_KEYS.has(k) && !SPECIAL_KEYS.has(k));
+  const extra = Object.keys(values).filter(k => !known.has(k) && !HIDDEN_KEYS.has(k) && !SPECIAL_KEYS.has(k));
   // SS_ACTIVE_ACCOUNT 下拉选项: auto/main + 主账号/备用账号
   const opts = [{v: "auto", t: "auto — 自动(主账号优先)"}, {v: "main", t: "main — 主账号"}];
   const seen = new Set(["auto", "main"]);

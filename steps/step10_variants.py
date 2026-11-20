@@ -30,6 +30,8 @@ import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from html.parser import HTMLParser
+from urllib.parse import urljoin, urlsplit, urlunsplit
 
 import pandas as pd
 
@@ -264,8 +266,8 @@ def _extract_variant_images(variants: list[str], img_block: dict) -> tuple[dict,
     """第五步: 变体标签/图片(colorToAsin 配色 + colorImages[color][0] 主图)。
 
     2026-09-14 修(真站结构漂移): 真页面 `colorToAsin` 的值是**嵌套对象**
-        {"Light Bamboo Lot de 3": {"asin": "B017CBD1C5"}, …}
-    原实现只接受字符串形态 {"Black": "B03C537AFE"}(见 tests/test_parse_variants.py 的旧夹具),
+        {"Light Bamboo Lot de 3": {"asin": "B0FHQDQSKM"}, …}
+    原实现只接受字符串形态 {"Black": "B0BLACK111"}(见 tests/test_parse_variants.py 的旧夹具),
     `isinstance(asin, str)` 永不成立 → **标签与每配色主图恒为空**, 且是静默失效
     (实测: 历史 6 个类目 10,456 条 ok 记录里 variant_labels 非空 0 条)。现两种形态都支持。
     """
@@ -290,7 +292,7 @@ def _extract_variant_images(variants: list[str], img_block: dict) -> tuple[dict,
 
 
 def _variant_asin_of(value: object) -> str:
-    """取 colorToAsin 值里的 ASIN: 兼容 "B095AC5A88" 与 {"asin": "B095AC5A88"} 两种形态。"""
+    """取 colorToAsin 值里的 ASIN: 兼容 "B0XXXXXXXX" 与 {"asin": "B0XXXXXXXX"} 两种形态。"""
     if isinstance(value, str):
         return value.strip()
     if isinstance(value, dict):
@@ -360,7 +362,7 @@ _PARSEJSON_RE = re.compile(r"parseJSON\('(.+?)'\)", re.S)
 def _gallery_from_image_block_json(html: str) -> list[dict] | None:
     """取**完整图廊**数组(ImageBlockATF 里 `colorImages.initial` 的 `parseJSON('[...]')`)。
 
-    真实结构(2026-09-20 实测 B0F1902E67):
+    真实结构(2026-09-20 实测 B0GYS1CT2S):
         ImageBlockATF", function(A){
           var data = { 'asin': '…',
             'colorImages': { 'initial': A.$.parseJSON('[{"hiRes":…,"thumb":…,
@@ -402,7 +404,7 @@ def _extract_aplus_images(html: str) -> list[str]:
     """A+ 内容图（商品描述模块）—— **单独一列 `A+图片链接`，不与图廊 `图片链接` 混**。
 
     为什么单独成列（2026-09-20 用户要求）:
-      · A+ 图常承载**规格明细** —— 实测 B04DB5E72F 的「6-Stage Vertical Filtration +
+      · A+ 图常承载**规格明细** —— 实测 B0FQ2MCJSJ 的「6-Stage Vertical Filtration +
         每层材料」只在 A+ 图里, 图廊那 9 张没有; 对属性标注/复核价值很高;
       · 但它与图廊图性质不同(多为长图/拼图, 单张可达数十 MB 级像素),
         混进 `图片链接` 会挤占图廊名额、也让下游分不清"哪张是主图"。
@@ -413,7 +415,7 @@ def _extract_aplus_images(html: str) -> list[str]:
     """
     out: list[str] = []
     for m in _APLUS_IMG_RE.finditer(html or ""):
-        # 先归一 AVIF 包装路径(实测 2026-09-20: B0AF13FD56 的 A+ 图带
+        # 先归一 AVIF 包装路径(实测 2026-09-20: B0H36S6GB2 的 A+ 图带
         # `/W/BW_MEDIAX_AVIF_MEASUREMENT_<id>-T2/images/` 前缀, 不归一会被
         # 正则漏掉 → A+ 列静默抓成 0 张), 再去掉 `.__CR..__` 裁剪参数
         u = _restore_full_image(m.group(0))
@@ -462,7 +464,7 @@ def _extract_gallery(html: str, main_img: str, img_block: dict | None = None) ->
     _add(main_img or "")
 
     # ② 完整图廊(ImageBlockATF 的 initial 数组) —— **权威来源, 有它就到此为止**
-    #    实测该数组就是商品页图廊的全部大图(例: B0F1902E67 共 9 条, variant=MAIN/PT01…PT08)。
+    #    实测该数组就是商品页图廊的全部大图(例: B0GYS1CT2S 共 9 条, variant=MAIN/PT01…PT08)。
     #    **每条只取 `hiRes`**: 数组里同一张图的 `large`/`thumb` 是**缩略图资源**
     #    (ID 形如 41…, 与 hiRes 的 71… 不是同一张), 两个都取会让图集翻倍(实测 9→18)。
     #    拿到完整图廊后**不要再掺** altImages 缩略图 / ivLargeImage / colorImages:
@@ -569,6 +571,80 @@ def _clean_html(raw: str) -> str:
     text = re.sub(r"<[^>]+>", "", raw)
     text = html.unescape(text)
     return re.sub(r"\s+", " ", text).strip()
+
+
+class _ProductExtraParser(HTMLParser):
+    """提取标题差异化文字及商品文档区的 PDF，排除页面其他商品/广告链接。"""
+
+    _VOID = frozenset("area base br col embed hr img input link meta param source track wbr".split())
+    _DOC_IDS = frozenset(("productDocuments_feature_div", "product-docs-btf-section", "pqv-documents"))
+
+    def __init__(self, base_url: str):
+        super().__init__(convert_charrefs=True)
+        self.base_url = base_url
+        self.stack = []
+        self.highlight = []
+        self.links = []
+        self.anchor = None
+
+    def handle_starttag(self, tag, attrs):
+        attr = dict(attrs)
+        parent_highlight = self.stack[-1][1] if self.stack else False
+        parent_docs = self.stack[-1][2] if self.stack else False
+        parent_title = self.stack[-1][3] if self.stack else False
+        classes = (attr.get("class") or "").split()
+        title = parent_title or attr.get("id") in ("titleSection", "title_feature_div")
+        highlight = parent_highlight or (title and "dp-title-differentiators" in classes)
+        docs = parent_docs or attr.get("id") in self._DOC_IDS
+        if tag == "a" and docs:
+            self.anchor = {"href": attr.get("href") or "", "text": []}
+        if tag not in self._VOID:
+            self.stack.append((tag, highlight, docs, title))
+
+    def handle_startendtag(self, tag, attrs):
+        self.handle_starttag(tag, attrs)
+        if tag not in self._VOID:
+            self.handle_endtag(tag)
+
+    def handle_data(self, data):
+        if self.stack and self.stack[-1][1] and self.stack[-1][0] not in ("script", "style"):
+            self.highlight.append(data)
+        if self.anchor is not None:
+            self.anchor["text"].append(data)
+
+    def handle_endtag(self, tag):
+        if tag == "a" and self.anchor is not None:
+            label = " ".join(" ".join(self.anchor["text"]).split())
+            href = self.anchor["href"].strip()
+            if href and not href.lower().startswith(("javascript:", "data:", "blob:")):
+                try:
+                    url = urljoin(self.base_url, href)
+                    parsed = urlsplit(url)
+                    if parsed.scheme in ("http", "https") and parsed.netloc and (
+                        parsed.path.lower().endswith(".pdf") or "(pdf)" in label.lower()
+                    ):
+                        self.links.append({"label": label, "url": url})
+                except ValueError:
+                    pass
+            self.anchor = None
+        for i in range(len(self.stack) - 1, -1, -1):
+            if self.stack[i][0] == tag:
+                del self.stack[i:]
+                break
+
+
+def _extract_product_extras(html: str, base_url: str) -> tuple[str, list[dict]]:
+    parser = _ProductExtraParser(base_url)
+    parser.feed(html or "")
+    highlight = " ".join(" ".join(parser.highlight).split())
+    result, seen = [], set()
+    for item in parser.links:
+        parsed = urlsplit(item["url"])
+        identity = (item["label"].casefold(), urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", "")))
+        if identity not in seen:
+            seen.add(identity)
+            result.append(item)
+    return highlight, result
 
 
 def _aggregate_families(records: list[dict],
@@ -1466,6 +1542,7 @@ class Step10Variants(BaseStep):
         title, bullets, main_img = _extract_text_fields(text)
         images = _extract_gallery(text, main_img)
         aplus_images = _extract_aplus_images(text)   # A+ 内容图: 单独一列, 不混进图廊
+        highlights, product_pdfs = _extract_product_extras(text, final_url or source_url)
         # 变体标签(2026-09-14): 原实现此处写死 `{}` → 即使页面有配色/规格名也永远为空
         # (历史 10k+ 条记录 variant_labels 非空 0 条); 现按页面真实映射落库。
         labels = _extract_variant_labels(text, _extract_image_block(text), variants)
@@ -1492,6 +1569,8 @@ class Step10Variants(BaseStep):
             "images": images,
             "aplus_images": aplus_images,
             "title": title,
+            "highlights": highlights,
+            "product_pdfs": product_pdfs,
             "bullets": bullets,
             "fetched_at": now,
         }
@@ -1850,6 +1929,9 @@ class Step10Variants(BaseStep):
         # ---- 2026-09-08 定稿: 明细=保留变体各自的自身行; 2026-09-09 定稿:
         #      步骤11/12 清单(parents/variants)由"全量不过滤"改为**过滤后**口径 ----
         fam_groups = _aggregate_families(records, variant_texts)
+        legacy = sum(1 for rec in kept if "highlights" not in rec or "product_pdfs" not in rec)
+        if legacy:
+            self.log(ctx, f"步骤10：{legacy} 条沿用旧版抓取记录，亮点和产品PDF链接尚未采集，导出留空；不代表页面没有。")
         detail_df = self._build_detail_df(kept)
         parent_df = self._build_parent_df(fam_groups)
         stat_df = self._build_stat_df(records, kept, dropped, filter_prompt, fam_groups)
@@ -1912,6 +1994,12 @@ class Step10Variants(BaseStep):
                     # A+ 内容图(商品描述模块) — 单独一列, 不与图廊混(2026-09-20 用户要求)
                     "A+图片链接": ";".join(str(u) for u in (rec.get("aplus_images") or [])),
                     "标题": rec.get("title", ""),
+                    "亮点": rec.get("highlights") or "",
+                    "产品PDF 链接": "; ".join(
+                        (str(item.get("label") or "PDF") + "：" + str(item.get("url") or ""))
+                        for item in (rec.get("product_pdfs") or [])
+                        if isinstance(item, dict) and item.get("url")
+                    ),
                     # 五点: 逐条去 HTML 标签/反转义后 " | " 拼接(用户要求)
                     "五点描述": " | ".join(
                         _clean_html(str(b)) for b in (rec.get("bullets") or [])
@@ -1922,7 +2010,7 @@ class Step10Variants(BaseStep):
                 }
             )
         cols = ["来源ASIN", "父ASIN", "变体ASIN", "文本来源", "图片链接", "A+图片链接",
-                "标题", "五点描述", "是否成功", "状态", "抓取时间"]
+                "标题", "亮点", "产品PDF 链接", "五点描述", "是否成功", "状态", "抓取时间"]
         df = pd.DataFrame(rows, columns=cols)
         return dedup_keep_best(df, keys=["变体ASIN"], weight_cols=["标题", "五点描述"])
 

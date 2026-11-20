@@ -17,6 +17,11 @@
 from __future__ import annotations
 
 import re
+import hashlib
+import base64
+import json
+from urllib.parse import unquote, urlparse
+from pathlib import Path
 import time
 from datetime import datetime, time as dtime
 
@@ -38,6 +43,199 @@ class QuotaExhausted(Exception):
         super().__init__(hint or "卖家精灵导出配额耗尽")
         self.hint = hint
         self.account = account
+
+
+def account_id(account: str) -> str:
+    """Stable, non-credential identifier for associating export tasks with an account."""
+    return hashlib.sha256(str(account or '').strip().lower().encode('utf-8')).hexdigest()
+
+
+def _authenticated_sellersprite_body(body: str) -> bool:
+    """Require a personalized greeting or an explicit logout, not a guest search box."""
+    if any(s in body for s in ('退出登录', '退出登入', 'Log out', 'Sign out')):
+        return True
+    if re.search(r'(?im)^\s*Welcome\s*[,，]\s*\S+', body):
+        return True
+    return (('快捷访问' in body or '快捷搜索' in body)
+            and bool(re.search(r'(?m)^\s*\S.{1,60}(?:早上好|上午好|中午好|下午好|晚上好)', body)))
+
+
+def _token_fingerprint(page) -> str:
+    cookies = page.context.cookies('https://www.sellersprite.com')
+    token = next((unquote(c['value']) for c in cookies if c.get('name') == 'Sprite-X-Token'), '')
+    return hashlib.sha256(token.encode('utf-8')).hexdigest() if token else ''
+
+
+def _bound_session(browser, page, account: str) -> bool:
+    try:
+        from core import read_json
+        record = read_json(str(Path(browser.profile_dir) / '.pipeline-ss-session.json'), default={})
+        return (isinstance(record, dict) and record.get('account_id') == account_id(account)
+                and bool(record.get('token_hash')) and record['token_hash'] == _token_fingerprint(page))
+    except Exception:
+        return False
+
+
+def _remember_session(browser, page, account: str) -> None:
+    try:
+        from core import write_json
+        token_hash = _token_fingerprint(page)
+        if token_hash:
+            write_json(str(Path(browser.profile_dir) / '.pipeline-ss-session.json'),
+                       {'account_id': account_id(account), 'token_hash': token_hash})
+    except Exception:
+        # Failure to persist only means the next run cannot reuse an alias.
+        return
+
+
+def _server_identity_verified(page, account: str, allow_bound_alias: bool = False) -> bool | None:
+    """Match the account to the current token and a server-authenticated page.
+
+    Cookie values are never logged or persisted. A decoded token alone is not
+    accepted: the platform must also return its authenticated export page with
+    that full email and a logout marker, without redirecting to login.
+    """
+    try:
+        wanted = str(account or '').strip().casefold()
+        cookies = {c['name']: unquote(c['value']) for c in page.context.cookies('https://www.sellersprite.com')}
+        token = cookies.get('Sprite-X-Token', '')
+        parts = token.split('.')
+        if len(parts) != 3:
+            return False
+        payload = json.loads(base64.urlsafe_b64decode(parts[1] + '=' * (-len(parts[1]) % 4)).decode('utf-8'))
+        email = str(payload.get('em') or '').strip().casefold()
+        if not email or float(payload.get('exp') or 0) <= time.time():
+            return False
+        if wanted != email:
+            if not allow_bound_alias:
+                return False
+            info_raw = cookies.get('rank-login-user-info', '')
+            info = json.loads(base64.urlsafe_b64decode(info_raw + '=' * (-len(info_raw) % 4)).decode('utf-8'))
+            aliases = {str(info.get(k) or '').strip().casefold() for k in ('account', 'nickname')}
+            if '@' in wanted or wanted not in aliases or email.split('@', 1)[0] != wanted:
+                return False
+    except Exception:
+        return None
+    try:
+        response = page.context.request.get('https://www.sellersprite.com/v2/export-log', timeout=15000)
+        parsed = urlparse(response.url)
+        if parsed.hostname == 'www.sellersprite.com' and parsed.path == '/w/user/login':
+            return False
+        if response.status != 200 or parsed.hostname != 'www.sellersprite.com' or parsed.path != '/v2/export-log':
+            return None
+        text = response.text().casefold()
+        return True if email in text and any(s in text for s in ('退出登录', 'log out', 'sign out')) else None
+    except Exception:
+        return None
+
+
+def login_as_account(browser, page, acct: dict) -> None:
+    """Replace the SellerSprite session in the leased profile, then log in explicitly.
+
+    A generic 'logged in' signal cannot identify an existing account.  Discard only
+    SellerSprite cookies and require an actual login form before submitting the
+    requested credentials. Other sites and the profile itself are left intact.
+    """
+    from core import BrowserError
+    from core.browser import BrowserAutomation
+
+    account = str(acct.get('account') or '').strip()
+    password = str(acct.get('password') or '')
+    if not account:
+        raise BrowserError('卖家精灵账号未配置，无法核验当前账号')
+    verification = _server_identity_verified(page, account, _bound_session(browser, page, account))
+    if verification is True:
+        BrowserAutomation.mark_login_verified(browser.profile_dir)
+        import logging
+        logging.getLogger('pipeline').info('已向卖家精灵核验当前账号会话，直接复用')
+        return page
+    if verification is None:
+        raise BrowserError('卖家精灵会话暂时无法核验，已保留现有登录态，请检查网络后续跑')
+    if not password:
+        raise BrowserError('卖家精灵密码未配置，无法自动切换账号')
+    BrowserAutomation.reset_login_verified(browser.profile_dir)
+    try:
+        page.context.clear_cookies(domain=re.compile(r'(^|\.)sellersprite\.com$', re.I))
+        browser.goto(page, 'https://www.sellersprite.com/w/user/login')
+        page.wait_for_selector('input[name=email]', state='attached', timeout=15000)
+        fields = ('input[name=email]', 'input[name=account]', 'input[name=username]',
+                  'input[placeholder*=账号]', 'input[placeholder*=邮箱]')
+        if browser._first_visible(page, fields) is None:
+            browser._switch_to_password_tab(page)
+        if browser._first_visible(page, fields) is None:
+            raise BrowserError('未能确认旧会话已退出，停止切换以防使用错误账号')
+        # Do not navigate away while the asynchronous login is still completing.
+        # login_sellersprite/check_sellersprite_login may navigate immediately and
+        # interrupt the request, or treat an inconclusive page as logged in.
+        submitted = False
+        for attempt in range(3):
+            if browser._fill_sellersprite_form(page, account, password):
+                submitted = True
+                break
+            if attempt < 2:
+                page.wait_for_timeout(1000)
+        if not submitted:
+            raise BrowserError('无法提交卖家精灵登录表单，请检查登录页或验证码')
+        deadline = time.monotonic() + 60
+        probe_after = time.monotonic() + 8
+        probed = False
+        while time.monotonic() < deadline:
+            if _server_identity_verified(page, account, True):
+                _remember_session(browser, page, account)
+                BrowserAutomation.mark_login_verified(browser.profile_dir)
+                # The login redirect can remain stuck even though the platform
+                # has confirmed the session; replace only our own stalled tab.
+                try:
+                    if '/v2/welcome' in str(page.url) and page.locator('body').count() == 0:
+                        page.close()
+                        return browser.new_page()
+                except Exception:
+                    pass
+                return page
+            try:
+                body = page.inner_text('body', timeout=2000) or ''
+                if _authenticated_sellersprite_body(body) and _server_identity_verified(page, account, True):
+                    _remember_session(browser, page, account)
+                    BrowserAutomation.mark_login_verified(browser.profile_dir)
+                    return page
+            except Exception:
+                pass
+            if not probed and time.monotonic() >= probe_after:
+                # A login redirect can stall while cookies have already been set.
+                # Verify a fresh page in the same context rather than guessing.
+                probed = True
+                probe = None
+                recovered = False
+                try:
+                    # A stuck redirect can block subsequent pages in the same
+                    # context. Close only our own stalled login tab, never the
+                    # user's browser, then verify a replacement tab.
+                    if '/v2/welcome' in str(page.url) and page.locator('body').count() == 0:
+                        page.close()
+                    probe = browser.new_page()
+                    browser.goto(probe, 'https://www.sellersprite.com/v2/welcome', timeout=25000)
+                    if (_authenticated_sellersprite_body(probe.inner_text('body', timeout=3000) or '')
+                            and _server_identity_verified(probe, account, True)):
+                        _remember_session(browser, probe, account)
+                        BrowserAutomation.mark_login_verified(browser.profile_dir)
+                        recovered = True
+                        return probe
+                except Exception:
+                    pass
+                finally:
+                    if probe is not None and not recovered:
+                        try:
+                            probe.close()
+                        except Exception:
+                            pass
+                if page.is_closed():
+                    raise BrowserError('登录跳转页面卡住，重新打开后仍无法确认账号，请检查网络和页面')
+            page.wait_for_timeout(500)
+        raise BrowserError('自动登录后未检测到明确的已登录标识，已停止以避免误用账号')
+    except BrowserError:
+        raise
+    except Exception as exc:
+        raise BrowserError(f'卖家精灵账号切换失败：{type(exc).__name__}；请检查登录页或验证码') from exc
 
 
 def parse_quota(text: str) -> int | None:
@@ -277,7 +475,7 @@ def notify_need_new_account(ctx, detail: str = "") -> None:
     try:
         webhook = str(ctx.config.get("WECOM_WEBHOOK", "") or "")
         if webhook:
-            notify.push_wecom(webhook, msg)
+            notify.push_wecom(webhook, notify.with_context(msg, ctx.config))
     except Exception:
         pass
     try:

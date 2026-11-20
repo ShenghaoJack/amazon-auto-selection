@@ -87,6 +87,7 @@ def parse_cat(cat: Any) -> dict[str, str]:
     recent = bool(re.search(r"-RECENT30$", s, flags=re.I))
     if recent:
         s = re.sub(r"-RECENT30$", "", s, flags=re.I)
+        s = re.sub(r"-(20\d{4})\d{2}$", r"-\1", s)
     out = {"类目": s, "市场": "", "年月": ""}
     if not s:
         return out

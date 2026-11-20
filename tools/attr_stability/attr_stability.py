@@ -146,7 +146,7 @@ MISSING_KEY = "<缺键>"
 CONFIDENCE_VALUES: set[str] = {"提取", "推断", "未采用"}
 
 DEFAULT_SOURCE_NAMES: set[str] = {
-    "标题", "五点描述", "详细参数", "SKU", "图片OCR", "图片视觉",
+    "标题", "亮点", "五点描述", "详细参数", "SKU", "图片OCR", "图片视觉",
 }
 
 

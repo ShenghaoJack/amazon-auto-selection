@@ -6,7 +6,7 @@
 
 逻辑(1-15, 对齐需求文档 FR-14): 明细标准化与去重 -> 图片统一(多图逗号拼接) -> 竞品关联
   (竞品列带"卖家精灵-"/"查竞品-"前缀, ASIN 去重防笛卡尔积) -> 流量来源关联(清洗/去重)
-  -> 月销量统一(过滤前取父ASIN 最大) -> 变体流量过滤 -> 流量占比(单变体为 1)
+  -> 月销量、评分与评分数统一(过滤前按父ASIN取最大有效值) -> 变体流量过滤 -> 流量占比(单变体为 1)
   -> 行清洗 -> 品牌补齐(网页补抓->"未知") -> 销量拆分(占比=1 直接取, 多变体 ceil)
   -> 价格补齐(JSON兜底+带COOKIE网页补抓, 每请求2秒, 无价转人工) -> 第三方补齐
   (配送方式/上架时间: 竞品数据 + MCP competitor_lookup 6个月逐月, 40/批, 临时文件,
@@ -56,6 +56,7 @@ _DETAIL_ALIASES = {
     "品牌": ["品牌", "brand", "商标"],
     "月销量": ["月销量", "销量", "月销售", "monthly_sales", "sales"],
     "评分": ["评分", "星级", "rating", "stars", "分数"],
+    "评分数": ["评分数", "评分数量", "rating_count", "ratings_count"],
     "配送方式": ["配送方式", "配送", "发货方式", "delivery", "fulfillment", "发货渠道"],
     "上架时间": ["上架时间", "上架日期", "上市时间", "list_date", "listed_date", "上架日"],
     "流量词数": ["流量词数", "关键词数", "流量关键词数", "traffic_count", "词数"],
@@ -136,6 +137,7 @@ _TRAFFIC_ALIASES = {
     "流量词数": ["流量词数", "关键词数", "流量关键词数", "traffic_count", "词数", "全部流量词"],
     "月销量": ["月销量", "销量", "monthly_sales"],
     "评分": ["评分", "星级", "rating"],
+    "评分数": ["评分数", "评分数量", "rating_count", "ratings_count"],
     "来源文件": ["来源文件", "来源", "文件名", "file"],
 }
 
@@ -145,6 +147,7 @@ _COMPETITOR_ALIASES = {
     "变体ASIN": ["变体ASIN", "变体asin", "variant_asin"],
     "月销量": ["月销量", "销量", "monthly_sales"],
     "评分": ["评分", "星级", "rating"],
+    "评分数": ["评分数", "评分数量", "rating_count", "ratings_count"],
     "商品标题": ["商品标题", "竞品标题", "product_title"],
     "配送方式": ["配送方式", "配送", "发货方式", "fulfillment"],
     "上架时间": ["上架时间", "上架日期", "上市时间", "list_date", "listed_date"],
@@ -165,7 +168,7 @@ _PROCESSED_COLUMNS = [
     "上架天数", "新老品", "变体数",
 ]
 
-_COALESCE_COLS = {"月销量", "评分", "价格", "品牌", "配送方式", "上架时间", "流量词数"}
+_COALESCE_COLS = {"月销量", "评分", "评分数", "价格", "品牌", "配送方式", "上架时间", "流量词数"}
 
 # 2026-09: 流量列组仅保留"流量词数", 其余流量来源列(渠道分类/各渠道词数)输出时删除
 _TRAFFIC_DROP_COLS = {
@@ -225,6 +228,7 @@ class Step14TrafficSplit(BaseStep):
         detail = self._join_traffic(ctx, detail)
         raw = detail.copy()
         detail = self._unify_sales(ctx, detail)
+        detail = self._unify_ratings(ctx, detail)
         detail = self._variant_count_and_filter(ctx, detail)
         detail = self._calc_ratio(ctx, detail)
         detail = self._clean_rows(ctx, detail)
@@ -436,7 +440,7 @@ class Step14TrafficSplit(BaseStep):
         self._colreg(keep)
         right = traffic[["变体ASIN"] + keep]
         merged = df.merge(right, on="变体ASIN", how="left", suffixes=("_x", "_y"))
-        merged = self._resolve_suffixes(merged, prefer_right={"月销量", "评分", "流量词数"})
+        merged = self._resolve_suffixes(merged, prefer_right={"月销量", "评分", "评分数", "流量词数"})
         self.log(ctx, f"4. 流量来源去重后 {len(traffic)} 行, 关联后总行数 {len(merged)}")
         return merged
 
@@ -519,6 +523,20 @@ class Step14TrafficSplit(BaseStep):
         df["月销量"] = df["月销量"].where(df["月销量"] >= 0)
         parent_max = df.groupby("父ASIN")["月销量"].transform("max")
         df["月销量"] = parent_max
+        return df
+
+    def _unify_ratings(self, ctx: StepContext, df: pd.DataFrame) -> pd.DataFrame:
+        self.log(ctx, "5前置. 评分及评分数统一(过滤前同父ASIN分别取最大有效值)")
+        for col in ("评分", "评分数"):
+            if col not in df.columns:
+                df[col] = float("nan")
+            values = self._to_float(df[col])
+            valid = values >= 0
+            if col == "评分":
+                valid &= values <= 5
+            else:
+                valid &= values.mod(1) == 0
+            df[col] = values.where(valid).groupby(df["父ASIN"]).transform("max")
         return df
 
     def _clean_rows(self, ctx: StepContext, df: pd.DataFrame) -> pd.DataFrame:
@@ -849,12 +867,14 @@ class Step14TrafficSplit(BaseStep):
             x = f"{base}_x"
             y = f"{base}_y"
             if x in cols and y in cols:
-                if base in {"月销量", "评分", "流量词数"}:
+                if base in {"月销量", "评分", "评分数", "流量词数"}:
                     for col in (x, y):
                         values = self._to_float(df[col])
                         valid = values >= 0
                         if base == "评分":
                             valid &= values <= 5
+                        elif base == "评分数":
+                            valid &= values.mod(1) == 0
                         df[col] = values.where(valid)
                 elif _PRICE_RE.match(base) or _PRICE_RE_EN.match(base):
                     for col in (x, y):

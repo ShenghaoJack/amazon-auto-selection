@@ -604,7 +604,8 @@ def _normalize_trend(data, keyword: str, month: str) -> dict:
         }
     return {
         "keyword": keyword,
-        "month": month,
+        "month": target_ym.replace("-", "") if target_ym else None,
+        "requested_month": month,
         "search_volume": target.get("search_volume"),
         "mom_yoy": target.get("mom_yoy"),
         "purchase_volume": target.get("purchase_volume"),

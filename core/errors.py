@@ -42,6 +42,10 @@ class WaitingForHuman(PipelineError):
         return "%s%s" % (base, ("｜下一步: " + self.hint) if self.hint else "")
 
 
+class EmptyExportPause(WaitingForHuman):
+    """A file was empty twice or a retry's submission state is uncertain."""
+
+
 
 class LLMError(PipelineError):
     """LLM 调用失败。"""
