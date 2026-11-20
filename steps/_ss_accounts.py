@@ -106,13 +106,14 @@ def _server_identity_verified(page, account: str, allow_bound_alias: bool = Fals
         email = str(payload.get('em') or '').strip().casefold()
         if not email or float(payload.get('exp') or 0) <= time.time():
             return False
-        if wanted != email:
+        is_alias = wanted != email
+        if is_alias:
             if not allow_bound_alias:
                 return False
             info_raw = cookies.get('rank-login-user-info', '')
             info = json.loads(base64.urlsafe_b64decode(info_raw + '=' * (-len(info_raw) % 4)).decode('utf-8'))
             aliases = {str(info.get(k) or '').strip().casefold() for k in ('account', 'nickname')}
-            if '@' in wanted or wanted not in aliases or email.split('@', 1)[0] != wanted:
+            if '@' in wanted or not wanted or wanted not in aliases:
                 return False
     except Exception:
         return None
@@ -124,7 +125,19 @@ def _server_identity_verified(page, account: str, allow_bound_alias: bool = Fals
         if response.status != 200 or parsed.hostname != 'www.sellersprite.com' or parsed.path != '/v2/export-log':
             return None
         text = response.text().casefold()
-        return True if email in text and any(s in text for s in ('退出登录', 'log out', 'sign out')) else None
+        if email not in text or not any(s in text for s in ('退出登录', 'log out', 'sign out')):
+            return None
+        if is_alias:
+            # A child account may have its parent's email in the token. Require
+            # the exact configured alias on both the authenticated response and
+            # the displayed page, in addition to the user-info cookie match.
+            pattern = re.compile(r'(?<![\w])' + re.escape(wanted) + r'(?![\w])', re.I)
+            if not pattern.search(text):
+                return False
+            displayed = page.inner_text('body', timeout=5000).casefold()
+            if not pattern.search(displayed):
+                return False
+        return True
     except Exception:
         return None
 
@@ -156,7 +169,18 @@ def login_as_account(browser, page, acct: dict) -> None:
     BrowserAutomation.reset_login_verified(browser.profile_dir)
     try:
         page.context.clear_cookies(domain=re.compile(r'(^|\.)sellersprite\.com$', re.I))
-        browser.goto(page, 'https://www.sellersprite.com/w/user/login')
+        try:
+            browser.goto(page, 'https://www.sellersprite.com/w/user/login')
+        except Exception:
+            # A stalled navigation can leave the task tab unusable. Retry once
+            # in a fresh task-owned tab; the account identity still has to be
+            # verified after login before any platform action is allowed.
+            try:
+                page.close()
+            except Exception:
+                pass
+            page = browser.new_page()
+            browser.goto(page, 'https://www.sellersprite.com/w/user/login')
         page.wait_for_selector('input[name=email]', state='attached', timeout=15000)
         fields = ('input[name=email]', 'input[name=account]', 'input[name=username]',
                   'input[placeholder*=账号]', 'input[placeholder*=邮箱]')
@@ -175,6 +199,12 @@ def login_as_account(browser, page, acct: dict) -> None:
             if attempt < 2:
                 page.wait_for_timeout(1000)
         if not submitted:
+            # The platform may finish an asynchronous login while the form
+            # disappears, making _fill_sellersprite_form report False.
+            if _server_identity_verified(page, account, True) is True:
+                _remember_session(browser, page, account)
+                BrowserAutomation.mark_login_verified(browser.profile_dir)
+                return page
             raise BrowserError('无法提交卖家精灵登录表单，请检查登录页或验证码')
         deadline = time.monotonic() + 60
         probe_after = time.monotonic() + 8
