@@ -32,7 +32,7 @@ def settings_stale(root):
     except (OSError, ValueError, TypeError): return True
 def pending(root):
     path = marker(root)
-    if not path.exists(): return False  # Older categories are not retroactively blocked.
+    if not path.exists(): return True  # A missing confirmation is not approval.
     try:
         data = json.loads(path.read_text(encoding="utf-8-sig"))
         return data.get("status") != "confirmed" or data.get("revision") != revision(report_path(root)) or settings_stale(root)
@@ -65,7 +65,7 @@ def view(root):
     wb = load_workbook(path, read_only=True, data_only=True)
     try:
         if not all(s in wb for s in ("选品指标判定", "AI市场建议")):
-            raise ValueError("报告缺少指标或建议，请重新运行步骤15")
+            raise ValueError("当前报告为旧版或不完整，缺少指标或AI建议；请先单独重新运行步骤15")
         def rows(sheet):
             values = wb[sheet].iter_rows(values_only=True)
             headers = next(values, ())

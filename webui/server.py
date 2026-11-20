@@ -6221,6 +6221,22 @@ class Handler(BaseHTTPRequestHandler):
         if not isinstance(overrides, dict):
             raise ValueError("overrides 必须是对象")
 
+        # A closed report dialog is not confirmation. Reject before starting a
+        # process or allocating a browser; permit rerunning step 15 to repair a
+        # missing/old report and permit earlier steps to run independently.
+        if mode not in ("confirm_keywords",):
+            from core.step15_review import pending as report_pending
+            gate_cfg = self._status_cfg(file)
+            gate_cat = str(gate_cfg.get("CAT") or "").strip()
+            gate_root = str(gate_cfg.get("DATA_ROOT") or "data")
+            if gate_cat:
+                self._require_run(gate_cat)
+                _, parsed = _hist_status_snapshot(monitor_dir(gate_cat, gate_root))
+                status15 = str(parsed.get(15, {}).get("status") or "PENDING")
+                target_after = mode == "resume" or (mode == "step" and int(body.get("step", 0)) > 15) or (mode == "from" and int(body.get("from_step", 0)) > 15)
+                if target_after and status15 == "DONE" and report_pending(cat_root_dir(gate_cat, gate_root)):
+                    raise UserFacingError("步骤15选品报告尚未确认，请打开报告并点击‘确认报告并继续’；如报告无法读取，请先单独重新运行步骤15")
+
         # 本次显式覆盖 > 类目配置 > 自动分配。旧逻辑只看 overrides，
         # 将类目配置中的固定端口误覆盖成另一个空闲端口。
         _cdp_override = str(overrides.get("SS_CDP_URL") or "").strip()

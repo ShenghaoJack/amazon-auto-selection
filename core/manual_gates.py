@@ -102,7 +102,7 @@ def blocking_gate(cat_root, statuses, target):
         return None
     pending = pending_gates(cat_root, statuses)
     for step in (8, 15, 16, 17, 18):
-        if step != 15 and target > step and statuses.get(step) != 'DONE':
+        if target > step and statuses.get(step) != 'DONE':
             return {'kind':'prerequisite','after':step,'message':f'请先完成步骤 {step}，再进行后续步骤。'}
         if target > step and pending and pending[0]['after'] == step:
             return pending[0]
