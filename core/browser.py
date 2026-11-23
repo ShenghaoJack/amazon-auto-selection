@@ -380,6 +380,20 @@ class BrowserAutomation:
             Path(self.downloads_path).mkdir(parents=True, exist_ok=True)
         sync_playwright = _import_playwright()
         self._pw = sync_playwright().start()
+        try:
+            return self._enter_browser()
+        except BaseException:
+            if self._pw is not None:
+                try:
+                    self._pw.stop()
+                except Exception:  # noqa: BLE001
+                    pass
+                self._pw = None
+            self._context = None
+            self._browser = None
+            raise
+
+    def _enter_browser(self) -> "BrowserAutomation":
         if self.is_cdp:
             # CDP 直连已打开的 Chrome(需求文档技术方案: 持久 Profile 登录态,
             # 不弹新窗口); 用其默认上下文, 新页面=新标签页。

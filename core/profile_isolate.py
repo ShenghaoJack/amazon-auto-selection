@@ -168,6 +168,7 @@ def clone_seed_profile(seed: Path, target: Path,
         return False
     if not seed.is_dir():
         return False
+    target.parent.mkdir(parents=True, exist_ok=True)
     lock = target.parent / (target.name + ".clone.lock")
     acquired = False
     for _ in range(max(1, int(retries))):
@@ -216,10 +217,13 @@ def resolve_amz_profile_dir(config, profile_root) -> Path:
     shared = (profile_root / "amz-profile").resolve()
     configured = Path(config.amz_profile_dir).resolve()
     cat = str(getattr(config, "cat", "") or "").strip()
-    if (not cat) or is_placeholder_cat(cat) or configured != shared:
+    raw_cfg = str(config.get("AMZ_PROFILE", "") or "").strip() if hasattr(config, "get") else ""
+    is_default = (configured == shared) or (raw_cfg in ("", "data/profiles/amz-profile", r"data\profiles\amz-profile"))
+    if (not cat) or is_placeholder_cat(cat) or (not is_default):
         return configured          # 自定义路径 / 工具脚本场景: 保持原行为
     target = profile_root / f"amz-profile-{profile_slug(cat)}"
-    clone_seed_profile(shared, target)
+    seed = shared if shared.is_dir() else configured
+    clone_seed_profile(seed, target)
     return target.resolve()
 
 
