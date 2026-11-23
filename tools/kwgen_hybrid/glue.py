@@ -21,6 +21,7 @@ from core.mcp import MCPClient, _SITE_TO_CODE
 
 from .engine import (
     HybridPipeline,
+    error_category,
     discovery_valid,
     entity_decision_valid,
     judgment_valid,
@@ -121,9 +122,12 @@ class CachedCalls:
         self.events = []
         self.current_requests = {}
 
-    def call(self, stage, payload, invoke):
+    def cache_key(self, stage, payload):
         signature = json.dumps([self.namespace, stage, payload], ensure_ascii=False, sort_keys=True)
-        ident = hashlib.sha256(signature.encode()).hexdigest()
+        return hashlib.sha256(signature.encode()).hexdigest()
+
+    def call(self, stage, payload, invoke):
+        ident = self.cache_key(stage, payload)
         self.current_requests[ident] = {"stage": stage, "payload": payload}
         if ident in self.data and not (stage == "keyword_miner" and isinstance(self.data[ident], dict)
                                        and self.data[ident].get("items") == []):
@@ -159,17 +163,28 @@ class CachedCalls:
         if not cacheable:
             event["schema_incomplete"] = True
             return answer
+        self.store(ident, answer)
+        return answer
+
+    def store(self, ident, answer):
         self.data[ident] = answer
         self.path.parent.mkdir(parents=True, exist_ok=True)
         tmp = self.path.with_suffix(".json.tmp")
         tmp.write_text(json.dumps(self.data, ensure_ascii=False, indent=2), encoding="utf-8")
         tmp.replace(self.path)
-        return answer
 
 
 class LiveLLM:
     def __init__(self, client, cache):
         self.client, self.cache = client, cache
+
+    def judge_checkpoint(self, prompt):
+        key = self.cache.cache_key("judge_valid_rows", prompt)
+        return self.cache.data.get(key, []), lambda rows: self.cache.store(key, rows)
+
+    def entity_checkpoint(self, prompt):
+        key = self.cache.cache_key("entity_valid_rows", prompt)
+        return self.cache.data.get(key, []), lambda rows: self.cache.store(key, rows)
 
     def ask(self, stage, prompt):
         return self.cache.call(stage, prompt, lambda: self.client.chat_json(
@@ -177,21 +192,7 @@ class LiveLLM:
 
 
 class ExperimentLLM(LLMClient):
-    @staticmethod
-    def _is_hard_error(err):
-        return True
-
-
-def error_category(exc):
-    message = str(exc).casefold()
-    for category, markers in (("timeout", ("timeout", "timed out", "超时")),
-                              ("authentication", ("401", "403", "鉴权", "api key")),
-                              ("rate_limit", ("429", "限流", "quota")),
-                              ("transport", ("connect", "ssl", "connection", "连接")),
-                              ("response_schema", ("json", "schema", "解析", "截断"))):
-        if any(marker in message for marker in markers):
-            return category
-    return type(exc).__name__
+    pass
 
 
 class LiveMiner:

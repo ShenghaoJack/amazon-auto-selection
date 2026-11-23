@@ -141,6 +141,19 @@ class Step04Keywords(BaseStep):
                 "fallback": 0,
             }
 
+        # Quality gate precedes publication of any inputs consumed by steps 5–10.
+        result["summary"]["call_diagnostics"] = [
+            event for cache in (llm_cache, miner_cache) for event in cache.events
+            if event.get("error_type") or event.get("schema_incomplete")]
+        atomic_write_text(ctx.resolve_artifact(f"{cat}-kwgen-summary.json"),
+                          _json.dumps(result["summary"], ensure_ascii=False, indent=2) + "\n")
+        self._write_kwgen_csv(ctx, cat, result)
+        summary = result["summary"]
+        if summary["status"] != "ok":
+            raise StepDataError(f"融合版步骤4 状态={summary['status']}，核心 {len(core_words)}，"
+                                f"待审 {summary['pending_review']}，错误 {summary['errors']}，"
+                                f"详见 {cat}-kwgen-summary.json")
+
         write_txt_lines(out_cand, core_words)
         self.log(ctx, f"大词候选 {len(core_words)} 个(词库验证+语义审核, 按搜索量降序)已写入: {out_cand}")
         content = "[核心大词]\n" + "\n".join(core_words) + "\n[长尾词]\n" + "\n".join(longtail_words) + "\n"
@@ -149,17 +162,6 @@ class Step04Keywords(BaseStep):
         atomic_write_text(out_ent, self._entity_report_text(cat, root, len(records), per_dim, report))
         self.log(ctx, f"五维实体台账已写入: {out_ent}")
 
-        # 融合版审计件(供逐词复核, 如语义漏判的 cat dryer box): 只读诊断, 不参与下游消费
-        atomic_write_text(ctx.resolve_artifact(f"{cat}-kwgen-summary.json"),
-                          _json.dumps(result["summary"], ensure_ascii=False, indent=2) + "\n")
-        self._write_kwgen_csv(ctx, cat, result)
-
-        status = result["summary"].get("status")
-        if status != "ok":
-            raise StepDataError(
-                "融合版步骤4 状态=%s(核心 %d / 池 %d / 正搜索量 %d), 详见 %s-kwgen-summary.json"
-                % (status, len(core_words), result["summary"].get("pool_count"),
-                   result["summary"].get("positive_verified_count"), cat))
         self.log(ctx, f"融合版完成: 核心 {len(core_words)} / 长尾 {len(longtail_words)} / "
                       f"池 {result['summary'].get('pool_count')} / 正搜索量 {result['summary'].get('positive_verified_count')}")
 

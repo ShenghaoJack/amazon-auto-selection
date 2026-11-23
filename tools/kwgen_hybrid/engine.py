@@ -316,6 +316,18 @@ keep=true还必须specific=true、standalone=true、category_identity=false且ro
 DATA={json.dumps(payload, ensure_ascii=False)}"""
 
 
+def error_category(exc):
+    message = (type(exc).__name__ + " " + str(exc)).casefold()
+    if re.search(r"\b(?:401|403)\b", message) or any(k in message for k in ("鉴权", "api key", "authentication")):
+        return "authentication"
+    if re.search(r"\b429\b", message) or any(k in message for k in ("限流", "quota", "rate limit", "ratelimit", "余额")):
+        return "rate_limit"
+    categories = (("timeout", ("timeout", "timed out", "超时")),
+                  ("transport", ("connect", "ssl", "连接")),
+                  ("response_schema", ("json", "schema", "解析", "截断", "truncated", "finish_reason=length")))
+    return next((label for label, keys in categories if any(k in message for k in keys)), type(exc).__name__)
+
+
 class HybridPipeline:
     def __init__(self, llm, miner, *, root_limit=10, max_pages=2, judge_batch=30,
                  max_pool=1200, hint_limit=12, weekly=None):
@@ -481,27 +493,15 @@ class HybridPipeline:
         # Stage 4: only the remaining words need semantic review. Missing/invalid judgments stay out.
         for start in range(0, len(reviewable), self.judge_batch):
             batch = reviewable[start:start + self.judge_batch]
-            try:
-                answer = self.llm.ask("judge", judgment_prompt(category, site, scope, batch, exclusions, brands, policy))
-                decisions = answer.get("judgments", []) if isinstance(answer, dict) else []
-                if not isinstance(decisions, list):
-                    raise ValueError("judgments must be a list")
-            except Exception as exc:
-                self.audit["errors"].append({"stage": "judge", "ids": [r["id"] for r in batch],
-                                             "error_type": type(exc).__name__})
-                decisions = []
-            mapped = {}
-            duplicate = set()
-            for item in decisions:
-                if not isinstance(item, dict) or type(item.get("id")) is not int:
-                    continue
-                ident = item["id"]
-                if ident in mapped:
-                    duplicate.add(ident)
-                mapped[ident] = item
+            def prompt(rows):
+                return judgment_prompt(category, site, scope, rows, exclusions, brands, policy)
+
+            checkpoint = getattr(self.llm, "judge_checkpoint", None)
+            saved, persist = checkpoint(prompt(batch)) if checkpoint else ([], None)
+            mapped = self._judge_with_repair(batch, lambda rows: self.llm.ask("judge", prompt(rows)), saved, persist)
             for row in batch:
                 item = mapped.get(row["id"], {})
-                valid = row["id"] not in duplicate and judgment_valid(item)
+                valid = row["id"] in mapped
                 if not valid:
                     self.audit["judgments"].append({"keyword": row["keyword"], "status": "pending_review"})
                     continue
@@ -559,6 +559,9 @@ class HybridPipeline:
                    "entity_cleanup": {"reviewed": len(self.audit["entity_reviews"]),
                                       "retained_groups": sum(len(rows) for rows in entities.values()),
                                       "rejected_or_unreviewed": sum(not r.get("kept") for r in self.audit["entity_reviews"])},
+                   "error_details": self.audit["errors"],
+                   "judge_attempts": self.audit.get("judge_attempts", []),
+                   "pending_keywords": [j["keyword"] for j in self.audit["judgments"] if j.get("status") == "pending_review"],
                    "pending_review": sum(j.get("status") == "pending_review" for j in self.audit["judgments"]),
                    "recall_truncated": any(r["truncated"] for r in self.audit["roots"]),
                    "pool_truncated": self.audit["pool_before_limit"] > len(ordered),
@@ -566,6 +569,118 @@ class HybridPipeline:
                    "note": "Supply tier is descriptive; no synthetic filling. Step 5 metrics remain necessary."}
         return {"summary": summary, "core": core, "candidates": accepted, "longtail": longtail,
                 "entities": entities, "adjacent": adjacent, "audit": self.audit}
+
+    def _judge_with_repair(self, batch, ask, saved=(), persist=None):
+        """Keep valid decisions and give only unresolved IDs one smaller retry."""
+        ids = {r["id"] for r in batch}
+        mapped = {j["id"]: j for j in saved if judgment_valid(j) and j["id"] in ids}
+        attempts = self.audit.setdefault("judge_attempts", [])
+
+        def run(rows, attempt):
+            ids = {r["id"] for r in rows}
+            error = "incomplete"
+            try:
+                answer = ask(rows)
+                items = answer.get("judgments") if isinstance(answer, dict) else None
+                seen = set()
+                for item in items if isinstance(items, list) else ():
+                    ident = item.get("id") if isinstance(item, dict) else None
+                    if type(ident) is not int or ident not in ids:
+                        continue
+                    if ident in seen:
+                        mapped.pop(ident, None)
+                    elif judgment_valid(item):
+                        mapped[ident] = item
+                    seen.add(ident)
+            except Exception as exc:
+                error = error_category(exc)
+            missing = [r for r in rows if r["id"] not in mapped]
+            if missing:
+                attempts.append({"attempt": attempt, "ids": sorted(ids), "error_type": error,
+                                 "unresolved": [r["id"] for r in missing]})
+            return missing, error
+
+        pending = [r for r in batch if r["id"] not in mapped]
+        if not pending:
+            return mapped
+        missing, cause = run(pending, 1)
+        if persist and mapped and (missing or saved):
+            persist(list(mapped.values()))
+        if missing and cause not in ("authentication", "rate_limit"):
+            size = max(1, (len(missing) + 1) // 2)
+            for start in range(0, len(missing), size):
+                unresolved, cause = run(missing[start:start + size], 2)
+                if persist and mapped:
+                    persist(list(mapped.values()))
+                if unresolved and cause in ("authentication", "rate_limit"):
+                    break
+        unresolved = [r["id"] for r in batch if r["id"] not in mapped]
+        if unresolved:
+            for record in reversed(attempts):
+                affected = [i for i in unresolved if i in record["unresolved"]]
+                if affected:
+                    self.audit["errors"].append({"stage": "judge", "ids": affected,
+                                                 "error_type": record["error_type"]})
+                    unresolved = [i for i in unresolved if i not in affected]
+                if not unresolved:
+                    break
+        return mapped
+
+    def _entity_review_with_repair(self, batch, ask, saved=(), persist=None):
+        """Keep valid entity decisions and give only unresolved IDs one smaller retry."""
+        ids = {r["id"] for r in batch}
+        mapped = {j["id"]: j for j in saved if entity_decision_valid(j) and j["id"] in ids}
+        attempts = self.audit.setdefault("entity_review_attempts", [])
+
+        def run(rows, attempt):
+            ids = {r["id"] for r in rows}
+            error = "IncompleteEntityReview"
+            try:
+                answer = ask(rows)
+                items = answer.get("entity_reviews") if isinstance(answer, dict) else None
+                seen = set()
+                for item in items if isinstance(items, list) else ():
+                    ident = item.get("id") if isinstance(item, dict) else None
+                    if type(ident) is not int or ident not in ids:
+                        continue
+                    if ident in seen:
+                        mapped.pop(ident, None)
+                    elif entity_decision_valid(item):
+                        mapped[ident] = item
+                    seen.add(ident)
+            except Exception as exc:
+                error = type(exc).__name__
+            missing = [r for r in rows if r["id"] not in mapped]
+            if missing:
+                attempts.append({"attempt": attempt, "ids": sorted(ids), "error_type": error,
+                                 "unresolved": [r["id"] for r in missing]})
+            return missing, error
+
+        pending = [r for r in batch if r["id"] not in mapped]
+        if not pending:
+            return mapped
+        missing, cause = run(pending, 1)
+        if persist and mapped and (missing or saved):
+            persist(list(mapped.values()))
+        if missing and cause not in ("authentication", "rate_limit"):
+            size = max(1, (len(missing) + 1) // 2)
+            for start in range(0, len(missing), size):
+                unresolved, cause = run(missing[start:start + size], 2)
+                if persist and mapped:
+                    persist(list(mapped.values()))
+                if unresolved and cause in ("authentication", "rate_limit"):
+                    break
+        unresolved = [r["id"] for r in batch if r["id"] not in mapped]
+        if unresolved:
+            for record in reversed(attempts):
+                affected = [i for i in unresolved if i in record["unresolved"]]
+                if affected:
+                    self.audit["errors"].append({"stage": "entity_review", "ids": affected,
+                                                 "error_type": record["error_type"]})
+                    unresolved = [i for i in unresolved if i not in affected]
+                if not unresolved:
+                    break
+        return mapped
 
     def _review_entities(self, category, site, scope, roots, candidates, policy, docs, per_dim):
         """Review features before top-N selection. Incomplete reviews fail closed, never fall back to raw nouns."""
@@ -588,30 +703,18 @@ class HybridPipeline:
         kept = []
         for start in range(0, len(rows), 25):
             batch = rows[start:start + 25]
-            failed = False
-            try:
-                response = self.llm.ask("entity_review", entity_review_prompt(category, site, scope, roots, batch, policy))
-                decisions = response.get("entity_reviews") if isinstance(response, dict) else None
-                if not isinstance(decisions, list):
-                    raise ValueError("entity_reviews must be a list")
-            except Exception as exc:
-                self.audit["errors"].append({"stage": "entity_review", "error_type": type(exc).__name__,
-                                             "ids": [r["id"] for r in batch]})
-                decisions, failed = [], True
-            mapped, duplicate = {}, set()
-            for item in decisions:
-                if isinstance(item, dict) and type(item.get("id")) is int:
-                    if item["id"] in mapped:
-                        duplicate.add(item["id"])
-                    mapped[item["id"]] = item
-            incomplete = False
+            def eprompt(sub_rows):
+                return entity_review_prompt(category, site, scope, roots, sub_rows, policy)
+
+            echeckpoint = getattr(self.llm, "entity_checkpoint", None)
+            esaved, epersist = echeckpoint(eprompt(batch)) if echeckpoint else ([], None)
+            mapped = self._entity_review_with_repair(batch, lambda sub_rows: self.llm.ask("entity_review", eprompt(sub_rows)), esaved, epersist)
             for row in batch:
                 decision = mapped.get(row["id"], {})
-                valid = row["id"] not in duplicate and entity_decision_valid(decision)
+                valid = row["id"] in mapped
                 review = dict(row, kept=False)
                 if not valid:
                     review.update(status="pending_review", reason="missing_or_invalid_entity_review")
-                    incomplete = True
                 elif not decision["keep"]:
                     review.update(status="rejected", reason=text(decision["reason"]), role=decision["role"],
                                   dimension=decision["dimension"], concept=text(decision["concept"]))
@@ -627,9 +730,6 @@ class HybridPipeline:
                     review.update(standalone=decision["standalone"], category_identity=decision["category_identity"],
                                   specific=decision["specific"])
                 self.audit["entity_reviews"].append(review)
-            if incomplete and not failed:
-                self.audit["errors"].append({"stage": "entity_review", "error_type": "IncompleteEntityReview",
-                                             "ids": [r["id"] for r in batch]})
 
         # A word rejected in one dimension must not leak back through a contradictory approval elsewhere.
         by_surface = {}

@@ -17,16 +17,89 @@
 """
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 import re
+import threading
 import time
+from contextlib import contextmanager
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 import httpx
 
 from .config import Config
 from .mock import MockMCP
+from .run_lock import _try_lock, _unlock
+
+_MCP_LOCK_DIR = Path(__file__).resolve().parent.parent / "data" / ".locks"
+_MCP_THREAD_LOCKS: dict[str, threading.RLock] = {}
+_MCP_THREAD_LOCKS_GUARD = threading.Lock()
+DEFAULT_MCP_MIN_INTERVAL = 0.25
+
+
+def _mcp_lock_dir() -> Path:
+    env = str(os.environ.get("PIPELINE_MCP_LOCK_DIR") or os.environ.get("PIPELINE_AMZ_LOCK_DIR") or "").strip()
+    return Path(env) if env else _MCP_LOCK_DIR
+
+
+@contextmanager
+def _mcp_key_gate(url: str, key: str, *, min_interval: float = DEFAULT_MCP_MIN_INTERVAL, wait_seconds: float = 300.0):
+    """跨进程+跨线程按 (MCP URL, Key) 串行化请求并保证最小请求间隔，防止多类目同时跑步骤4/5/6/14 触发并发 429/连接重置。"""
+    token = f"{url}|{key or 'anon'}"
+    digest = hashlib.sha256(token.encode("utf-8")).hexdigest()[:16]
+    with _MCP_THREAD_LOCKS_GUARD:
+        tlock = _MCP_THREAD_LOCKS.setdefault(digest, threading.RLock())
+    with tlock:
+        ldir = _mcp_lock_dir()
+        try:
+            ldir.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            yield
+            return
+        lock_file = ldir / f"mcp-key-{digest}.lock"
+        ts_file = ldir / f"mcp-key-{digest}.ts"
+        fh = None
+        locked = False
+        deadline = time.monotonic() + max(1.0, float(wait_seconds))
+        try:
+            fh = open(lock_file, "r+b" if lock_file.is_file() else "w+b")
+            while True:
+                res = _try_lock(fh)
+                if res is True or res is None:
+                    locked = res is True
+                    break
+                if time.monotonic() >= deadline:
+                    break
+                time.sleep(0.05)
+            if min_interval > 0:
+                now = time.time()
+                try:
+                    if ts_file.is_file():
+                        last_ts = float(ts_file.read_text(encoding="utf-8").strip() or 0.0)
+                        gap = min_interval - (now - last_ts)
+                        if 0 < gap <= min_interval + 5.0:
+                            time.sleep(gap)
+                except (OSError, ValueError):
+                    pass
+            try:
+                yield
+            finally:
+                if min_interval > 0:
+                    try:
+                        ts_file.write_text(f"{time.time():.6f}", encoding="utf-8")
+                    except OSError:
+                        pass
+        finally:
+            if fh is not None:
+                if locked:
+                    _unlock(fh)
+                try:
+                    fh.close()
+                except OSError:
+                    pass
 
 
 class MCPBusinessError(RuntimeError):
@@ -82,13 +155,13 @@ def parse_mcp_json(resp: httpx.Response) -> dict:
     return json.loads(text)
 
 # 2026-09-09: 挖词逐词调用 MCP, 单词走 3 接口。单请求超时调小避免"看起来卡死";
-# 但**重试不能过小**——卖家精灵 MCP 会偶发 SSL 连接中断(UNEXPECTED_EOF_WHILE_READING),
-# 需多次重试(2/5/8s 退避)才能命中成功, 否则 google_trend 数据易丢。
+# 但**重试不能过小**——卖家精灵 MCP 会偶发 SSL 连接中断(UNEXPECTED_EOF_WHILE_READING)或并发 429,
+# 需多次重试退避才能命中成功, 否则批量验证/趋势数据易丢。
 MCP_HTTP_TIMEOUT = 25
-MCP_CALL_RETRIES = 3
+MCP_CALL_RETRIES = 5
 # 握手/密钥预检(_initialize / check)的重试次数与退避: 与 _call 同等待遇
 # (2026-09-15: 步骤6 因预检单次 POST 撞上瞬时 SSL EOF 而整步失败)
-MCP_HTTP_RETRIES = 3
+MCP_HTTP_RETRIES = 4
 
 _SITE_TO_CODE = {
     "美国": "US",
@@ -254,11 +327,13 @@ class MCPClient:
         5xx 视为瞬时, 照常重试。每次重试在流水线日志留一行, 便于事后判断是"网络抖动"还是"服务端故障"。
         """
         url = self._url()
+        key = str(self.config.get(self._key_key, "") or "")
         tries = max(1, int(retries))
         last: Exception | None = None
         for attempt in range(tries):
             try:
-                resp = self._http().post(url, headers=self._headers(), json=body)
+                with _mcp_key_gate(url, key):
+                    resp = self._http().post(url, headers=self._headers(), json=body)
                 resp.raise_for_status()
                 return resp
             except httpx.HTTPStatusError as exc:
@@ -334,6 +409,7 @@ class MCPClient:
         if self._mock is not None:
             return None
         url = self._url()
+        key = str(self.config.get(self._key_key, "") or "")
         last_err: str = ""
         for attempt in range(retries):
             try:
@@ -344,7 +420,8 @@ class MCPClient:
                     "params": {"name": tool, "arguments": arguments},
                     "id": 2,
                 }
-                resp = self._http().post(url, headers=self._headers(), json=body)
+                with _mcp_key_gate(url, key):
+                    resp = self._http().post(url, headers=self._headers(), json=body)
                 resp.raise_for_status()
                 data = parse_mcp_json(resp)
                 if "error" in data and data["error"]:
@@ -371,6 +448,15 @@ class MCPClient:
                 if isinstance(payload, dict) and payload.get("code") not in (None, "OK", 200, 0):
                     raise MCPBusinessError(tool, payload.get("code"), str(payload.get("message", payload)), payload)
                 return payload.get("data") if isinstance(payload, dict) and "data" in payload else payload
+            except httpx.HTTPStatusError as exc:
+                status_code = exc.response.status_code if exc.response is not None else 0
+                body_preview = (exc.response.text or "")[:120] if exc.response is not None else ""
+                last_err = f"HTTPStatusError({status_code}): {body_preview or str(exc)[:120]}"
+                self._reset_connection(f"HTTP {status_code}")
+                if status_code == 429:
+                    time.sleep(5 + attempt * 5)
+                else:
+                    time.sleep(2 + attempt * 3)
             except (httpx.HTTPError, OSError) as exc:
                 last_err = f"{type(exc).__name__}: {str(exc)[:120]}"
                 # 连接类错误(含 SSL EOF/超时/长连接被服务端关掉/会话失效的 4xx/429):
@@ -428,13 +514,15 @@ class MCPClient:
                 "data": {"items": page_items, "total": total},
             }
         url = self._url()
+        key = str(self.config.get(self._key_key, "") or "")
         last_err: str = ""
         for attempt in range(retries):
             try:
                 self._initialize()
                 body = {"jsonrpc": "2.0", "method": "tools/call",
                         "params": {"name": tool, "arguments": arguments}, "id": 2}
-                resp = self._http().post(url, headers=self._headers(), json=body)
+                with _mcp_key_gate(url, key):
+                    resp = self._http().post(url, headers=self._headers(), json=body)
                 resp.raise_for_status()
                 data = parse_mcp_json(resp)
                 if data.get("error"):
@@ -459,9 +547,17 @@ class MCPClient:
         month = _month_yyyymm(req.get("historyDate") or req.get("month") or "")
         # 1) 批量精准验证模式: keywordList -> V2 keyword.batch.info (每批最多 20 词)
         if "keywordList" in req:
-            raw_words = [str(w).strip() for w in (req.get("keywordList") or []) if str(w).strip()]
+            raw_words = []
+            seen_words = set()
+            for w in (req.get("keywordList") or []):
+                s = str(w).strip()
+                if s and s not in seen_words:
+                    seen_words.add(s)
+                    raw_words.append(s)
             out_items: list[dict] = []
             for start in range(0, len(raw_words), 20):
+                if start > 0:
+                    time.sleep(0.35)
                 chunk = raw_words[start:start + 20]
                 args: dict[str, Any] = {"marketplace": mp, "keywords": chunk}
                 if month:
