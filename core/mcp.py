@@ -1,17 +1,18 @@
-"""卖家精灵 MCP 客户端 (FR-05/FR-06)。
+"""卖家精灵 MCP v2 客户端 (FR-04/FR-05/FR-06/FR-14)。
 
-三接口(2026-09 实测真实工具映射):
-- keyword_trend  -> keyword_research_trends: 关键词趋势(历史月度序列)
-                   返回 search(搜索量)/purchase(购买量)/purchaseRate(购买率%)/
-                   yearlyGrowth(同比)/chainGrowth(环比)/threeMonthGrowth(3月增长)
-- aba_weekly_bid -> aba_research_trend(周粒度): ABA 排名+周搜索量
-                   + keyword_miner: CPC/bidMin/bidMax
-- google_trend   -> google_trend: Google 趋势月度指数(items 毫秒时间戳+value)
+卖家精灵 MCP v1(https://mcp.sellersprite.com/mcp) 已弃用，统一使用 v2
+(https://mcp.sellersprite.com/v2/mcp):
+- keyword_miner     -> keyword.related.list(根词扩展) / keyword.batch.info(批量验证, <=20词/批)
+- keyword_trend     -> keyword.trend: 关键词历史月度趋势(searchVolume/purchaseVolume/
+                       purchaseRate/yearlyGrowth/chainGrowth/threeMonthGrowth)
+- aba_weekly_bid    -> keyword.aba.trend(granularity=WEEK): ABA 排名+周搜索量
+                       + keyword.batch.info: CPC/bidMin/bidMax
+- google_trend      -> keyword.google.trend(gprop=WEB): 周度指数(按月均值聚合/周度透传)
+- competitor_lookup -> asin.list: 竞品配送方式/上架时间(cursor 分页)
 
 协议: 标准 MCP Streamable HTTP (2025-03-26), 必须先 initialize 握手再 tools/call;
-请求头 secret-key 鉴权; 返回包装为 {"content":[{"type":"text","text":"<JSON>"}]},
-数据 JSON 为 {code, message, data}; 部分工具参数嵌套 request 对象(如 keyword_miner/
-google_trend), 部分平铺(如 keyword_research_trends/aba_research_trend), 由各方法决定。
+请求头 secret-key 鉴权; v2 tools/list 与 tools/call 返回 SSE(text/event-stream) 帧,
+内层直接为业务 JSON 对象(错误返回 isError/error 对象)。
 单接口失败不影响其他 (FR-05)。dry_run 模式返回 MockMCP 数据。
 """
 from __future__ import annotations
@@ -151,13 +152,28 @@ def is_known_site(site: str) -> bool:
     return _marketplace(site) != "US" or site.strip() in ("美国", "US", "us", "usa", "USA")
 
 
+SS_MCP_V2_URL = "https://mcp.sellersprite.com/v2/mcp"
+_SS_MCP_V1_URLS = {
+    "https://mcp.sellersprite.com/mcp",
+    "http://mcp.sellersprite.com/mcp",
+}
+
+
+def normalize_ss_mcp_url(url: str) -> str:
+    """卖家精灵 MCP v1 已弃用：旧 v1 端点自动升级为 v2 端点。"""
+    s = str(url or "").strip()
+    if s.rstrip("/").lower() in _SS_MCP_V1_URLS:
+        return SS_MCP_V2_URL
+    return s
+
+
 class MCPClient:
     def __init__(self, config: Config, *, url_key: str = "SS_MCP_URL",
                  key_key: str = "SS_MCP_KEY", auth_header: str = "secret-key",
                  auth_scheme: str = ""):
         """MCP 客户端。
 
-        默认指向卖家精灵(SS_MCP_URL/SS_MCP_KEY + secret-key 头), 保持既有行为不变;
+        默认指向卖家精灵 v2(SS_MCP_URL/SS_MCP_KEY + secret-key 头);
         通过 url_key/key_key/auth_header/auth_scheme 可指向其它 MCP 服务, 例如:
           MCPClient(cfg, url_key="PANGOLIN_MCP_URL", key_key="PANGOLIN_MCP_KEY",
                     auth_header="Authorization", auth_scheme="Bearer ")
@@ -172,9 +188,11 @@ class MCPClient:
         self._auth_scheme = auth_scheme
 
     def _url(self) -> str:
-        url = str(self.config.get(self._url_key, "") or "")
+        url = str(self.config.get(self._url_key, "") or "").strip()
         if not url:
             raise RuntimeError(f"{self._url_key} 未配置")
+        if self._url_key == "SS_MCP_URL":
+            url = normalize_ss_mcp_url(url)
         return url
 
     # ---------------- 连接复用(2026-09-15)
@@ -287,15 +305,15 @@ class MCPClient:
             self._session_id = sid
 
     def check(self) -> list[str]:
-        """校验密钥并返回可用工具列表。
-
-        2026-09-09 实测: tools/list 会同时返回真实工具(49 个)与 4 个哨兵工具
-        (secret_expired/secret_unauthorized/secret_invalid/secret_no_remaining,
-        调用哨兵才返回对应错误)——判定有效与否看**真实所需工具是否存在**,
-        不能因列表含 secret_expired 就判过期(见 steps/base.check_mcp_key)。
-        """
+        """校验密钥并返回可用工具列表(卖家精灵 MCP v2)。"""
         if self._mock is not None:
-            return ["keyword_research_trends", "aba_research_trend", "google_trend", "keyword_miner"]
+            return [
+                "keyword.trend",
+                "keyword.aba.trend",
+                "keyword.google.trend",
+                "keyword.related.list",
+                "keyword.batch.info",
+            ]
         self._initialize()
         body = {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}
         resp = self._post_json(body, what="MCP tools/list")
@@ -311,8 +329,7 @@ class MCPClient:
     def _call(self, tool: str, arguments: dict, retries: int = MCP_CALL_RETRIES) -> Any:
         """调用 MCP 工具, 解析 content 包装, 返回业务 data(失败重试)。
 
-        返回格式: {"content":[{"type":"text","text":"<JSON>"}], "isError": bool}
-        业务 JSON: {"code":"OK","data":...}; isError 或 code!=OK 时抛错。
+        兼容卖家精灵 MCP v1({code:"OK", data:...}) 与 v2(直接返回业务 dict, 错误返回 error 对象)。
         """
         if self._mock is not None:
             return None
@@ -333,16 +350,30 @@ class MCPClient:
                 if "error" in data and data["error"]:
                     raise MCPBusinessError(tool, data["error"].get("code"), str(data["error"]), data)
                 result = data.get("result") or {}
+                payload = _parse_payload(result)
                 if result.get("isError"):
+                    err_obj = payload.get("error") if isinstance(payload, dict) else None
+                    if isinstance(err_obj, dict) and err_obj.get("retryable") and attempt < retries - 1:
+                        last_err = f"{err_obj.get('code')}: {str(err_obj.get('message') or '')[:120]}"
+                        time.sleep(2 + attempt * 3)
+                        continue
                     texts = _content_texts(result)
                     raise MCPBusinessError(tool, "isError", f"执行失败: {texts[:300]}", data)
-                payload = _parse_payload(result)
+                if isinstance(payload, dict) and payload.get("error"):
+                    err_obj = payload["error"]
+                    if isinstance(err_obj, dict) and err_obj.get("retryable") and attempt < retries - 1:
+                        last_err = f"{err_obj.get('code')}: {str(err_obj.get('message') or '')[:120]}"
+                        time.sleep(2 + attempt * 3)
+                        continue
+                    err_code = err_obj.get("code") if isinstance(err_obj, dict) else "error"
+                    err_msg = err_obj.get("message") if isinstance(err_obj, dict) else str(err_obj)
+                    raise MCPBusinessError(tool, err_code, str(err_msg or err_obj), payload)
                 if isinstance(payload, dict) and payload.get("code") not in (None, "OK", 200, 0):
                     raise MCPBusinessError(tool, payload.get("code"), str(payload.get("message", payload)), payload)
-                return payload.get("data") if isinstance(payload, dict) else payload
+                return payload.get("data") if isinstance(payload, dict) and "data" in payload else payload
             except (httpx.HTTPError, OSError) as exc:
                 last_err = f"{type(exc).__name__}: {str(exc)[:120]}"
-                # 连接类错误(含 SSL EOF/超时/长连接被服务端关掉/会话失效的 4xx):
+                # 连接类错误(含 SSL EOF/超时/长连接被服务端关掉/会话失效的 4xx/429):
                 # 丢弃连接与会话, 让下一次重试**重新握手**(而不是复用坏连接) —— 2026-09-15
                 self._reset_connection(type(exc).__name__)
                 time.sleep(2 + attempt * 3)
@@ -355,9 +386,47 @@ class MCPClient:
 
         与 `_call` 的差别: 不做 code 判定(把业务错误交给调用方判断, 便于识别"额度耗尽"等
         可恢复情形), 也不剥离 data。返回 {} 表示 dry_run。
+        卖家精灵 v1 的 `review` 调用会自动转译为 v2 `asin.review.list` 并保持信封兼容。
         """
         if self._mock is not None:
             return {}
+        if self._url_key == "SS_MCP_URL" and tool == "review":
+            req_args = dict(arguments or {})
+            page = max(1, int(req_args.get("page", 1) or 1))
+            size = max(1, int(req_args.get("size", 10) or 10))
+            v2_args: dict[str, Any] = {
+                "marketplace": req_args.get("marketplace") or _marketplace(str(self.config.get("SITE", ""))),
+                "asin": req_args.get("asin"),
+                "limit": min(100, page * size),
+            }
+            stars = req_args.get("starList") or req_args.get("star")
+            if stars:
+                v2_args["star"] = [int(s) for s in stars]
+            v2_payload = self.call_raw("asin.review.list", v2_args, retries=retries)
+            if not isinstance(v2_payload, dict):
+                return {"code": "OK", "message": "成功", "pointCost": 0, "data": {"items": [], "total": 0}}
+            if v2_payload.get("error"):
+                err = v2_payload["error"]
+                return {
+                    "code": err.get("code") if isinstance(err, dict) else "error",
+                    "message": err.get("message") if isinstance(err, dict) else str(err),
+                    "pointCost": 0,
+                    "data": None,
+                }
+            all_items = v2_payload.get("items") or []
+            start = (page - 1) * size
+            page_items = all_items[start:start + size] if isinstance(all_items, list) else []
+            billing = v2_payload.get("billing") if isinstance(v2_payload.get("billing"), dict) else {}
+            cost = billing.get("points") or billing.get("pointCost") or billing.get("cost") or 0
+            total = v2_payload.get("total")
+            if total is None:
+                total = len(all_items) if isinstance(all_items, list) else 0
+            return {
+                "code": "OK",
+                "message": "成功",
+                "pointCost": cost,
+                "data": {"items": page_items, "total": total},
+            }
         url = self._url()
         last_err: str = ""
         for attempt in range(retries):
@@ -381,77 +450,152 @@ class MCPClient:
                 time.sleep(2 + attempt * 3)
         raise RuntimeError(f"MCP {tool} 重试 {retries} 次仍失败: {last_err}")
 
+    def keyword_miner(self, request: dict) -> dict:
+        """关键词召回 / 批量验证(V2 keyword.related.list / keyword.batch.info)。"""
+        if self._mock is not None:
+            return {"items": []}
+        req = dict(request or {})
+        mp = _marketplace(str(req.get("marketplace") or self.config.get("SITE", "")))
+        month = _month_yyyymm(req.get("historyDate") or req.get("month") or "")
+        # 1) 批量精准验证模式: keywordList -> V2 keyword.batch.info (每批最多 20 词)
+        if "keywordList" in req:
+            raw_words = [str(w).strip() for w in (req.get("keywordList") or []) if str(w).strip()]
+            out_items: list[dict] = []
+            for start in range(0, len(raw_words), 20):
+                chunk = raw_words[start:start + 20]
+                args: dict[str, Any] = {"marketplace": mp, "keywords": chunk}
+                if month:
+                    args["month"] = month
+                resp = self._call("keyword.batch.info", args)
+                items = resp.get("items") if isinstance(resp, dict) else []
+                if not isinstance(items, list):
+                    raise ValueError("keyword.batch.info response lacks items list")
+                for it in items:
+                    if not isinstance(it, dict):
+                        continue
+                    if str(it.get("resultStatus") or "").lower() == "no_data":
+                        continue
+                    row = dict(it)
+                    if "searches" not in row and "searchVolume" in row:
+                        row["searches"] = row.get("searchVolume")
+                    if "bid" not in row and "ppcBid" in row:
+                        row["bid"] = row.get("ppcBid")
+                    out_items.append(row)
+            return {"items": out_items}
+        # 2) 根词扩展召回模式: keyword -> V2 keyword.related.list
+        seed = str(req.get("keyword") or req.get("seedKeyword") or "").strip()
+        size = max(1, min(100, int(req.get("size", 100) or 100)))
+        page_num = max(1, int(req.get("page", 1) or 1))
+        args = {
+            "marketplace": mp,
+            "seedKeyword": seed,
+            "page": {"cursor": (page_num - 1) * size, "size": size},
+        }
+        if req.get("filterRootWord") and seed:
+            args["includeKeywords"] = [seed]
+        resp = self._call("keyword.related.list", args)
+        items = resp.get("items") if isinstance(resp, dict) else None
+        if not isinstance(items, list):
+            raise ValueError("keyword.related.list response lacks items list")
+        norm_items = []
+        for it in items:
+            if not isinstance(it, dict):
+                continue
+            row = dict(it)
+            if "searches" not in row and "searchVolume" in row:
+                row["searches"] = row.get("searchVolume")
+            if "bid" not in row and "ppcBid" in row:
+                row["bid"] = row.get("ppcBid")
+            norm_items.append(row)
+        page_info = resp.get("page") if isinstance(resp, dict) and isinstance(resp.get("page"), dict) else {}
+        return {
+            "items": norm_items,
+            "total": resp.get("total") if isinstance(resp, dict) else len(norm_items),
+            "hasNextPage": bool(page_info.get("hasMore", False)),
+        }
+
     def keyword_trend(self, keyword: str, month: str) -> dict:
-        """接口A: 关键词趋势(keyword_research_trends, 完整历史月度序列)。"""
+        """接口A: 关键词趋势(V2 keyword.trend, 完整历史月度序列)。"""
         if self._mock is not None:
             return self._mock.keyword_trend(keyword, month)
         mp = _marketplace(str(self.config.get("SITE", "")))
         data = self._call(
-            "keyword_research_trends",
-            {"marketplace": mp, "keyword": keyword, "month": month},
+            "keyword.trend",
+            {
+                "marketplace": mp,
+                "keyword": keyword,
+                "metrics": [
+                    "searchVolume",
+                    "purchaseVolume",
+                    "purchaseRate",
+                    "yearlyGrowth",
+                    "chainGrowth",
+                    "threeMonthGrowth",
+                ],
+                "granularity": "MONTH",
+            },
         )
-        return _normalize_trend(data, keyword, month)
+        return _normalize_trend(_v2_trend_to_rows(data), keyword, month)
+
+    def aba_weekly_raw(self, keyword: str, site: str = "") -> list[dict]:
+        """ABA 周度原始序列([{label:'YYYYMMDD', rank, searches}, ...], V2 keyword.aba.trend)。"""
+        if self._mock is not None:
+            return []
+        mp = _marketplace(str(site or self.config.get("SITE", "")))
+        data = self._call(
+            "keyword.aba.trend",
+            {"marketplace": mp, "keyword": keyword, "granularity": "WEEK"},
+        )
+        return _v2_aba_to_rows(data)
 
     def aba_weekly_bid(self, keyword: str, month: str) -> dict:
-        """接口B: ABA 周度竞价(aba_research_trend 周粒度 + keyword_miner CPC)。"""
+        """接口B: ABA 周度竞价(V2 keyword.aba.trend + keyword.batch.info CPC)。"""
         if self._mock is not None:
             return self._mock.aba_weekly_bid(keyword, month)
-        mp = _marketplace(str(self.config.get("SITE", "")))
-        data = self._call(
-            "aba_research_trend",
-            {"marketplace": mp, "keyword": keyword, "timeGranularity": "W"},
-        )
+        data = self.aba_weekly_raw(keyword)
         cpc = self._cpc_of(keyword, month)
         return _normalize_aba(data, keyword, month, cpc)
 
     def _cpc_of(self, keyword: str, month: str) -> dict:
-        """从 keyword_miner 取 CPC/下限/上限(月级)。"""
+        """从 V2 keyword.batch.info 取 CPC/下限/上限(月级)。"""
         mp = _marketplace(str(self.config.get("SITE", "")))
         try:
-            data = self._call(
-                "keyword_miner",
-                {"request": {"keywordList": [keyword], "historyDate": month, "marketplace": mp}},
-            )
+            args: dict[str, Any] = {"marketplace": mp, "keywords": [keyword]}
+            ym = _month_yyyymm(month)
+            if ym:
+                args["month"] = ym
+            data = self._call("keyword.batch.info", args)
             return _extract_cpc(data)
         except Exception:
             return {}
 
     def google_trend(self, keyword: str, years: int = 5) -> dict:
-        """接口C: Google 趋势(google_trend, monthly=true 月度指数)。"""
+        """接口C: Google 趋势(V2 keyword.google.trend 按月均值聚合)。"""
         if self._mock is not None:
             return self._mock.google_trend(keyword, years)
         mp = _marketplace(str(self.config.get("SITE", "")))
         data = self._call(
-            "google_trend",
-            {"request": {"keyword": keyword, "marketplace": mp, "monthly": True, "googleProp": "web"}},
+            "keyword.google.trend",
+            {"marketplace": mp, "keyword": keyword, "gprop": "WEB"},
         )
-        return _normalize_google(data, keyword)
+        return _normalize_google_v2_monthly(data, keyword)
 
     def google_trend_weekly(self, keyword: str) -> dict:
-        """Fetch the provider's weekly index, indexed by UTC week start."""
-        from datetime import timezone
+        """Fetch the provider's weekly index, indexed by UTC week start (V2 keyword.google.trend)."""
         if self._mock is not None:
             return {"keyword": keyword, "google_weekly_index": {}, "status": "ok"}
         mp = _marketplace(str(self.config.get("SITE", "")))
-        data = self._call("google_trend", {"request": {"keyword": keyword, "marketplace": mp,
-                                                        "monthly": False, "googleProp": "web"}})
-        if not isinstance(data, dict) or not isinstance(data.get("items"), list):
-            raise ValueError("Google 周趋势响应缺少 items")
-        series = {}
-        for item in data["items"]:
-            if isinstance(item, dict) and item.get("time") is not None:
-                day = datetime.fromtimestamp(int(item["time"]) / 1000, timezone.utc).date().isoformat()
-                series[day] = item.get("value") if day not in series else None
-        return {"keyword": keyword, "google_weekly_index": series, "status": "ok"}
+        data = self._call(
+            "keyword.google.trend",
+            {"marketplace": mp, "keyword": keyword, "gprop": "WEB"},
+        )
+        return _normalize_google_v2_weekly(data, keyword)
 
     def competitor_lookup(self, month: str, asins: list[str]) -> list[dict]:
-        """查竞品批量查询(MCP competitor_lookup, FR-14 物流补齐用)。
+        """查竞品批量查询(V2 asin.list, FR-14 物流/上架时间补齐用)。
 
-        实测(2026-09): request.asins 最多 40 个, 超需拆批; 返回 data.items[]
-        每行含 asin / fulfillment(FBA/AMZ/FBM/NA...) / availableDate(毫秒时间戳) 等;
-        month 格式 yyyyMM(如 202607, 兼容传入 yyyy-MM);
-        默认模糊匹配返回集可能大于请求数且分页(total>size)——
-        2026-09-07: 自动翻页拉全, 命中全部请求 ASIN 或到末页即停。
+        每批最多 40 个 ASIN; 按 cursor 自动翻页拉全, 命中全部请求 ASIN 或到末页即停;
+        availableDate(ISO 日期字符串)统一归一为毫秒时间戳, 保持下游兼容。
         """
         if self._mock is not None:
             return []
@@ -459,35 +603,42 @@ class MCPClient:
         if not asins:
             return []
         mp = _marketplace(str(self.config.get("SITE", "美国") or "美国"))
-        month = str(month or "").strip().replace("-", "")
+        month = _month_yyyymm(month)
         request_asins = asins[:40]
-        out: list[dict] = []
-        seen: set[str] = set()
-        size = min(len(request_asins), 40)
-        for page in range(1, 21):  # 翻页上限防死循环
-            data = self._call(
-                "competitor_lookup",
-                {"request": {"marketplace": mp, "asins": request_asins,
-                             "month": month, "size": size, "page": page}},
-            )
-            items = []
-            if isinstance(data, dict):
-                items = data.get("items") or data.get("list") or []
-            elif isinstance(data, list):
-                items = data
-            new = [
-                it for it in items
-                if isinstance(it, dict) and str(it.get("asin") or "").strip() not in seen
-            ]
-            for it in new:
-                seen.add(str(it.get("asin") or "").strip())
-            out.extend(new)
-            if set(request_asins) <= seen:
+        out_v2: list[dict] = []
+        seen_v2: set[str] = set()
+        cursor = 0
+        for _ in range(20):
+            args: dict[str, Any] = {
+                "marketplace": mp,
+                "asins": request_asins,
+                "page": {"cursor": cursor, "size": 100},
+            }
+            if month:
+                args["dataMonth"] = month
+            data = self._call("asin.list", args)
+            items = data.get("items") if isinstance(data, dict) else []
+            if not isinstance(items, list):
                 break
-            pages = data.get("pages") if isinstance(data, dict) else 1
-            if not new or page >= int(pages or 1):
+            new = []
+            for it in items:
+                if not isinstance(it, dict):
+                    continue
+                a = str(it.get("asin") or "").strip()
+                if not a or a in seen_v2:
+                    continue
+                seen_v2.add(a)
+                row = dict(it)
+                row["availableDate"] = _normalize_available_date_ms(row.get("availableDate"))
+                new.append(row)
+            out_v2.extend(new)
+            if set(request_asins) <= seen_v2:
                 break
-        return out
+            page_info = data.get("page") if isinstance(data, dict) and isinstance(data.get("page"), dict) else {}
+            if not new or not page_info.get("hasMore") or page_info.get("nextCursor") is None:
+                break
+            cursor = int(page_info["nextCursor"])
+        return out_v2
 
 
 def _mcp_log(msg: str) -> None:
@@ -508,14 +659,65 @@ def _content_texts(result: dict) -> str:
     return " | ".join(parts)
 
 
+def _decode_json_text(raw: str) -> Any:
+    """解析 JSON 对象/数组，兼容外层多包 JSON 字符串及前置/后置横幅文案（如 MCP v1 迁移提醒）。"""
+    s = str(raw or "").strip()
+    if not s:
+        return None
+    try:
+        val = json.loads(s)
+        if isinstance(val, (dict, list)):
+            return val
+        if isinstance(val, str):
+            s = val.strip()
+            try:
+                inner = json.loads(s)
+                if isinstance(inner, (dict, list)):
+                    return inner
+            except (json.JSONDecodeError, ValueError):
+                pass
+    except (json.JSONDecodeError, ValueError):
+        pass
+    decoder = json.JSONDecoder()
+    best = None
+    best_span = -1
+    idx = 0
+    n = len(s)
+    while idx < n:
+        pos_obj = s.find("{", idx)
+        pos_arr = s.find("[", idx)
+        cands = [p for p in (pos_obj, pos_arr) if p >= 0]
+        if not cands:
+            break
+        pos = min(cands)
+        try:
+            obj, end = decoder.raw_decode(s, pos)
+            if isinstance(obj, (dict, list)):
+                if isinstance(obj, dict) and any(k in obj for k in ("code", "data", "items")):
+                    return obj
+                span = end - pos
+                if span > best_span:
+                    best = obj
+                    best_span = span
+                idx = end
+                continue
+        except (json.JSONDecodeError, ValueError):
+            pass
+        idx = pos + 1
+    return best
+
+
 def _parse_payload(result: dict) -> Any:
     """解析 MCP content 包装为业务 JSON 对象。
 
     2026-09-07: 不再按 " | " 切分文本——单段 content 的 JSON 内(商品标题/类目等
     字符串字段)本身可能含 " | ", 切分会把整段 JSON 撕碎导致解析失败
-    (competitor_lookup 全历史回填 0 的根因)。解析顺序:
-    ① 整段拼接整体 json.loads(单段 JSON / 多段分片 JSON 均覆盖);
-    ② 逐段独立解析(多段各自为完整 JSON 的场景);
+    (competitor_lookup 全历史回填 0 的根因)。
+    2026-11-23: 卖家精灵 MCP v1 在 content[0].text 前注入了“服务迁移提醒”横幅文本并
+    额外包了一层 JSON 字符串引号，导致 json.loads() 解出 str 而非 dict。
+    解析顺序:
+    ① 整段拼接调用 _decode_json_text(兼容纯 JSON / 外层字符串包装 / 前后横幅文本);
+    ② 逐段独立调用 _decode_json_text;
     ③ 兼容旧格式: 仍失败时按 " | " 切分逐份尝试。
     """
     blocks = [
@@ -526,20 +728,17 @@ def _parse_payload(result: dict) -> Any:
     if not blocks:
         return {}
     joined = "\n".join(blocks)
-    try:
-        return json.loads(joined)
-    except (json.JSONDecodeError, ValueError):
-        pass
+    parsed = _decode_json_text(joined)
+    if parsed is not None:
+        return parsed
     for block in blocks:
-        try:
-            return json.loads(block)
-        except (json.JSONDecodeError, ValueError):
-            continue
+        parsed = _decode_json_text(block)
+        if parsed is not None:
+            return parsed
     for text in " | ".join(blocks).split(" | "):
-        try:
-            return json.loads(text)
-        except (json.JSONDecodeError, ValueError):
-            continue
+        parsed = _decode_json_text(text)
+        if parsed is not None:
+            return parsed
     return {}
 
 
@@ -716,18 +915,152 @@ def _normalize_google(data, keyword: str) -> dict:
     return {"keyword": keyword, "google_monthly_index": series, "status": "ok"}
 
 
+def _v2_trend_to_rows(data) -> list[dict]:
+    """把 V2 keyword.trend 的 {series: {metric: [{date, value}]}} 转成 _normalize_trend 所需行列表。"""
+    if isinstance(data, list):
+        return data
+    series = data.get("series") if isinstance(data, dict) else None
+    if not isinstance(series, dict):
+        return []
+    metric_map = {
+        "searchVolume": "search",
+        "purchaseVolume": "purchase",
+        "purchaseRate": "purchaseRate",
+        "yearlyGrowth": "yearlyGrowth",
+        "chainGrowth": "chainGrowth",
+        "threeMonthGrowth": "threeMonthGrowth",
+    }
+    by_date: dict[str, dict] = {}
+    for v2_key, v1_key in metric_map.items():
+        points = series.get(v2_key)
+        if not isinstance(points, list):
+            continue
+        for pt in points:
+            if not isinstance(pt, dict):
+                continue
+            d = str(pt.get("date") or "").strip()
+            if not d:
+                continue
+            row = by_date.setdefault(d, {"time": d})
+            if pt.get("value") is not None:
+                row[v1_key] = pt.get("value")
+    return [by_date[d] for d in sorted(by_date)]
+
+
+def _v2_aba_to_rows(data) -> list[dict]:
+    """把 V2 keyword.aba.trend 的 {series: {abaRank, abaSearchVolume}} 转成 [{label:'YYYYMMDD', rank, searches}]。"""
+    if isinstance(data, list):
+        return data
+    series = data.get("series") if isinstance(data, dict) else None
+    if not isinstance(series, dict):
+        return []
+    by_label: dict[str, dict] = {}
+    for v2_key, v1_key in (("abaRank", "rank"), ("abaSearchVolume", "searches")):
+        points = series.get(v2_key)
+        if not isinstance(points, list):
+            continue
+        for pt in points:
+            if not isinstance(pt, dict):
+                continue
+            d = str(pt.get("date") or "").strip()
+            label = d.replace("-", "")
+            if not label:
+                continue
+            row = by_label.setdefault(label, {"label": label})
+            if pt.get("value") is not None:
+                row[v1_key] = pt.get("value")
+    return [by_label[k] for k in sorted(by_label)]
+
+
+def _normalize_google_v2_monthly(data, keyword: str) -> dict:
+    """V2 keyword.google.trend 周度序列 -> 按 YYYY-MM 均值聚合为 {month: index}。"""
+    series_obj = data.get("series") if isinstance(data, dict) else None
+    points = series_obj.get("interest") if isinstance(series_obj, dict) else None
+    buckets: dict[str, list[float]] = {}
+    if isinstance(points, list):
+        for item in points:
+            if not isinstance(item, dict):
+                continue
+            d = str(item.get("date") or "").strip()
+            v = item.get("value")
+            if len(d) >= 7 and v is not None:
+                try:
+                    buckets.setdefault(d[:7], []).append(float(v))
+                except (TypeError, ValueError):
+                    pass
+    monthly = {ym: round(sum(vals) / len(vals), 2) for ym, vals in sorted(buckets.items()) if vals}
+    return {"keyword": keyword, "google_monthly_index": monthly, "status": "ok"}
+
+
+def _normalize_google_v2_weekly(data, keyword: str) -> dict:
+    """V2 keyword.google.trend 周度序列 -> {YYYY-MM-DD: index}。"""
+    series_obj = data.get("series") if isinstance(data, dict) else None
+    points = series_obj.get("interest") if isinstance(series_obj, dict) else None
+    if not isinstance(points, list):
+        raise ValueError("Google 周趋势响应缺少 series.interest")
+    series: dict[str, Any] = {}
+    for item in points:
+        if not isinstance(item, dict):
+            continue
+        day = str(item.get("date") or "").strip()
+        if not day:
+            continue
+        val = item.get("value")
+        if val is None:
+            continue
+        series[day] = val if day not in series else None
+    return {"keyword": keyword, "google_weekly_index": series, "status": "ok"}
+
+
+def _normalize_available_date_ms(value):
+    """把 V2 ISO 日期字符串('YYYY-MM-DD')或 V1 毫秒时间戳统一转为毫秒时间戳 int。"""
+    if value in (None, ""):
+        return None
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return int(value)
+    s = str(value).strip()
+    if not s:
+        return None
+    if s.isdigit():
+        return int(s)
+    for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S"):
+        try:
+            dt = datetime.strptime(s[:19], fmt)
+            return int(dt.timestamp() * 1000)
+        except ValueError:
+            continue
+    return value
+
+
+def _month_yyyymm(value) -> str:
+    """把 '2026-07' / '2026.07' / '2026年7月' / '202607' 归一为 6 位 '202607'；无效返回 ''。"""
+    import re
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    m = re.match(r"^(\d{4})[-./年](\d{1,2})月?$", raw)
+    if m:
+        yr, mo = int(m.group(1)), int(m.group(2))
+        if 1 <= mo <= 12:
+            return f"{yr:04d}{mo:02d}"
+    digits = "".join(ch for ch in raw if ch.isdigit())
+    if len(digits) == 6:
+        mo = int(digits[4:6])
+        if 1 <= mo <= 12:
+            return digits
+    return ""
+
+
 def _month_key(month: str) -> str:
-    return str(month or "").strip()
+    return _month_yyyymm(month) or str(month or "").strip()
 
 
 def _parse_cn_month(text: str) -> str | None:
-    """把 '2026年07月' 解析为 '2026-07'; 失败返回 None。"""
-    try:
-        year = text[:4]
-        mon = text[5:7] if len(text) > 6 else text[4:6]
-        return f"{year}-{mon.zfill(2)}"
-    except Exception:
-        return None
+    """把 '2026年07月' / '2026-07' / '2026.07' / '202607' 解析为 '2026-07'; 失败返回 None。"""
+    ym = _month_yyyymm(text)
+    if len(ym) == 6:
+        return f"{ym[:4]}-{ym[4:6]}"
+    return None
 
 
 def _to_percent(value) -> float | None:

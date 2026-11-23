@@ -725,13 +725,17 @@ class Step14TrafficSplit(BaseStep):
                             filled += 1
                         ad = item.get("availableDate")
                         if df.at[idx, "上架时间"] == "" and ad not in (None, ""):
-                            try:
-                                ts = int(ad)
-                                if ts > 0:
-                                    df.at[idx, "上架时间"] = datetime.fromtimestamp(ts / 1000).strftime("%Y-%m-%d")
-                                    filled += 1
-                            except (TypeError, ValueError, OSError):
-                                pass
+                            if isinstance(ad, str) and len(ad.strip()) >= 10 and ad.strip()[4:5] == "-":
+                                df.at[idx, "上架时间"] = ad.strip()[:10]
+                                filled += 1
+                            else:
+                                try:
+                                    ts = int(ad)
+                                    if ts > 0:
+                                        df.at[idx, "上架时间"] = datetime.fromtimestamp(ts / 1000).strftime("%Y-%m-%d")
+                                        filled += 1
+                                except (TypeError, ValueError, OSError):
+                                    pass
                 self.log(ctx, f"12. MCP 批次 {bi}/{total_batches} 完成(月 {months[-1]}~{months[0]})")
         finally:
             try:

@@ -276,8 +276,11 @@ class BaseStep(ABC):
             tools = ctx.mcp().check()
         except Exception as exc:
             raise StepFailedError(f"卖家精灵 MCP 连接失败: {exc}")
-        required = {"keyword_research_trends", "aba_research_trend",
-                    "google_trend", "keyword_miner"}
+        required = {
+            "keyword.trend", "keyword.aba.trend",
+            "keyword.google.trend", "keyword.related.list",
+            "keyword.batch.info",
+        }
         if any(t in tools for t in required):
             return
         if not tools:

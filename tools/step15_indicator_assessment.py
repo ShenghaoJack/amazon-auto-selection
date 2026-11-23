@@ -159,6 +159,351 @@ def rule_decision(rows):
     return f"已判定 {passed + failed} 项，其中 {passed} 项达标、{failed} 项不达标" + (f"；{incomplete} 项待确认或数据不足" if incomplete else "")
 
 
+_DEMAND_METRICS = {
+    "核心词搜索量", "核心词数量", "CPC竞价", "平均客单价", "月需求量估算",
+    "类目GMV估算", "趋势方向（站内）", "趋势方向（Google）", "旺季月份",
+    "淡季月份", "季节波动系数", "趋势方向",
+}
+_MONOPOLY_METRICS = {
+    "头部链接销售额占比", "头部品牌集中度", "卖家集中度", "VC卖家占比",
+    "市场饱和度", "头部链接销量占比", "CR5/CR10集中度", "卖家物流方式分布",
+}
+_BARRIER_METRICS = {
+    "大卖占比", "评论壁垒", "老品占比", "上架超3年链接销额占比", "评分", "平均评分数",
+}
+_WINDOW_METRICS = {"新卖家占比", "新卖家占比/存活率"}
+_LOCAL_METRICS = {"本土卖家占比", "卖家地分布"}
+_COMP_METRICS = _MONOPOLY_METRICS | _BARRIER_METRICS | _WINDOW_METRICS | _LOCAL_METRICS | {"卖家总数"}
+_ADVICE_TIERS = ("可进入", "有条件进入", "暂不建议进入", "数据不足无法判断")
+
+_DEFAULT_LIMITS = {
+    "头部链接销售额占比": 60.0,
+    "头部品牌集中度": 60.0,
+    "卖家集中度": 60.0,
+    "VC卖家占比": 20.0,
+    "大卖占比": 50.0,
+    "评论壁垒": 5000.0,
+    "老品占比": 70.0,
+    "上架超3年链接销额占比": 70.0,
+    "本土卖家占比": 20.0,
+    "月需求量估算": 500.0,
+    "评分": 4.2,
+}
+
+
+def _row_section(row: dict) -> str:
+    sec = str(row.get("板块") or "").strip()
+    if sec in ("市场需求", "竞争格局"):
+        return sec
+    name = str(row.get("指标") or "").strip()
+    if name in _DEMAND_METRICS:
+        return "市场需求"
+    if name in _COMP_METRICS:
+        return "竞争格局"
+    return "其他"
+
+
+def _row_num(value):
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value) if math.isfinite(value) else None
+    return None
+
+
+def _row_limit(row: dict, name: str) -> float:
+    """从行内‘原表标准’解析工作台当前阈值，缺失时回退默认阈值。"""
+    import re
+    std = str(row.get("原表标准") or "")
+    m = re.search(r"([+-]?\d+(?:\.\d+)?)", std.replace(",", ""))
+    if m:
+        try:
+            v = float(m.group(1))
+            if v > 0:
+                return v
+        except ValueError:
+            pass
+    return _DEFAULT_LIMITS.get(name, 0.0)
+
+
+def _summarize_assessment(rows: list[dict]) -> dict:
+    """按 4 大独立业务维度 × 相对阈值偏离度（轻/中/重）预计算结构化摘要与判定边界参考。
+
+    设计原则：
+    - 避免等权数项数与同源指标重复计票（VC/卖家/品牌归入‘垄断与自营控盘’，大卖/评论/老品归入‘评价与冷启动壁垒’）；
+    - 本土卖家占比降权为本土身份提醒，不计入垄断/壁垒重度判定；
+    - 偏离度自动联动工作台阈值（如默认 VC 阈值 20% 时，≥2.5×即 ≥50% 判为重度控盘）。
+    """
+    sections = {
+        "市场需求": {"达标": 0, "不达标": 0, "待确认或数据不足": 0, "不达标项": []},
+        "竞争格局": {"达标": 0, "不达标": 0, "待确认或数据不足": 0, "不达标项": []},
+    }
+    by_name: dict[str, dict] = {}
+    severe_fails: list[str] = []
+
+    monopoly_decided = monopoly_total = monopoly_fail = 0
+    monopoly_level = "无明显压力"
+    monopoly_notes: list[str] = []
+
+    barrier_decided = barrier_total = barrier_fail = 0
+    barrier_level = "无明显压力"
+    barrier_notes: list[str] = []
+    big_seller_fail = False
+    big_seller_val = None
+    big_seller_lim = 50.0
+    review_fail = False
+    review_val = None
+    review_lim = 5000.0
+
+    local_note = ""
+
+    _RANK = {"无明显压力": 0, "轻度": 1, "中度": 2, "重度": 3}
+
+    def bump(cur: str, nxt: str) -> str:
+        return nxt if _RANK[nxt] > _RANK[cur] else cur
+
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        name = str(row.get("指标") or "").strip()
+        status = str(row.get("判定") or "").strip()
+        if name:
+            by_name[name] = row
+        if status in ("仅展示", "未启用"):
+            continue
+
+        sec = _row_section(row)
+        bucket = sections.get(sec)
+        if bucket is not None:
+            if status == "达标":
+                bucket["达标"] += 1
+            elif status == "不达标":
+                bucket["不达标"] += 1
+                if name:
+                    bucket["不达标项"].append(name)
+            elif status in ("待确认", "数据不足"):
+                bucket["待确认或数据不足"] += 1
+
+        val = _row_num(row.get("实际值"))
+        lim = _row_limit(row, name)
+
+        # 维度 B：垄断与自营控盘
+        if name in _MONOPOLY_METRICS:
+            monopoly_total += 1
+            if status in ("达标", "不达标"):
+                monopoly_decided += 1
+            if status == "不达标":
+                monopoly_fail += 1
+                monopoly_level = bump(monopoly_level, "轻度")
+                if name == "VC卖家占比" and val is not None:
+                    heavy_vc = max(50.0, lim * 2.5) if lim > 0 else 50.0
+                    mid_vc = max(35.0, lim * 1.75) if lim > 0 else 35.0
+                    if val >= heavy_vc:
+                        monopoly_level = bump(monopoly_level, "重度")
+                        note = f"VC/AMZ近似自营重度控盘({val:.1f}%≥{heavy_vc:g}%)"
+                        monopoly_notes.append(note)
+                        severe_fails.append(note)
+                    elif val >= mid_vc:
+                        monopoly_level = bump(monopoly_level, "中度")
+                        monopoly_notes.append(f"VC/AMZ近似自营占比偏高({val:.1f}%≥{mid_vc:g}%)")
+                    else:
+                        monopoly_notes.append(f"VC/AMZ近似自营略超标({val:.1f}%)")
+                elif name in ("头部品牌集中度", "卖家集中度") and val is not None:
+                    heavy_c = lim + 15.0 if lim > 0 else 75.0
+                    mid_c = lim + 10.0 if lim > 0 else 70.0
+                    if val >= heavy_c:
+                        monopoly_level = bump(monopoly_level, "重度")
+                        note = f"{name}重度集中({val:.1f}%≥{heavy_c:g}%)"
+                        monopoly_notes.append(note)
+                        severe_fails.append(note)
+                    elif val >= mid_c:
+                        monopoly_level = bump(monopoly_level, "中度")
+                        monopoly_notes.append(f"{name}中度集中({val:.1f}%)")
+                    else:
+                        monopoly_notes.append(f"{name}轻度超标({val:.1f}%)")
+                elif name == "头部链接销售额占比" and val is not None:
+                    heavy_l = lim + 10.0 if lim > 0 else 70.0
+                    if val >= heavy_l:
+                        monopoly_level = bump(monopoly_level, "重度")
+                        note = f"头部链接高度集中({val:.1f}%≥{heavy_l:g}%)"
+                        monopoly_notes.append(note)
+                        severe_fails.append(note)
+                    else:
+                        monopoly_notes.append(f"头部链接偏集中({val:.1f}%)")
+
+        # 维度 C：评价与成熟冷启动壁垒
+        elif name in _BARRIER_METRICS:
+            barrier_total += 1
+            if status in ("达标", "不达标"):
+                barrier_decided += 1
+            if status == "不达标":
+                barrier_fail += 1
+                barrier_level = bump(barrier_level, "轻度")
+                if name == "评论壁垒" and val is not None:
+                    review_fail, review_val, review_lim = True, val, (lim or 5000.0)
+                    heavy_r = review_lim * 2.0
+                    mid_r = review_lim * 1.3
+                    if val >= heavy_r:
+                        barrier_level = bump(barrier_level, "重度")
+                        note = f"评论壁垒重度高企({int(round(val))}条≥{int(round(heavy_r))})"
+                        barrier_notes.append(note)
+                        severe_fails.append(note)
+                    elif val >= mid_r:
+                        barrier_level = bump(barrier_level, "中度")
+                        note = f"评论壁垒高({int(round(val))}条≥{int(round(mid_r))})"
+                        barrier_notes.append(note)
+                        if val >= review_lim * 1.6:
+                            severe_fails.append(note)
+                    else:
+                        barrier_notes.append(f"评论壁垒略超标({int(round(val))}条)")
+                elif name == "大卖占比" and val is not None:
+                    big_seller_fail, big_seller_val, big_seller_lim = True, val, (lim or 50.0)
+                    if val >= big_seller_lim + 25.0:
+                        barrier_level = bump(barrier_level, "重度")
+                        note = f"大卖占比极高({val:.1f}%≥{big_seller_lim + 25.0:g}%)"
+                        barrier_notes.append(note)
+                        severe_fails.append(note)
+                    elif val >= big_seller_lim + 15.0:
+                        barrier_level = bump(barrier_level, "中度")
+                        note = f"大卖占比偏高({val:.1f}%≥{big_seller_lim + 15.0:g}%)"
+                        barrier_notes.append(note)
+                        severe_fails.append(note)
+                    else:
+                        barrier_notes.append(f"大卖占比略超标({val:.1f}%)")
+                elif name in ("老品占比", "上架超3年链接销额占比") and val is not None:
+                    if val >= (lim or 70.0) + 10.0:
+                        barrier_level = bump(barrier_level, "中度")
+                        barrier_notes.append(f"老品固化偏高({val:.1f}%)")
+                    else:
+                        barrier_notes.append(f"老品占比略超标({val:.1f}%)")
+                elif name in ("评分", "平均评分数") and val is not None:
+                    barrier_notes.append(f"类目均分偏低({val:.2f}分)")
+
+        # 本土卖家占比：辅助身份提醒（不计入垄断/壁垒重度）
+        elif name in _LOCAL_METRICS and status == "不达标":
+            if val is not None:
+                local_note = f"本土卖家占比{val:.1f}%超标（本土同行已较多，本土身份不再具备稀缺优势，属辅助提醒）"
+            else:
+                local_note = "本土卖家占比超标（本土身份不再具备稀缺优势，属辅助提醒）"
+
+        # 维度 A 突出不达标项记录
+        elif sec == "市场需求" and status == "不达标":
+            if name == "月需求量估算" and val is not None and val < (lim or 500.0) * 0.6:
+                severe_fails.append(f"单变体月销量明显偏薄({val:.0f}件/变体/月<{(lim or 500.0) * 0.6:g})")
+            elif name == "核心词数量":
+                severe_fails.append("达标核心词数量不足")
+            elif name == "类目GMV估算":
+                severe_fails.append("样本类目GMV不达标")
+            elif name in ("趋势方向（站内）", "趋势方向（Google）") and val is not None:
+                severe_fails.append(f"{name}显著下滑({val:+.1f}%)")
+
+    # 同维叠加修正：垄断维 ≥2 项不达标至少为中度；大卖偏高(≥+15pct)叠加高评论(≥1.6×阈值)升为重度壁垒
+    if monopoly_fail >= 2:
+        monopoly_level = bump(monopoly_level, "中度")
+    if big_seller_fail and review_fail:
+        barrier_level = bump(barrier_level, "中度")
+        if (
+            big_seller_val is not None
+            and review_val is not None
+            and big_seller_val >= big_seller_lim + 15.0
+            and review_val >= review_lim * 1.6
+        ):
+            barrier_level = bump(barrier_level, "重度")
+
+    d = sections["市场需求"]
+    c = sections["竞争格局"]
+    d_decided = d["达标"] + d["不达标"]
+    c_decided = c["达标"] + c["不达标"]
+    d_total = d_decided + d["待确认或数据不足"]
+    c_total = c_decided + c["待确认或数据不足"]
+    total_decided = d_decided + c_decided
+    total_judgeable = d_total + c_total
+
+    # 维度 A 评级
+    demand_core_fail = (
+        (d_decided > 0 and d["不达标"] * 3 >= d_decided and d["不达标"] >= 3)
+        or (by_name.get("核心词数量", {}).get("判定") == "不达标")
+        or (by_name.get("类目GMV估算", {}).get("判定") == "不达标")
+        or (
+            by_name.get("趋势方向（站内）", {}).get("判定") == "不达标"
+            and by_name.get("趋势方向（Google）", {}).get("判定") == "不达标"
+        )
+    )
+    if d_decided == 0 or (d_total >= 3 and d_decided < 3):
+        demand_level = "数据不足"
+    elif demand_core_fail:
+        demand_level = "不成立"
+    elif d["不达标"] > 0:
+        demand_level = "偏弱"
+    else:
+        demand_level = "健康"
+
+    # 维度 D（新品窗口）评级
+    win_row = by_name.get("新卖家占比") or by_name.get("新卖家占比/存活率") or {}
+    win_status = str(win_row.get("判定") or "").strip()
+    if win_status == "达标":
+        window_level = "有窗口"
+    elif win_status == "不达标":
+        window_level = "无窗口"
+    else:
+        window_level = "未知"
+
+    # 四档判定边界（完全基于 A/B/C/D 四维度，不机械数总项数）
+    reasons: list[str] = []
+    if (
+        total_judgeable == 0
+        or total_decided < total_judgeable * 0.5
+        or demand_level == "数据不足"
+        or (monopoly_total >= 2 and monopoly_decided == 0)
+        or (barrier_total >= 2 and barrier_decided == 0)
+        or (c_total >= 3 and c_decided < 3)
+    ):
+        tier = "数据不足无法判断"
+        reasons.append(f"有效已判定指标不足({total_decided}/{total_judgeable})")
+    elif demand_level == "不成立":
+        tier = "暂不建议进入"
+        reasons.append(f"维度A需求底盘不成立(不达标项: {'、'.join(d['不达标项'])})")
+    elif monopoly_level == "重度" and barrier_level == "重度":
+        tier = "暂不建议进入"
+        reasons.append(
+            f"维度B垄断/自营重度控盘({'；'.join(monopoly_notes[:3])}) 叠加 维度C评价壁垒重度({'；'.join(barrier_notes[:2])})"
+        )
+    elif (monopoly_level == "重度" or barrier_level == "重度") and window_level == "无窗口":
+        tier = "暂不建议进入"
+        reasons.append(f"存在重度壁垒(垄断={monopoly_level}/评价={barrier_level})且维度D缺乏新品切入窗口")
+    elif (
+        demand_level in ("健康", "偏弱")
+        and d["不达标"] <= 1
+        and by_name.get("趋势方向（站内）", {}).get("判定") != "不达标"
+        and monopoly_level in ("无明显压力", "轻度")
+        and barrier_level in ("无明显压力", "轻度")
+        and window_level != "无窗口"
+    ):
+        tier = "可进入"
+        reasons.append(
+            f"维度A需求{demand_level}({d['达标']}/{d_decided})，维度B垄断({monopoly_level})与维度C壁垒({barrier_level})均可控且存在新品窗口"
+        )
+    else:
+        tier = "有条件进入"
+        reasons.append(
+            f"维度A需求{demand_level}({d['达标']}/{d_decided})，维度B垄断({monopoly_level})/维度C壁垒({barrier_level})存在局部压力但未双维重度封锁，维度D={window_level}"
+        )
+
+    dimensions = {
+        "A_需求底盘": {"评级": demand_level, "达标数": f"{d['达标']}/{d_decided}", "不达标项": d["不达标项"]},
+        "B_垄断与自营控盘": {"评级": monopoly_level, "说明": monopoly_notes},
+        "C_评价与冷启动壁垒": {"评级": barrier_level, "说明": barrier_notes},
+        "D_新品窗口与本土身份": {"新品窗口": window_level, "本土身份提醒": local_note or "本土卖家占比达标或未触发提醒"},
+    }
+
+    return {
+        "分板块统计": sections,
+        "四维度评估": dimensions,
+        "突出不达标项": severe_fails,
+        "判定边界参考": {"参考档位": tier, "触发依据": reasons},
+    }
+
+
 def build_advice_prompt(ctx, rows):
     config = getattr(ctx, "config", {})
     def setting(name):
@@ -175,27 +520,47 @@ def build_advice_prompt(ctx, rows):
         item = {k: v for k, v in row.items() if k not in ("影响", "优先级")}
         item["业务含义与解读边界"] = BUSINESS_MEANINGS.get(row.get("指标"), "未提供业务定义，按实际口径和证据解释，勿自行补造。")
         enriched_rows.append(item)
-    return ("你是亚马逊类目研究分析师。依据提供的研究前提识别站点、币种和周期；未提供的信息标记未知，不得猜测。配置趋势月份不一定是实际数据月份，以指标证据为准。"
-              "用户是本土卖家。只使用以下已计算指标与证据，明确区分达标、不达标、待确认和数据不足；"
-              "不要使用否决、降级等影响等级或机械地以单项不达标阻止进入市场。"
+    summary = _summarize_assessment(rows)
+    return ("你是严谨的亚马逊类目研究分析师，为当前站点的本土卖家输出稳定、边界清晰、不可和稀泥的市场进入评估。"
+              "依据提供的研究前提识别站点、币种和周期；未提供的信息标记未知，不得猜测。配置趋势月份不一定是实际数据月份，以指标证据为准。"
+              "只使用以下已计算指标与证据，明确区分达标、不达标、待确认和数据不足；"
+              "不要使用否决、降级等已停用影响等级或机械地以单项不达标下结论。"
               "冲突未解决和数据不足不可视为达标，不得补造数据或利润。"
-              "步骤14指标均为采集样本，不能说是完整市场。缺失字段已从对应指标中排除，应说明有效样本覆盖及其对结论的影响；"
-              "用户为本土卖家，本土卖家占比只按卖家所属地判断，不以AMZ配送方式推断国别；"
-              "Google趋势按用户选定的各词指数相加口径判定；须注明各词可能独立归一化，合计指数不等于实际搜索量。"
-              "季节性以达标核心词的逐月搜索量合计计算两年峰谷比并判断；单个词的峰谷比只作细分参考，不得据此推翻整体判定。"
-              "不得依据显示取整值改写指标判定。"
-              "金额统一使用明确的ISO币种代码，例如 USD 2.48；金额较大时用 M 或 B，不能推测币种或换算汇率。"
-              "核心任务是判断当前站点的本土卖家是否值得进入该类目，不要写空泛套话。"
-              "建议：开头明确给出‘可进入’‘有条件进入’‘暂不建议进入’或‘数据不足无法判断’之一，"
-              "接着简明说明综合判断的主要原因；有条件进入须说明最关键条件，不能确定时直接说明缺少什么。"
-              "主要依据：分别以‘市场需求：’和‘竞争格局：’开头各写一条，综合相关指标说明支持或不支持进入的原因、"
-              "关键利弊及其对最终判断的影响；引用最相关的实际指标和判定，解释相互矛盾的证据，不能只堆砌数字或逐项复述。"
-              "主要风险：仅从市场需求和竞争格局两方面分点分析与进入决定直接相关的风险，"
-              "每点写清具体风险、相关指标证据和对进入的影响；不将盈利能力未确认或样本覆盖不足单列为风险，没有证据不编造。"
-              "待验证：紧扣前述建议、依据和风险，简要列出有助决定能否进入的关键验证事项，不写冗长操作计划。"
-              "输出JSON：{\"建议\":\"...\",\"主要依据\":[\"市场需求：...\",\"竞争格局：...\"],"
+              "步骤14指标均为采集样本，不能说是完整市场；缺失字段已从对应指标中排除，须说明有效样本覆盖及其对结论的影响。"
+              "用户为本土卖家：本土卖家占比只按卖家所属地判断，不以AMZ配送方式推断国别；本土卖家占比超标意味着本土同行已较多、本土身份不再具备稀缺优势（属辅助竞争提醒，权重低于自营控盘与评价壁垒）。"
+              "Google趋势按各词指数相加口径判定，须注明各词可能独立归一化，合计指数不等于实际搜索量。"
+              "季节性以达标核心词的逐月搜索量合计计算两年峰谷比并判断；单词峰谷比只作细分参考，不得据此推翻整体判定。"
+              "不得依据显示取整值改写指标判定。金额统一使用明确的ISO币种代码（例如 USD 2.48），金额较大时用 M 或 B，不得换算汇率。"
+              "【四维度×四档结论判定边界（按独立业务维度而非机械数项数判定，禁止将双维重度封锁类目放宽为‘有条件进入’）】："
+              "四维度=A需求底盘（健康/偏弱/不成立）、B垄断与自营控盘（含头部链接/品牌/卖家集中度与VC/AMZ占比；VC/AMZ≥50%或≥2.5×阈值即属重度控盘；品牌/卖家≥阈值+15pct即重度集中）、"
+              "C评价与冷启动壁垒（含大卖占比/评论壁垒/老品占比/评分；评论≥2×阈值或大卖偏高叠加高评论即重度壁垒）、D新品窗口（新卖家占比为主信号，本土卖家占比为辅助提醒）。"
+              "1) 数据不足无法判断：有效已判定指标不足50%，或任一核心维度缺少有效判定；"
+              "2) 暂不建议进入：满足任一即归入本档——①A需求底盘不成立；②B垄断/自营控盘与C评价壁垒双双为重度（例如VC/AMZ≥50%叠加评论破万或寡头垄断叠加高壁垒）；③B或C任一为重度且D无新品窗口；"
+              "3) 可进入：A健康或仅1项次要需求指标偏弱且站内趋势达标、B与C均不超过轻度、且D不缺新品窗口；"
+              "4) 有条件进入：仅适用于中间态——需求成立、未触发双维重度封锁或‘重度+无窗口’，但B或C存在中度或单维重度压力且D有新品窗口。"
+              "原则上遵循数据中‘判定边界参考’给出的参考档位；若因指标间存在压倒性抵消确需调整一档，必须在建议中明确给出定量理由。"
+              "【输出格式与稳定篇幅硬性要求】："
+              "建议：必须严格以‘可进入：’‘有条件进入：’‘暂不建议进入：’或‘数据不足无法判断：’之一开头，紧跟一段80-140字完整判断，"
+              "依次包含：①分板块达标概览（需求端X/Y达标、竞争端A/B达标）；②决定该档位的2-4个最关键指标及实际值；③明确行动边界"
+              "（可进入→首选切入方向；有条件进入→必须同时满足的1-2个硬性前提；暂不建议进入→核心阻断因素及仅在何种极高门槛下才值得复评；数据不足→缺失关键项）。"
+              "严禁只输出孤立的结论标签（如仅写‘有条件进入’），严禁超过180字。"
+              "主要依据：严格输出2条，第1条以‘市场需求：’开头、第2条以‘竞争格局：’开头，每条90-160字；先交代本板块达标数，再综合核心达标项与不达标项的证据与矛盾点；"
+              "数据中列出的全部‘突出不达标项’必须在对应板块中逐一正面提及，严禁遗漏（尤其是VC/AMZ近似自营占比、品牌/卖家集中度、评论壁垒等）。"
+              "主要风险：仅从市场需求与竞争格局两方面按严重度从高到低输出3-5条（确实无风险时可少于3条或空数组），每条45-90字，"
+              "格式为‘风险标题：指标实际值与标准对比 + 对本土卖家进入/冷启动/BuyBox的直接影响’；全部‘突出不达标项’必须覆盖，严禁遗漏；"
+              "不将盈利能力未确认或样本覆盖不足单独列为一条风险，没有证据不编造。"
+              "待验证：输出3-5条，每条35-75字，紧扣前述核心阻断因素或放行前提，给出具体可核查对象，不写冗长操作计划或空泛套话。"
+              "输出JSON：{\"建议\":\"结论标签：...\",\"主要依据\":[\"市场需求：...\",\"竞争格局：...\"],"
               "\"主要风险\":[\"...\"],\"待验证\":[\"...\"]}；风险不足以识别时返回空数组。\n"
-              + json.dumps({"研究前提": context, "指标概况": rule_decision(rows), "指标": enriched_rows}, ensure_ascii=False, allow_nan=False))
+              + json.dumps({
+                  "研究前提": context,
+                  "指标概况": rule_decision(rows),
+                  "分板块统计": summary["分板块统计"],
+                  "四维度评估": summary["四维度评估"],
+                  "突出不达标项": summary["突出不达标项"],
+                  "判定边界参考": summary["判定边界参考"],
+                  "指标": enriched_rows,
+              }, ensure_ascii=False, allow_nan=False))
 
 
 def advice(ctx, rows):
@@ -205,16 +570,21 @@ def advice(ctx, rows):
     prompt = build_advice_prompt(ctx, rows)
     for attempt in range(2):
         try:
-            result = ctx.llm().chat_json(prompt, temperature=0.0, max_tokens=1800)
+            result = ctx.llm().chat_json(prompt, temperature=0.0, max_tokens=2200)
             if not isinstance(result, dict) or not isinstance(result.get("建议"), str) or not result["建议"].strip():
                 raise ValueError("AI 返回缺少建议")
+            advice_text = result["建议"].strip()
+            bare_check = advice_text.strip("。：:！! \t\n")
+            if bare_check in _ADVICE_TIERS:
+                prompt += "\n请重新回答：‘建议’字段严禁只输出结论标签，必须按‘结论标签：80-140字完整判断（分板块达标概览+核心指标证据+明确行动边界）’格式输出。"
+                raise ValueError("AI 建议仅含结论标签，缺少理由说明")
             if not isinstance(result.get("主要风险"), list) or not all(isinstance(x, str) for x in result["主要风险"]):
                 raise ValueError("AI 返回缺少主要风险列表或格式错误")
             content = json.dumps({key: result.get(key) for key in ("建议", "主要依据", "主要风险", "待验证")}, ensure_ascii=False)
             if any(label in content for label in ("否决", "降级")):
                 prompt += "\n请重新回答，禁止输出已停用的影响等级；仅讨论达标情况、证据和市场进入建议。"
                 raise ValueError("AI 建议包含已停用的影响等级")
-            out = [{"项目": "指标概况", "内容": decision}, {"项目": "AI建议", "内容": result["建议"].strip()}]
+            out = [{"项目": "指标概况", "内容": decision}, {"项目": "AI建议", "内容": advice_text}]
             for key in ("主要依据", "主要风险", "待验证"):
                 values = result.get(key)
                 if isinstance(values, list): out.extend({"项目": key, "内容": str(x)} for x in values if str(x).strip())

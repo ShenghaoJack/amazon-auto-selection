@@ -107,7 +107,7 @@ class Config:
         "SCREEN_REQUIREMENT": (
             "月搜索量>=3万, 站内同比>=-20%, Google同比>=-20%, CPC<3"
         ),
-        "SS_MCP_URL": "https://mcp.sellersprite.com/mcp",
+        "SS_MCP_URL": "https://mcp.sellersprite.com/v2/mcp",
         "SS_MCP_KEY": "",
         "PYTHON": "python",
         # ★ 2026-10-12 升级默认值：**15 个类目全都写了同一个非默认值**（`data/profiles/...`）

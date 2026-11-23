@@ -101,10 +101,10 @@ class Step04Keywords(BaseStep):
         llm_cache = glue.CachedCalls(directory / "_kwgen_llm_cache.json", {
             "version": "hybrid-v4-category-generic", "model": cfg.get("LLM_MODEL"),
             "endpoint_hash": hashlib.sha256(str(cfg.get("LLM_BASE_URL")).encode()).hexdigest()})
+        from core.mcp import MCPClient, normalize_ss_mcp_url
         miner_cache = glue.CachedCalls(directory / "_kwgen_mcp_cache.json", {
-            "version": "keyword_miner-v1",
-            "endpoint_hash": hashlib.sha256(str(cfg.get("SS_MCP_URL")).encode()).hexdigest()})
-        from core.mcp import MCPClient
+            "version": "keyword_miner-v2",
+            "endpoint_hash": hashlib.sha256(normalize_ss_mcp_url(str(cfg.get("SS_MCP_URL"))).encode()).hexdigest()})
         mcp = MCPClient(cfg)
         llm_client = glue.ExperimentLLM(cfg, meter=ctx.usage())
         pipeline = glue.HybridPipeline(

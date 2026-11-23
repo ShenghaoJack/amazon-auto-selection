@@ -243,7 +243,7 @@ def test_step05_saves_incrementally_and_step06_reuses_monthly_series(tmp_path, m
 
     class FakeMCP:
         def check(self):
-            return ["keyword_research_trends"]
+            return ["keyword.trend"]
 
         def keyword_trend(self, kw, tm):
             mcp_calls.append((kw, tm))

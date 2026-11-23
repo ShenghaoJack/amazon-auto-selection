@@ -199,6 +199,9 @@ class LiveMiner:
         self.client, self.cache = client, cache
 
     def query(self, request):
+        if hasattr(self.client, "keyword_miner"):
+            return self.cache.call("keyword_miner", request,
+                                   lambda: self.client.keyword_miner(request))
         return self.cache.call("keyword_miner", request,
                                lambda: self.client._call("keyword_miner", {"request": request}))
 
@@ -245,8 +248,11 @@ class WeeklyEvidence:
             # Do not put exception text in logs: SIF credentials may be in the URL.
             found, meta = {}, None
             for word in words:
-                response = self.seller._call("aba_research_trend", {"keyword": word,
-                                            "marketplace": site, "timeGranularity": "W"})
+                if hasattr(self.seller, "aba_weekly_raw"):
+                    response = self.seller.aba_weekly_raw(word, site)
+                else:
+                    response = self.seller._call("aba_research_trend", {"keyword": word,
+                                                "marketplace": site, "timeGranularity": "W"})
                 current, meta = complete_sellersprite_rows(response, word, month)
                 found.update(current)
             return found, meta
