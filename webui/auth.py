@@ -79,6 +79,9 @@ def connect():
         db.execute('CREATE INDEX IF NOT EXISTS audit_at ON audit(at)')
     except sqlite3.Error:
         pass
+    # Schema/backfill statements may open an implicit transaction. Finish the
+    # migration before callers start their own BEGIN IMMEDIATE transaction.
+    db.commit()
     try: os.chmod(DB_PATH, 0o600)
     except OSError: pass
     try:

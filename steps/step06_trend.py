@@ -12,10 +12,11 @@
 """
 from __future__ import annotations
 
+import os
 import time
 
 from core.errors import StepFailedError
-from core.io_utils import read_txt_lines, write_json
+from core.io_utils import read_json, read_txt_lines, write_json
 from core.keyword_lists import manual_first
 from core.mcp import throttle
 from core.validation import warn_missing
@@ -43,9 +44,6 @@ class Step06Trend(BaseStep):
         trend_month = ctx.config.trend_month
         out_path = ctx.resolve_artifact(self.artifacts[0])
         self.log(ctx, f"开始拉取站内月度趋势: CAT={cat} 目标月={trend_month}")
-        if not ctx.dry_run:
-            self.check_mcp_key(ctx)
-            self._cooldown_after_step5(ctx)
 
         # 关键词三态(2026-09-29): 人工清单优先 —— 趋势要与步骤9 实际搜索用同一批词。
         auto_core = self._auto_core_words(ctx, cat)
@@ -57,28 +55,79 @@ class Step06Trend(BaseStep):
             write_json(out_path, {})
             return
 
-        result = {}
+        # 2026-11-22 优化: 优先复用步骤5 已拉取的同目标月站内月度序列, 避免重复消耗 MCP 与 60s 冷却。
+        reused = self._load_step5_series(ctx, cat, trend_month)
+        missing = [kw for kw in core_words if kw not in reused]
+        reused_n = len(core_words) - len(missing)
+        if reused_n:
+            self.log(
+                ctx,
+                f"直接复用步骤5 站内月度序列 {reused_n}/{len(core_words)} 个"
+                + ("(全部命中, 跳过冷却与重复 MCP 调用)" if not missing else f", 仅补拉剩余 {len(missing)} 个"),
+            )
+
+        if missing and not ctx.dry_run:
+            self.check_mcp_key(ctx)
+            self._cooldown_after_step5(ctx)
+
+        fetched = {}
         failed = 0
-        for idx, kw in enumerate(core_words):
+        for idx, kw in enumerate(missing):
             try:
                 trend = ctx.mcp().keyword_trend(kw, trend_month)
+                actual_month = trend.get("month")
+                if actual_month and str(actual_month).replace("-", "") != str(trend_month).replace("-", ""):
+                    self.log(ctx, f"{kw}: 站内趋势目标月 {trend_month} 无数据，目标指标改用最新有数据月份 {actual_month}；月度序列保留各自月份。")
                 series = _normalize_series(trend.get("monthly_series") or [])
                 if series:
-                    result[kw] = series
+                    fetched[kw] = series
                 else:
                     failed += 1
                     self.log(ctx, f"{kw}: 月度序列为空, 跳过")
             except Exception as exc:
                 failed += 1
                 self.log(ctx, f"{kw}: 趋势获取失败: {exc}")
-            if idx < len(core_words) - 1:
+            if idx < len(missing) - 1:
                 throttle(1.0)
 
-        if failed == len(core_words) and core_words:
+        result = {}
+        for kw in core_words:
+            if kw in reused:
+                result[kw] = reused[kw]
+            elif kw in fetched:
+                result[kw] = fetched[kw]
+
+        if not result and failed == len(core_words) and core_words:
             raise StepFailedError(f"全部 {len(core_words)} 个核心大词趋势获取失败")
 
         write_json(out_path, result)
         self.log(ctx, f"月度趋势已写入: {out_path}, 词数 {len(result)}")
+
+    def _load_step5_series(self, ctx: StepContext, cat: str, trend_month: str) -> dict[str, list[dict]]:
+        """从步骤5 产物中复用同目标月的站内月度序列, 避免步骤6 重复调 keyword_trend。"""
+        step5_path = ctx.resolve_artifact(f"{cat}-amazon-keyword-data.json")
+        if not os.path.exists(step5_path):
+            return {}
+        rows = read_json(step5_path, [])
+        if not isinstance(rows, list):
+            return {}
+        want_month = str(trend_month or "").replace("-", "").strip()
+        out: dict[str, list[dict]] = {}
+        for rec in rows:
+            if not isinstance(rec, dict) or rec.get("status") == "error":
+                continue
+            kw = str(rec.get("keyword") or "").strip()
+            if not kw:
+                continue
+            req_month = str(rec.get("station_trend_requested_month") or "").replace("-", "").strip()
+            if req_month and want_month and req_month != want_month:
+                continue
+            raw_series = rec.get("station_monthly_series")
+            if isinstance(raw_series, list) and raw_series:
+                norm = _normalize_series(raw_series)
+                if norm:
+                    out[kw] = norm
+        return out
 
     def _cooldown_after_step5(self, ctx: StepContext) -> None:
         """步骤5→6 冷却: 步骤5 刚在几十秒内打完数十次 MCP 调用, 卖家精灵按分钟限流

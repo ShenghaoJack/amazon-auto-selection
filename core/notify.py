@@ -18,11 +18,15 @@ RESET = "RESET"
 RESET_MARK = "[RESET]"
 
 
-def with_context(content: str, config=None) -> str:
+def with_context(content: str, config=None, *, include_run_id: bool = False) -> str:
     """Attach actual category owner and run actor; never invent missing identities."""
     cat = str(getattr(config, 'cat', '') or os.environ.get('PIPELINE_CATEGORY_NAME') or '').strip()
     owner = str(os.environ.get('PIPELINE_CATEGORY_OWNER') or '').strip()
     actor = str(os.environ.get('PIPELINE_WORKBENCH_USER') or '').strip()
+    if include_run_id:
+        run = os.environ.get('PIPELINE_RUN_ID') or getattr(config, 'runtime_run_id', '')
+        return (f"类目：{cat or '未记录'}\n创建人：{owner or '未记录'}\n"
+                f"运行人：{actor or '未记录'}\n运行批次：{run or '未记录'}\n{content}")
     return (f"类目：{cat or '未记录'}\n创建人：{owner or '未记录'}\n"
             f"运行人：{actor or '未记录'}\n{content}")
 

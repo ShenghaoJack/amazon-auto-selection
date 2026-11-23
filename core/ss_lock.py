@@ -446,11 +446,11 @@ def find_profile_cdp_port(profile_dir):
     from .browser import _cdp_alive
     wanted = os.path.normcase(os.path.realpath(str(profile_dir)))
     matches = set()
-    for proc in psutil.process_iter(['name', 'cmdline']):
+    for proc in psutil.process_iter(['name']):
         try:
             if str(proc.info.get('name') or '').lower() not in ('chrome.exe', 'chrome', 'chromium', 'chromium.exe'):
                 continue
-            args = proc.info.get('cmdline') or []
+            args = proc.cmdline() or []
             if any(a.startswith('--type=') for a in args):
                 continue
             paths = [a.split('=', 1)[1].strip('"') for a in args if a.startswith('--user-data-dir=')]
@@ -474,6 +474,18 @@ def find_profile_cdp_port(profile_dir):
     return next(iter(matches), None)
 
 
+def _find_profile_cdp_port_ready(profile_dir, wait_seconds: float = 12.0):
+    """查询同 Profile 的活跃 Chrome 端口；若刚启动尚未绑定完端口则短暂等待就绪。"""
+    deadline = time.monotonic() + max(0.0, float(wait_seconds))
+    while True:
+        try:
+            return find_profile_cdp_port(profile_dir)
+        except RuntimeError as exc:
+            if '调试端口尚未就绪' not in str(exc) or time.monotonic() >= deadline:
+                raise
+            time.sleep(0.3)
+
+
 def pick_port(username="", exclude_ports=(), profile_dir=""):
     """分配一个空闲 CDP 端口；优先该用户上次用的。池满抛 RuntimeError。"""
     d = _ports_load()
@@ -481,7 +493,7 @@ def pick_port(username="", exclude_ports=(), profile_dir=""):
     name = str(username or "")
     reserved = {int(p) for p in exclude_ports}
     if profile_dir:
-        active = find_profile_cdp_port(profile_dir)
+        active = _find_profile_cdp_port_ready(profile_dir)
         if active is not None:
             if active in reserved:
                 raise RuntimeError('该用户 Chrome 端口已被其他用户任务占用，无法安全复用')
@@ -491,8 +503,15 @@ def pick_port(username="", exclude_ports=(), profile_dir=""):
             cand = int(users[name])
         except (TypeError, ValueError):
             cand = 0
-        if CDP_PORT_MIN <= cand <= CDP_PORT_MAX and cand not in reserved and not port_in_use(cand):
-            return cand
+        if CDP_PORT_MIN <= cand <= CDP_PORT_MAX and cand not in reserved:
+            if not port_in_use(cand):
+                return cand
+            if profile_dir:
+                active = _find_profile_cdp_port_ready(profile_dir)
+                if active is not None:
+                    if active in reserved:
+                        raise RuntimeError('该用户 Chrome 端口已被其他用户任务占用，无法安全复用')
+                    return active
     # 已被**其他用户**占用的端口不再分配（否则两个人都空闲时会拿到同一个端口）
     taken = set(reserved)
     for k, v in users.items():

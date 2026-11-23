@@ -36,9 +36,10 @@ def check_cookie(config: Config, asin: str = PROBE_ASIN) -> dict:
 
     status: ok / no_cookie / expired / bot_blocked / network / 其他状态码
     """
-    cookie = str(config.get("COOKIE", "") or "")
+    from core.amazon_login_share import resolve_cookie_header
+    cookie = resolve_cookie_header(config)
     if not cookie:
-        return {"valid": False, "status": "no_cookie", "message": "未配置 COOKIE, HTTP 直连将匿名访问"}
+        return {"valid": False, "status": "no_cookie", "message": "未配置 COOKIE 且无共享登录态, HTTP 直连将匿名访问"}
     fetcher = HttpFetcher(config, cookie=cookie)
     url = f"https://{config.market}/dp/{asin}"
     # 风控是概率性的: 单次 bot_blocked 可能是瞬时拦截, 用配置的重试次数(默认2, 2026-09-16 内化)
@@ -83,7 +84,7 @@ def _probe(config: Config, market: str, asin: str, cookie: str) -> dict:
     cfg.set("COOKIE", cookie)
     url = f"https://{market}/dp/{asin}"
     try:
-        fetcher = HttpFetcher(cfg, cookie=cookie) if cookie else HttpFetcher(cfg)
+        fetcher = HttpFetcher(cfg, cookie=cookie)
         resp = fetcher.get(url, retries=1)
         text = resp.text or ""
         return {"site": market, "with_cookie": bool(cookie), "status": resp.status_class,
@@ -121,8 +122,9 @@ def diagnose_cookie(config: Config, result: dict | None = None, *,
       - `all_sites_blocked`   : 其它站点也被拦 → 本机 IP 被大范围标记
       - `unknown`             : 探测结果无法归因(留人工判断)
     """
+    from core.amazon_login_share import resolve_cookie_header
     market = str(getattr(config, "market", "") or "")
-    cookie = str(config.get("COOKIE", "") or "")
+    cookie = resolve_cookie_header(config)
     sites = [s for s in (other_sites if other_sites is not None else DEFAULT_OTHER_SITES)
              if str(s) and str(s) != market][:2]
 

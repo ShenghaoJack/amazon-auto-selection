@@ -226,17 +226,25 @@ def parse_variations(html: str, asin: str, market: str = "") -> dict:
     parent, parent_method, parent_candidates = choose_parent(decoded, asin, variants)
 
     lowered = decoded.lower()
-    blocked = any(
+    # 2026-11-21 修复: 亚马逊 2.3KB 的 404 "Page Not Found" 页面底部 HTML 注释自带
+    # `api-services-support@amazon.com`, 若先判 blocked 再用 `if not blocked` 拦 404,
+    # 会把所有已下架 404 商品误判为风控(blocked)并在步骤10 反复重抓 4 轮。
+    # 验证码页标题不会是 Page Not Found, 因此优先判 404 终态。
+    is_page_not_found = "page not found" in title.lower()
+    blocked = (not is_page_not_found) and any(
         marker in lowered for marker in (
             "robot check", "validatecaptcha", "enter the characters you see below",
             "api-services-support@amazon.com",
         )
     )
-    status = "blocked" if blocked else "ok"
-    if not blocked and "page not found" in title.lower():
+    if is_page_not_found:
         status = "page_not_found"
-    elif not blocked and (_domain not in title.lower() and asin not in decoded):
+    elif blocked:
+        status = "blocked"
+    elif _domain not in title.lower() and asin not in decoded:
         status = "unexpected_page"
+    else:
+        status = "ok"
 
     return {
         "status": status,

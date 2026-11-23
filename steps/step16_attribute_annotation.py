@@ -25,6 +25,7 @@ import re
 # ⚠ 本文件有 `from __future__ import annotations`，注解会被当字符串不求值，
 #   所以以前"只在注解里出现"的 `Mapping` 一直没报错；一旦写进 `isinstance` 就会 NameError。
 from collections.abc import Mapping
+from concurrent.futures import ThreadPoolExecutor
 
 import pandas as pd
 
@@ -1933,16 +1934,49 @@ class Step16AttributeAnnotation(BaseStep):
         _llm_cfg = ctx.llm().config
         _old_timeout = _llm_cfg.get("LLM_TIMEOUT", 300)
         _llm_cfg.set("LLM_TIMEOUT", ATTR_EXTRACT_TIMEOUT)
+        raw_workers = ctx.config.get("STEP16_EXTRACT_WORKERS")
+        if raw_workers is not None and str(raw_workers).strip() != "":
+            extract_workers = max(1, int(raw_workers))
+        elif ctx.dry_run:
+            extract_workers = 1
+        else:
+            extract_workers = max(1, min(6, int(ctx.config.get("ATTR_STAB_WORKERS", 4) or 4)))
+
         try:
             extractions: list[list[dict]] = []
             band_attrs: dict[str, set] = {}          # 价格段标签 -> 该段出现的规范名集合(段内归并后)
-            for band_id, band_label, group in groups:
+            round_tasks = [
+                (
+                    band_idx,
+                    r,
+                    band_id,
+                    group.sample(n=min(per_round, len(group)), replace=False, random_state=1000 + r),
+                )
+                for band_idx, (band_id, _band_label, group) in enumerate(groups)
+                for r in range(n_rounds)
+            ]
+            round_results: dict[tuple[int, int], tuple[list, dict]] = {}
+            if extract_workers > 1 and len(round_tasks) > 1:
+                self.log(ctx, f"价格段抽取并发执行: {len(round_tasks)} 轮, 并发 {min(extract_workers, len(round_tasks))} 线程")
+
+                def _run_extract(task):
+                    b_idx, r_idx, _b_id, sub_df = task
+                    return (b_idx, r_idx), self._extract_attrs_retry(ctx, sub_df, round_max=_round_max)
+
+                with ThreadPoolExecutor(max_workers=min(extract_workers, len(round_tasks))) as pool:
+                    for key, res in pool.map(_run_extract, round_tasks):
+                        round_results[key] = res
+            else:
+                for band_idx, r, _band_id, sub in round_tasks:
+                    round_results[(band_idx, r)] = self._extract_attrs_retry(ctx, sub, round_max=_round_max)
+
+            band_records: list[tuple[str, str, set, dict[str, str], list[list[dict]]]] = []
+            for band_idx, (band_id, band_label, _group) in enumerate(groups):
                 band_names: set = set()
                 band_hints: dict[str, str] = {}
                 band_rounds: list[list[dict]] = []
                 for r in range(n_rounds):
-                    sub = group.sample(n=min(per_round, len(group)), replace=False, random_state=1000 + r)
-                    keys, desc = self._extract_attrs_retry(ctx, sub, round_max=_round_max)
+                    keys, desc = round_results[(band_idx, r)]
                     items = []
                     for k in keys:
                         d = str(desc.get(k, k) or k)
@@ -1953,14 +1987,29 @@ class Step16AttributeAnnotation(BaseStep):
                         band_hints[name] = combine_merge_hints(band_hints.get(name, ""), hint)
                     band_rounds.append(items)
                     self.log(ctx, "  %s 第%d/%d 轮: %d 个" % (band_id, r + 1, n_rounds, len(items)))
-                    # 冷启动的上限已在循环外「探路」定好(见上方 groups 后的探测块),
-                    # 循环内不再逐轮收敛 —— 正式 21 轮从头到尾用同一个 round_max。
-                # ★ 段内归并(2026-10-19): 把本段 3 轮里的「含/带、方式」等同义写法先归并,
-                #   减少跨段全局归并的输入与注意力稀释。
-                if len(band_names) >= 2:
-                    _bm = _merge_fn(ctx.llm(), sorted(band_names), hints=band_hints, hint_mode=_hint_mode)
-                else:
-                    _bm = {n: n for n in band_names}
+                band_records.append((band_id, band_label, band_names, band_hints, band_rounds))
+
+            # ★ 段内归并(2026-10-19; 2026-11-22 并发化): 把每段 3 轮里的同义写法先归并
+            merge_jobs = [
+                (band_idx, sorted(b_names), b_hints)
+                for band_idx, (_b_id, _b_lbl, b_names, b_hints, _b_rounds) in enumerate(band_records)
+                if len(b_names) >= 2
+            ]
+            band_merges: dict[int, dict[str, str]] = {}
+            if extract_workers > 1 and len(merge_jobs) > 1:
+                def _run_band_merge(job):
+                    b_idx, names_list, hints_map = job
+                    return b_idx, _merge_fn(ctx.llm(), names_list, hints=hints_map, hint_mode=_hint_mode)
+
+                with ThreadPoolExecutor(max_workers=min(extract_workers, len(merge_jobs))) as pool:
+                    for b_idx, merged_map in pool.map(_run_band_merge, merge_jobs):
+                        band_merges[b_idx] = merged_map
+            else:
+                for b_idx, names_list, hints_map in merge_jobs:
+                    band_merges[b_idx] = _merge_fn(ctx.llm(), names_list, hints=hints_map, hint_mode=_hint_mode)
+
+            for band_idx, (band_id, band_label, band_names, _band_hints, band_rounds) in enumerate(band_records):
+                _bm = band_merges.get(band_idx, {n: n for n in band_names})
                 for items in band_rounds:
                     for it in items:
                         it["name"] = _bm.get(str(it["name"]), str(it["name"]))

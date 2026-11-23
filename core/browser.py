@@ -198,6 +198,8 @@ def parse_cookie_header(cookie_header: str, domain: str) -> list[dict]:
     """
     cookies = []
     dot_domain = domain if domain.startswith(".") else f".{domain}"
+    # 持久 Profile 退出时会丢弃无 expires 的会话 Cookie；赋予 30 天有效期确保落盘复用
+    expires = int(time.time()) + 30 * 86400
     for pair in str(cookie_header or "").split(";"):
         pair = pair.strip()
         if "=" not in pair:
@@ -213,6 +215,7 @@ def parse_cookie_header(cookie_header: str, domain: str) -> list[dict]:
                 "value": value.strip(),
                 "domain": dot_domain,
                 "path": "/",
+                "expires": expires,
                 "secure": secure,
                 "sameSite": "Lax",
             }
@@ -252,6 +255,65 @@ def _import_playwright():
         raise BrowserError(
             "未安装 playwright, 请先执行: pip install playwright && playwright install chromium"
         ) from exc
+
+
+# ---- 2026-11-21 新版无头指纹对齐(1000+400 条隔离验证通过率 98.5%/有效商品 100%) ----
+# Playwright 默认 headless=True 走精简版 chrome-headless-shell, UA 带 HeadlessChrome 且缺真实渲染栈,
+# 连续 ~100 条即触发亚马逊 3.5KB captcha; 改用本机 Chrome `--headless=new` + 清洗 UA + 对齐站点指纹。
+_MARKET_FINGERPRINTS: tuple[tuple[str, tuple[str, str]], ...] = (
+    ("amazon.co.uk", ("en-GB", "Europe/London")),
+    ("amazon.de", ("de-DE", "Europe/Berlin")),
+    ("amazon.fr", ("fr-FR", "Europe/Paris")),
+    ("amazon.co.jp", ("ja-JP", "Asia/Tokyo")),
+    ("amazon.ca", ("en-CA", "America/Toronto")),
+    ("amazon.it", ("it-IT", "Europe/Rome")),
+    ("amazon.es", ("es-ES", "Europe/Madrid")),
+    ("amazon.com.au", ("en-AU", "Australia/Sydney")),
+    ("amazon.com", ("en-US", "America/Los_Angeles")),
+)
+_DEFAULT_VIEWPORT = {"width": 1366, "height": 768}
+_CACHED_CHROME_UA: str | None = None
+
+
+def _market_fingerprint(market: str | None) -> tuple[str, str]:
+    """按亚马逊站点返回 (locale, timezone_id), 未知站点默认美国站。"""
+    m = str(market or "").strip().lower()
+    for suffix, pair in _MARKET_FINGERPRINTS:
+        if m == suffix or m.endswith("." + suffix):
+            return pair
+    return ("en-US", "America/Los_Angeles")
+
+
+def _detect_clean_chrome_ua(pw) -> str | None:
+    """探测本机 Chrome 真实 UA 并去掉 HeadlessChrome 标识(进程内缓存一次)。"""
+    global _CACHED_CHROME_UA
+    if _CACHED_CHROME_UA:
+        return _CACHED_CHROME_UA
+    browser = None
+    try:
+        browser = pw.chromium.launch(
+            channel="chrome",
+            headless=False,
+            args=[
+                "--headless=new",
+                "--disable-blink-features=AutomationControlled",
+                "--no-sandbox",
+            ],
+        )
+        page = browser.new_page()
+        ua = str(page.evaluate("() => navigator.userAgent") or "").strip()
+        if ua:
+            _CACHED_CHROME_UA = ua.replace("HeadlessChrome/", "Chrome/")
+            return _CACHED_CHROME_UA
+    except Exception:  # noqa: BLE001 — 无本机 Chrome 或探测失败时由调用方回退
+        return None
+    finally:
+        if browser is not None:
+            try:
+                browser.close()
+            except Exception:  # noqa: BLE001
+                pass
+    return None
 
 
 class BrowserAutomation:
@@ -343,16 +405,57 @@ class BrowserAutomation:
                 else self._browser.new_context()
             )
             return self
-        self._browser = self._pw.chromium.launch_persistent_context(
-            user_data_dir=self.profile_dir,
-            headless=not self.headed,
-            accept_downloads=True,
-            downloads_path=self.downloads_path,
-            args=[
-                "--disable-blink-features=AutomationControlled",
-                "--no-sandbox",
-            ],
+        base_args = [
+            "--disable-blink-features=AutomationControlled",
+            "--no-sandbox",
+        ]
+        headless_mode = (
+            str(self.config.get("BROWSER_HEADLESS_MODE", "new") or "new").strip().lower()
+            if self.config is not None
+            else "new"
         )
+        if not self.headed and headless_mode != "legacy":
+            locale, timezone_id = _market_fingerprint(
+                getattr(self.config, "market", "") if self.config is not None else ""
+            )
+            clean_ua = _detect_clean_chrome_ua(self._pw)
+            launch_kw: dict = {
+                "user_data_dir": self.profile_dir,
+                "channel": "chrome",
+                "headless": False,
+                "viewport": dict(_DEFAULT_VIEWPORT),
+                "locale": locale,
+                "timezone_id": timezone_id,
+                "accept_downloads": True,
+                "downloads_path": self.downloads_path,
+                "args": ["--headless=new", *base_args],
+            }
+            if clean_ua:
+                launch_kw["user_agent"] = clean_ua
+            try:
+                self._browser = self._pw.chromium.launch_persistent_context(**launch_kw)
+            except Exception:  # noqa: BLE001 — 本机未装 Chrome 时回退内置 Chromium 无头
+                fallback_kw = {
+                    "user_data_dir": self.profile_dir,
+                    "headless": True,
+                    "viewport": dict(_DEFAULT_VIEWPORT),
+                    "locale": locale,
+                    "timezone_id": timezone_id,
+                    "accept_downloads": True,
+                    "downloads_path": self.downloads_path,
+                    "args": base_args,
+                }
+                if clean_ua:
+                    fallback_kw["user_agent"] = clean_ua
+                self._browser = self._pw.chromium.launch_persistent_context(**fallback_kw)
+        else:
+            self._browser = self._pw.chromium.launch_persistent_context(
+                user_data_dir=self.profile_dir,
+                headless=not self.headed,
+                accept_downloads=True,
+                downloads_path=self.downloads_path,
+                args=base_args,
+            )
         self._context = self._browser
         return self
 
@@ -520,19 +623,75 @@ class BrowserAutomation:
         except Exception as exc:
             raise BrowserError(f"CDP 设置下载目录失败: {download_dir}, {exc}")
 
+    def has_valid_amazon_auth_cookie(self, page) -> bool:
+        """检查当前浏览器上下文是否持有目标站点未过期的亚马逊认证 Cookie(at-/sess-at-)。"""
+        try:
+            import re
+            market = self.config.market.lower().lstrip('.')
+            now = time.time()
+            return any(
+                re.match(r'^(?:at-|sess-at-)', str(c.get('name') or ''))
+                and c.get('value')
+                and (float(c.get('expires', -1)) <= 0 or float(c['expires']) > now)
+                and (
+                    str(c.get('domain') or '').lstrip('.').lower() == market
+                    or str(c.get('domain') or '').lstrip('.').lower().endswith('.' + market)
+                )
+                for c in page.context.cookies()
+            )
+        except Exception:
+            return False
+
+    @staticmethod
+    def is_amazon_captcha_page(page) -> bool:
+        """当前页是否为亚马逊风控/验证码拦截页（而非 /ap/signin 掉登录页）。"""
+        try:
+            url = str(getattr(page, 'url', '') or '').lower()
+            if '/ap/signin' in url or '/ap/register' in url:
+                return False
+            html = str(page.content() or '').lower()
+            if not html:
+                return False
+            return any(
+                m in html
+                for m in ('captcha', 'robot check', 'automated access', 'verify you are human')
+            )
+        except Exception:
+            return False
+
     def check_amazon_login(self, page, navigate: bool = True) -> bool:
-        """检测亚马逊登录态: 访问首页, 存在账号菜单即为已登录。
+        """检测亚马逊登录态：账号菜单不能指向登录页，且必须有有效认证 Cookie。
 
         navigate=False 时不导航页面(用于手动登录等待, 避免打断用户输入)。
         """
         if self.dry_run:
             return True
         if navigate:
-            self.goto(page, f"https://{self.config.market}/")
+            host = self.config.market if str(self.config.market).lower().startswith("www.") else f"www.{self.config.market}"
+            target_url = f"https://{host}/"
+            last_exc = None
+            for attempt in range(3):
+                try:
+                    self.goto(page, target_url)
+                    last_exc = None
+                    break
+                except Exception as exc:
+                    last_exc = exc
+                    if attempt < 2:
+                        time.sleep(2.0 * (attempt + 1))
+            if last_exc is not None:
+                raise last_exc
             time.sleep(2)
         try:
-            page.wait_for_selector("#nav-link-accountList", timeout=8000)
-            return True
+            link = page.wait_for_selector("#nav-link-accountList", timeout=8000)
+            href = str(link.get_attribute('href') or '').lower()
+            if not href and hasattr(link, 'query_selector'):
+                # 亚马逊新版页头中 #nav-link-accountList 改为 <div> 容器，真实链接在内层 <a>
+                inner = link.query_selector('a[href]')
+                href = str(inner.get_attribute('href') or '').lower() if inner else ''
+            if not href or '/ap/signin' in href or '/ap/register' in href:
+                return False
+            return self.has_valid_amazon_auth_cookie(page)
         except Exception:
             return False
 

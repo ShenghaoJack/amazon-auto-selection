@@ -819,6 +819,7 @@
   <span class="pill" style="opacity:.9;cursor:default" title="服务端构建版本(与启动控制台一致为最新)"><span class="tiny" style="font-family:var(--mono)">build <b id="buildTag">—</b></span></span>
   <div class="spacer" style="flex:1"></div>
   <a href="/account" class="btn-sm btn-ghost" id="accountLink">账号设置</a>
+  <a href="/accounts#amzLoginPanel" class="btn-sm btn-ghost" id="amzLoginLink" hidden>亚马逊登录</a>
   <a href="/oplog" class="btn-sm btn-ghost" id="oplogLink">操作日志</a>
   <button class="btn-sm btn-ghost" id="authLogout" type="button">退出登录</button>
 </header>
@@ -1483,7 +1484,9 @@ const HIDDEN_KEYS = new Set(["CANDIDATE_LIMIT","CORE_KEYWORD_COUNT","LONGTAIL_CO
  //   · `ATTR_SPEC_MIN_RUNS` —— 由 N 推导，**故意不给输入框**（两键一体，防"只调一个"）
  "ATTR_SPEC_RUNS","ATTR_STAB_MIN_RATE","ATTR_SPEC_MIN_RUNS",
  // 在步骤16的「已排除属性」管理，不在高级配置重复显示。
- "ATTR_EXCLUDE"]);
+ "ATTR_EXCLUDE",
+ // 亚马逊登录态已由管理员在「亚马逊共享登录态管理」按站点统一维护，类目配置不再展示。
+ "AMZ_PROFILE","COOKIE"]);
 // 有**专属编辑器**的键(不参与通用表单, 也不进"其他参数"兜底组; 2026-09-11)
 //   SS_ACCOUNTS: 账号列表由 ◈ 专用编辑器维护(见 renderSsAccounts) —— 曾被通用渲染当成普通文本,
 //   保存时会把数组串成字符串写回 YAML, 必须显式排除。
@@ -1496,7 +1499,6 @@ const GROUPS = [
  {id:"业务参数(过滤/筛选/门槛)", keys:["FILTER_REQUIREMENT","SCREEN_REQUIREMENT","BATCH_FILTER","FILTER_JUDGE_TRIES","FILTER_JUDGE_FALLBACK","FILTER_JUDGE_WORKERS","LLM_TIMEOUT","GATE_MIN_QUALIFIED","GATE_NEW_SELLERS","LONGTAIL_PER_DIM","MONTHLY_SALES_MIN"]},
  {id:"卖家精灵 MCP", keys:["SS_MCP_URL"]},
  {id:"卖家精灵账号/浏览器", keys:["SS_ACCOUNT","SS_PASSWORD","SS_PROFILE","SS_QUOTA_WINDOW_START","SS_QUOTA_WINDOW_END","SS_ACTIVE_ACCOUNT","SS_FORCE_RESUBMIT"]},
- {id:"亚马逊登录态", keys:["AMZ_PROFILE","COOKIE"]},
  {id:"兜底(浏览器补抓)", keys:["FALLBACK"]},
  {id:"抓取与复核调优", keys:["REQUEST_MIN_INTERVAL","REQUEST_MAX_INTERVAL","FETCH_WORKERS","FETCH_LONG_EVERY","FETCH_LONG_MIN","FETCH_LONG_MAX","REVIEW_LIMIT","REVIEW_AUTO","REVIEW_MIN_RATE","REVIEW_POLICY","EXPORT_STATUS_WAIT","EXPORT_STATUS_INTERVAL","QUERY_WAIT_TIMEOUT","CORE_SEARCH_PAGES","LONGTAIL_SEARCH_PAGES"]},
  {id:"推送与其他", keys:["WECOM_WEBHOOK","DATA_ROOT","DRY_RUN"]}
@@ -1706,6 +1708,7 @@ async function boot() {
     $("accountLink").textContent = authUser.name + " · 账号设置";
     // 2026-11-12: 操作日志仅管理员可见 —— 非 admin 直接隐藏入口（后端也会 403）
     if (authUser.role !== "admin") { const _ol = $("oplogLink"); if (_ol) _ol.hidden = true; }
+    else { const _al = $("amzLoginLink"); if (_al) _al.hidden = false; }
     $("authLogout").onclick = async () => { try { await api("/api/auth/logout", {method:"POST", body:{}}); location.href="/login"; } catch(e) { toast(e.message, "err"); } };
     // 面板数据与启动链**并行**(2026-10-09 性能): 属性集/标准化词表/关键词清单只需要 selFile,
     // 原先它们排在 `await bootstrap`(实测 1.4~2.1s)+`await loadConfigs`(0.8~0.9s) 之后才发请求,

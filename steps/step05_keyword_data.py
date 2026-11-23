@@ -106,9 +106,21 @@ class Step05KeywordData(BaseStep):
                           f"若只人工加了几个词, 先检查人工核心词清单是不是贴多了; "
                           f"断点续挖会跳过已有词, 中断后再跑可继续")
 
+        def _merge_partial() -> list[dict]:
+            merged = []
+            for word in candidates:
+                item = existing_by_kw.get(word)
+                if item is None or item.get("status") == "error":
+                    item = new_by_kw.get(word) or item
+                if item is not None:
+                    merged.append(item)
+            return merged
+
         new_by_kw = {}
         for idx, kw in enumerate(new_words):
             new_by_kw[kw] = self._mine_one(ctx, kw, trend_month)
+            # 每完成 1 词即原子落盘, 真正支持中途中断后的断点续挖(不丢失已完成词的 MCP 配额)
+            write_json(out_path, _merge_partial())
             if idx < len(new_words) - 1:
                 throttle(1.0)
 
@@ -182,12 +194,22 @@ class Step05KeywordData(BaseStep):
             if trend.get("status") == "error":
                 errors.append(f"keyword_trend: {trend.get('error') or 'status=error'}")
             else:
+                actual_month = trend.get("month")
+                rec["station_trend_requested_month"] = trend_month
+                rec["station_trend_month"] = actual_month
+                if actual_month and str(actual_month).replace("-", "") != str(trend_month).replace("-", ""):
+                    self.log(ctx, f"  挖词[{kw}] 站内趋势目标月 {trend_month} 无数据，改用最新有数据月份 {actual_month}；月搜索量及同比等指标按该月计算。")
+                elif not actual_month:
+                    self.log(ctx, f"  挖词[{kw}] 站内趋势目标月 {trend_month} 无可用月度数据，实际月份为空。")
                 rec["monthly_search_volume"] = trend.get("search_volume")
                 rec["mom_yoy"] = trend.get("mom_yoy")
                 rec["purchase_volume"] = trend.get("purchase_volume")
                 rec["purchase_rate"] = trend.get("purchase_rate")
                 rec["mom_change"] = trend.get("mom_change")
                 rec["growth_3m"] = trend.get("growth_3m")
+                monthly_series = trend.get("monthly_series")
+                if isinstance(monthly_series, list) and monthly_series:
+                    rec["station_monthly_series"] = monthly_series
         except Exception as exc:
             errors.append(f"keyword_trend: {exc}")
         try:

@@ -265,6 +265,12 @@ def _do_login(runner: PipelineRunner, site: str) -> int:
             print("请在打开的浏览器窗口中完成亚马逊登录(账号密码/验证码)")
             input("登录完成后回到此窗口按回车确认...")
             ok = browser.check_amazon_login(page)
+            if ok:
+                try:
+                    from core import amazon_login_share
+                    amazon_login_share.save(page.context, ctx.paths.profile_root, ctx.config.market)
+                except (OSError, ValueError, TypeError) as exc:
+                    print(f"亚马逊共享登录态保存失败: {type(exc).__name__}")
             print("亚马逊登录检查:", "通过" if ok else "失败")
             return 0 if ok else 2
     else:

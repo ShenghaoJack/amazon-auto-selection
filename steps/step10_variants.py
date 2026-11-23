@@ -29,6 +29,7 @@ import random
 import re
 import threading
 import time
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from html.parser import HTMLParser
 from urllib.parse import urljoin, urlsplit, urlunsplit
@@ -1003,7 +1004,15 @@ class Step10Variants(BaseStep):
     # **仍兼容** —— 配置里写了就以配置为准(避免"删了键, 行为悄悄变")。
     _STALL_ROUNDS_DEFAULT = 1        # 直连阶段固定重试轮数(首轮之外的轮数; 原默认 3)
     _ASIN_TRIES_DEFAULT = 1          # 单轮内每 ASIN 尝试次数(原为动态: >30→2 / ≤30→4)
-    _BROWSER_ROUNDS_DEFAULT = 2      # 浏览器补抓轮数(无头)
+    # 2026-11-21: 新版无头(Chrome --headless=new + 单会话 + 原地重试)首轮解决全部后会自动跳过第 2 轮;
+    # 保留默认上限 2 轮兼容历史契约, 仅对极少数未解决残余再补 1 轮后再交有头兜底。
+    _BROWSER_ROUNDS_DEFAULT = 2      # 浏览器补抓轮数(新版无头单会话)
+    # 直连滑动窗口熔断(2026-11-21): 最近 N 条非终态直连成功率低于阈值时提前中止直连, 直接转新版无头。
+    _DIRECT_BREAKER_WINDOW_DEFAULT = 30
+    _DIRECT_BREAKER_MIN_RATE_DEFAULT = 0.40
+    # 浏览器补抓命中连续 signin(/checkpoint/continue) 窗口时的原地停等秒数(实测窗口 262-293s)
+    _BROWSER_CHECKPOINT_WAIT_DEFAULT = 295.0
+    _BROWSER_CHECKPOINT_GRACE_DEFAULT = 45.0
     # 有头兜底轮数(2026-09-29 用户要求): 无头补抓轮用尽后仍有未解决 → 开可见窗口再补 N 轮。
     # 依据(用户 2026-09-29 实测/要求): "如果无头的无效再使用有头的"; 无头 Chrome 比桌面 Chrome
     # 更容易被亚马逊识别成机器人(同一 IP/Profile 下, 桌面 Chrome 能正常打开商品页, 无头吃验证码页),
@@ -1116,6 +1125,13 @@ class Step10Variants(BaseStep):
                     self.log(ctx, f"{len(skipped)} 个终态跳过(Page Not Found/变体数越界, 永久不重试)")
                 self.log(ctx, f"全部 {len(records)} 个 ASIN 抓取完成")
                 break
+            if getattr(self, "_last_round_tripped", False):
+                self.log(
+                    ctx,
+                    f"直接请求第 {rnd} 轮触发滑动窗口熔断, 跳过剩余直连重试轮, "
+                    f"直接将 {len(failed)} 个未解决 ASIN 转新版无头浏览器补抓",
+                )
+                break
             if rnd >= max_rnd:
                 self.log(
                     ctx,
@@ -1161,6 +1177,7 @@ class Step10Variants(BaseStep):
                     if gap:
                         time.sleep(gap)
                 label = f"浏览器补抓第 {br} 轮"
+                self._active_results_path = results_path
                 try:
                     browser_recs = self._browser_fallback(ctx, leftover)
                 except Exception as exc:
@@ -1168,6 +1185,8 @@ class Step10Variants(BaseStep):
                     if br == 1:
                         break          # 连会话都起不来, 再补一轮也没意义
                     continue
+                finally:
+                    self._active_results_path = None
                 if not self._apply_browser_round(ctx, results_path, browser_recs, label):
                     break
                 self._log_round_summary(ctx, f"{label}后", results_path)
@@ -1198,11 +1217,14 @@ class Step10Variants(BaseStep):
                               f"(窗口由程序自动开关, 请勿手动关闭)")
                 if hb > 1 and gap:
                     time.sleep(gap)
+                self._active_results_path = results_path
                 try:
                     browser_recs = self._browser_fallback(ctx, leftover, headed=True)
                 except Exception as exc:
                     self.log(ctx, f"{hlabel}不可用/失败: {exc}(该轮未解决项按舍弃处理)")
                     break
+                finally:
+                    self._active_results_path = None
                 if not self._apply_browser_round(ctx, results_path, browser_recs, hlabel):
                     break
                 self._log_round_summary(ctx, f"{hlabel}后", results_path)
@@ -1245,68 +1267,391 @@ class Step10Variants(BaseStep):
                           f"(正常应为 0, 说明剪除未生效, 请检查 dedup 键)")
         return True
 
-    def _browser_fallback(self, ctx: StepContext, asins: list[str],
-                          *, headed: bool = False) -> list[dict]:
-        """残余失败 ASIN 用本机浏览器打开商品页补抓(2026-09-09 用户定稿)。
+    def _browser_fetch_one(
+        self,
+        ctx: StepContext,
+        browser,
+        page,
+        asin: str,
+        now: str,
+        *,
+        ckpt_wait: float,
+        ckpt_grace: float,
+    ) -> dict:
+        """单 ASIN 浏览器补抓(含偶发失败原地重试 + signin/checkpoint 窗口原地停等)。"""
+        urls = url_candidates(ctx.config.market, asin)
+        first_url = urls[0]
+        url_idx = 0
+        tried = 0
+        signin_streak = 0
+        window_waited = False
+        grace_waited = False
+        retried_once = False
+        evidence: dict = self._page_evidence("", first_url, page)
 
-        每 ASIN 最多尝试 `_BROWSER_MAX_TRIES`(1)次(依次换 URL 形态), 成功或**终态**
-        (Page Not Found / 变体数越界, 见 `_TERMINAL_STATUSES`)即停; 1 次仍失败 → ok=False
-        记录(舍弃该变体, 留审计, 不进候选)。返回记录列表(source='local_chrome')。
+        while True:
+            tried += 1
+            url = urls[url_idx % len(urls)]
+            try:
+                browser.goto(page, url)
+                if not ctx.dry_run:
+                    time.sleep(random.uniform(1.2, 2.2))
+                    try:
+                        page.mouse.wheel(0, random.randint(200, 600))
+                    except Exception:  # noqa: BLE001 — 模拟页/轻度滚动异常不影响取数
+                        pass
+                    time.sleep(random.uniform(1.0, 2.3))
+                text = page.content() or ""
+                evidence = self._page_evidence(text, url, page)
+                rec = self._build_ok_record(
+                    ctx, asin, text, now, first_url, evidence.get("final_url", ""), "local_chrome",
+                )
+                if rec.get("ok") or _is_terminal(rec.get("status")):
+                    return rec
+                self.log(
+                    ctx,
+                    f"浏览器补抓 {asin} 第 {tried} 次内容无效"
+                    f"({evidence.get('blocked_kind')}, {evidence.get('html_length')} 字节)",
+                )
+            except Exception as exc:
+                evidence = {
+                    "final_url": url,
+                    "html_length": 0,
+                    "page_title": "",
+                    "blocked_kind": "error",
+                    "error_detail": f"{type(exc).__name__}: {exc}"[:200],
+                }
+                self.log(ctx, f"浏览器补抓 {asin} 第 {tried} 次失败({exc})")
 
-        `headed=True`(2026-09-29): 用**可见窗口**跑这一轮 —— 无头 Chrome 更容易被亚马逊识别,
-        所以无头轮用尽后由调用方再补一轮有头(见 `_fetch_all` 的有头兜底段)。
+            if ctx.dry_run:
+                break
+
+            kind = str(evidence.get("blocked_kind") or "")
+            if kind == "signin":
+                signin_streak += 1
+                if signin_streak < 3 and not window_waited:
+                    time.sleep(6.0)
+                    continue
+                if signin_streak >= 3 and not window_waited:
+                    window_waited = True
+                    self.log(
+                        ctx,
+                        f"浏览器补抓 {asin} 连续 3 次命中 signin/checkpoint 窗口 → "
+                        f"保持会话原地等待 {ckpt_wait:.0f} 秒后重试…",
+                    )
+                    if ckpt_wait > 0:
+                        time.sleep(ckpt_wait)
+                    continue
+                if window_waited and not grace_waited:
+                    grace_waited = True
+                    self.log(
+                        ctx,
+                        f"浏览器补抓 {asin} 等待后仍为 signin → "
+                        f"额外宽限 {ckpt_grace:.0f} 秒再试 1 次…",
+                    )
+                    if ckpt_grace > 0:
+                        time.sleep(ckpt_grace)
+                    continue
+            elif kind == "captcha" and not retried_once:
+                retried_once = True
+                pause = random.uniform(12.0, 18.0)
+                self.log(ctx, f"浏览器补抓 {asin} 偶发 captcha → 冷却 {pause:.1f} 秒原地重试 1 次")
+                time.sleep(pause)
+                continue
+            elif kind in ("error", "empty", "content") and not retried_once:
+                retried_once = True
+                if kind == "content" and len(urls) > 1:
+                    url_idx = 1
+                time.sleep(8.0)
+                continue
+            break
+
+        rec = self._failed_record(asin, "failed", now)
+        rec["error"] = f"浏览器补抓 {tried} 次失败, 舍弃该变体"
+        rec["source"] = "local_chrome"
+        rec.update(evidence)        # 失败取证(2026-09-29): 让"为什么失败"可事后归因
+        return rec
+
+    def _browser_fallback(
+        self,
+        ctx: StepContext,
+        asins: list[str],
+        *,
+        headed: bool = False,
+        results_path: str | None = None,
+    ) -> list[dict]:
+        """残余失败 ASIN 用本机浏览器打开商品页补抓(2026-11-21 升级单会话 + 节奏 + 原地恢复)。
+
+        - 全程保持单会话不重启上下文(1000 条隔离实测证明中途关开上下文会主动触发
+          Amazon `/checkpoint/continue`);
+        - 随机间隔 + 轻度滚动 + 每 `FETCH_LONG_EVERY`(默认 25)条长冷却 8-15s,
+          并在每个长冷却点增量落盘(提供 `results_path` 时), 中断续跑不丢进度;
+        - 单条偶发失败/captcha 原地冷却后重试 1 次; 连续 3 次 signin 视为 5 分钟
+          checkpoint 窗口, 保持会话原地停等 `BROWSER_CHECKPOINT_WAIT`(默认 295s) 后重试;
+        - 连续 5 个 ASIN 在停等后仍为 signin → 提前中止本轮交由后续兜底。
         """
-        max_tries = self._BROWSER_MAX_TRIES
         now = self.now()
+        results_path = results_path or getattr(self, "_active_results_path", None)
         out: list[dict] = []
+        pending_flush: list[dict] = []
+        long_every = max(0, int(ctx.config.get("FETCH_LONG_EVERY", 25) or 0))
+        long_lo = float(ctx.config.get("FETCH_LONG_MIN", 8) or 8)
+        long_hi = float(ctx.config.get("FETCH_LONG_MAX", 15) or 15)
+        raw_ckpt = ctx.config.get("BROWSER_CHECKPOINT_WAIT")
+        ckpt_wait = (
+            self._BROWSER_CHECKPOINT_WAIT_DEFAULT
+            if raw_ckpt is None
+            else max(0.0, float(raw_ckpt))
+        )
+        raw_grace = ctx.config.get("BROWSER_CHECKPOINT_GRACE")
+        ckpt_grace = (
+            self._BROWSER_CHECKPOINT_GRACE_DEFAULT
+            if raw_grace is None
+            else max(0.0, float(raw_grace))
+        )
+        raw_cap_cd = ctx.config.get("BROWSER_CAPTCHA_COOLDOWNS", "45,90,180")
+        captcha_cooldowns: list[float] = []
+        if isinstance(raw_cap_cd, (list, tuple)):
+            for x in raw_cap_cd:
+                try:
+                    captcha_cooldowns.append(max(0.0, float(x)))
+                except (TypeError, ValueError):
+                    pass
+        else:
+            for part in str(raw_cap_cd or "").replace(";", ",").split(","):
+                part = part.strip()
+                if not part:
+                    continue
+                try:
+                    captcha_cooldowns.append(max(0.0, float(part)))
+                except ValueError:
+                    pass
+        if not captcha_cooldowns and str(raw_cap_cd or "").strip() not in ("0", "off", "none"):
+            captcha_cooldowns = [45.0, 90.0, 180.0]
+        raw_cap_max = ctx.config.get("BROWSER_CAPTCHA_MAX_STREAK", 6)
         try:
-            with ctx.browser("amazon", headed=headed) as browser:
-                page = browser.new_page()
-                for asin in asins:
-                    rec = None
-                    first_url = url_candidates(ctx.config.market, asin)[0]
-                    tried = 0
-                    evidence: dict = self._page_evidence("", first_url, page)
-                    for url in url_candidates(ctx.config.market, asin):
-                        if tried >= max_tries:
-                            break
-                        tried += 1
-                        try:
-                            browser.goto(page, url)
-                            time.sleep(2.0)          # 页面渲染缓冲(原生等待接口不通用)
-                            text = page.content() or ""
-                            evidence = self._page_evidence(text, url, page)
-                            rec = self._build_ok_record(
-                                ctx, asin, text, now, first_url, "", "local_chrome",
-                            )
-                            if rec.get("ok") or _is_terminal(rec.get("status")):
+            captcha_max_streak = max(0, int(raw_cap_max)) if raw_cap_max is not None and str(raw_cap_max).strip() != "" else 6
+        except (TypeError, ValueError):
+            captcha_max_streak = 6
+
+        def _flush_checkpoint() -> None:
+            if not results_path or not pending_flush:
+                return
+            keys = {str(r.get("request_asin") or "") for r in pending_flush}
+            keys.discard("")
+            if keys:
+                self._prune_failed(results_path, keys)
+                append_jsonl(results_path, pending_flush, dedup_key="request_asin")
+            pending_flush.clear()
+
+        from core.amz_crawl_lock import (
+            AmzCrawlSlot,
+            DEFAULT_WAIT_SECONDS as _AMZ_WAIT_DEFAULT,
+            DEFAULT_YIELD_PAUSE as _AMZ_YIELD_PAUSE_DEFAULT,
+            PRIORITY_NORMAL,
+            PRIORITY_SHORT,
+            resolve_ip_cooldown_seconds,
+            resolve_max_concurrent,
+            resolve_short_batch,
+            resolve_slice_size,
+            set_ip_cooldown,
+        )
+        amz_max = resolve_max_concurrent(ctx.config)
+        amz_wait = float(ctx.config.get("AMZ_CRAWL_LOCK_WAIT", _AMZ_WAIT_DEFAULT) or _AMZ_WAIT_DEFAULT)
+        slice_size = resolve_slice_size(ctx.config)
+        short_batch = resolve_short_batch(ctx.config)
+        ip_cd_sec = resolve_ip_cooldown_seconds(ctx.config)
+        raw_yp = ctx.config.get("AMZ_CRAWL_YIELD_PAUSE")
+        yield_pause = _AMZ_YIELD_PAUSE_DEFAULT if raw_yp is None else max(0.0, float(raw_yp))
+
+        consecutive_unrecovered_signin = 0
+        consecutive_captcha = 0
+        consecutive_error = 0
+        error_cooldowns = [30.0, 60.0, 120.0]
+        cursor = 0
+        aborted = False
+        try:
+            while cursor < len(asins) and not aborted:
+                rem_count = len(asins) - cursor
+                prio = PRIORITY_SHORT if (short_batch > 0 and rem_count <= short_batch) else PRIORITY_NORMAL
+                crawl_slot = AmzCrawlSlot(
+                    max_concurrent=amz_max,
+                    wait_seconds=amz_wait,
+                    label=f"{ctx.config.cat or 'pipeline'}·步骤10{'有头' if headed else '无头'}",
+                    log=lambda m: self.log(ctx, m),
+                    warn=lambda m: ctx.log.warning(f"[Step10Variants] {m}"),
+                    enabled=not ctx.dry_run,
+                    priority=prio,
+                    remaining=rem_count,
+                )
+                yielded = False
+                processed_in_slice = 0
+                with crawl_slot, ctx.browser("amazon", headed=headed) as browser:
+                    page = browser.new_page()
+                    while cursor < len(asins):
+                        idx = cursor + 1
+                        asin = asins[cursor]
+                        if (
+                            not ctx.dry_run
+                            and processed_in_slice > 0
+                            and long_every > 0
+                            and processed_in_slice % long_every == 0
+                        ):
+                            _flush_checkpoint()
+                            extra = random.uniform(long_lo, long_hi)
+                            self.log(ctx, f"浏览器补抓长间隔冷却 {extra:.1f} 秒(已处理 {idx - 1} 条)")
+                            time.sleep(extra)
+
+                        rec = self._browser_fetch_one(
+                            ctx,
+                            browser,
+                            page,
+                            asin,
+                            now,
+                            ckpt_wait=ckpt_wait,
+                            ckpt_grace=ckpt_grace,
+                        )
+                        out.append(rec)
+                        pending_flush.append(rec)
+                        cursor += 1
+                        processed_in_slice += 1
+                        self.log(
+                            ctx,
+                            f"浏览器补抓 {asin} -> {rec['status']}"
+                            + (f"[{rec.get('blocked_kind')}]" if rec.get("blocked_kind") else ""),
+                        )
+
+                        if not rec.get("ok") and rec.get("blocked_kind") == "signin":
+                            consecutive_unrecovered_signin += 1
+                            consecutive_captcha = 0
+                            consecutive_error = 0
+                            if consecutive_unrecovered_signin >= 5:
+                                self.log(
+                                    ctx,
+                                    "浏览器补抓连续 5 个 ASIN 停等后仍为 signin/checkpoint, "
+                                    f"提前结束本轮(剩余 {len(asins) - cursor} 个交由后续兜底)",
+                                )
+                                for rem_asin in asins[cursor:]:
+                                    rem_rec = self._failed_record(rem_asin, "failed", now)
+                                    rem_rec["error"] = "连续 signin 熔断跳过, 交由后续兜底"
+                                    rem_rec["source"] = "local_chrome"
+                                    rem_rec["blocked_kind"] = "signin"
+                                    out.append(rem_rec)
+                                    pending_flush.append(rem_rec)
+                                aborted = True
                                 break
-                            rec = None              # 页面可打开但内容无效 -> 算一次失败
-                            self.log(ctx, f"浏览器补抓 {asin} 第 {tried}/{max_tries} 次内容无效"
-                                          f"({evidence.get('blocked_kind')}, {evidence.get('html_length')} 字节), 换形态")
-                        except Exception as exc:
-                            rec = None
-                            evidence = {"final_url": url, "html_length": 0, "page_title": "",
-                                        "blocked_kind": "error",
-                                        "error_detail": f"{type(exc).__name__}: {exc}"[:200]}
-                            self.log(ctx, f"浏览器补抓 {asin} 第 {tried}/{max_tries} 次失败({exc}), 换形态")
-                    if rec is None:
-                        rec = self._failed_record(asin, "failed", now)
-                        rec["error"] = f"浏览器补抓 {max_tries} 次失败, 舍弃该变体"
-                        rec["source"] = "local_chrome"
-                        rec.update(evidence)        # 失败取证(2026-09-29): 让"为什么失败"可事后归因
-                    out.append(rec)
-                    self.log(ctx, f"浏览器补抓 {asin} -> {rec['status']}"
-                                  + (f"[{rec.get('blocked_kind')}]" if rec.get("blocked_kind") else ""))
+                        elif not rec.get("ok") and rec.get("blocked_kind") in ("captcha", "content"):
+                            consecutive_unrecovered_signin = 0
+                            consecutive_error = 0
+                            consecutive_captcha += 1
+                            if captcha_max_streak > 0 and consecutive_captcha >= captcha_max_streak:
+                                self.log(
+                                    ctx,
+                                    f"浏览器补抓连续 {consecutive_captcha} 个 ASIN 命中 captcha/限流, "
+                                    f"提前结束本轮让本机 IP 恢复(剩余 {len(asins) - cursor} 个交由后续兜底)",
+                                )
+                                if not ctx.dry_run and ip_cd_sec > 0:
+                                    set_ip_cooldown(
+                                        ip_cd_sec,
+                                        reason="连续captcha限流",
+                                        label=f"{ctx.config.cat or 'pipeline'}·步骤10",
+                                    )
+                                    self.log(
+                                        ctx,
+                                        f"已广播跨类目本机 IP 共享冷却 {ip_cd_sec:.0f} 秒，避免排队类目立刻续打热 IP",
+                                    )
+                                for rem_asin in asins[cursor:]:
+                                    rem_rec = self._failed_record(rem_asin, "failed", now)
+                                    rem_rec["error"] = "连续 captcha 限流熔断跳过, 交由后续兜底"
+                                    rem_rec["source"] = "local_chrome"
+                                    rem_rec["blocked_kind"] = "captcha"
+                                    out.append(rem_rec)
+                                    pending_flush.append(rem_rec)
+                                aborted = True
+                                break
+                            if not ctx.dry_run and consecutive_captcha >= 2 and captcha_cooldowns:
+                                _flush_checkpoint()
+                                step_wait = captcha_cooldowns[min(consecutive_captcha - 2, len(captcha_cooldowns) - 1)]
+                                self.log(
+                                    ctx,
+                                    f"浏览器补抓连续 {consecutive_captcha} 次命中 {rec.get('blocked_kind')} 限流 → "
+                                    f"阶梯冷却 {step_wait:.0f} 秒让本机 IP 恢复…",
+                                )
+                                if step_wait > 0:
+                                    time.sleep(step_wait)
+                                try:
+                                    host = ctx.config.market if str(ctx.config.market).lower().startswith("www.") else f"www.{ctx.config.market}"
+                                    browser.goto(page, f"https://{host}/")
+                                    time.sleep(random.uniform(1.5, 3.0))
+                                except Exception:  # noqa: BLE001 — 首页预热失败不影响后续抓取
+                                    pass
+                        elif not rec.get("ok") and rec.get("blocked_kind") == "error":
+                            # 偶发代理/网络抖动不应清零 captcha 计数，且连续网络中断需阶梯冷却并提前止损，
+                            # 避免断网 5-10 分钟内连续把几十上百个 ASIN 标成 failed[error]。
+                            consecutive_unrecovered_signin = 0
+                            consecutive_error += 1
+                            if consecutive_error >= 6:
+                                _flush_checkpoint()
+                                self.log(
+                                    ctx,
+                                    f"浏览器补抓连续 {consecutive_error} 个 ASIN 网络/连接异常, "
+                                    f"提前结束本轮保留断点(剩余 {len(asins) - cursor} 个交由后续兜底)",
+                                )
+                                for rem_asin in asins[cursor:]:
+                                    rem_rec = self._failed_record(rem_asin, "failed", now)
+                                    rem_rec["error"] = "连续网络异常熔断跳过, 交由后续兜底"
+                                    rem_rec["source"] = "local_chrome"
+                                    rem_rec["blocked_kind"] = "error"
+                                    out.append(rem_rec)
+                                    pending_flush.append(rem_rec)
+                                aborted = True
+                                break
+                            if not ctx.dry_run and consecutive_error >= 2:
+                                _flush_checkpoint()
+                                err_wait = error_cooldowns[min(consecutive_error - 2, len(error_cooldowns) - 1)]
+                                self.log(
+                                    ctx,
+                                    f"浏览器补抓连续 {consecutive_error} 次网络异常 → 阶梯冷却 {err_wait:.0f} 秒等待网络恢复…",
+                                )
+                                time.sleep(err_wait)
+                        else:
+                            consecutive_unrecovered_signin = 0
+                            consecutive_captcha = 0
+                            consecutive_error = 0
+
+                        if (
+                            not ctx.dry_run
+                            and slice_size > 0
+                            and processed_in_slice >= slice_size
+                            and cursor < len(asins)
+                            and crawl_slot.has_waiters()
+                        ):
+                            _flush_checkpoint()
+                            waiters = crawl_slot.waiters_summary() or "其他类目任务"
+                            self.log(
+                                ctx,
+                                f"浏览器补抓已满单次时间片({processed_in_slice} 条)，检测到排队任务[{waiters}] → "
+                                f"主动落盘并让出槽位轮转(本轮累计 {cursor}/{len(asins)}，剩余 {len(asins) - cursor} 条稍后继续)",
+                            )
+                            yielded = True
+                            break
+                if yielded and yield_pause > 0:
+                    time.sleep(yield_pause)
         except Exception as exc:
             self.log(ctx, f"浏览器补抓会话失败: {exc}")
+            done_asins = {str(r.get("request_asin") or "") for r in out}
             for asin in asins:
+                if asin in done_asins:
+                    continue
                 rec = self._failed_record(asin, "failed", now)
                 rec["error"] = f"浏览器会话失败: {exc}"
                 rec["source"] = "local_chrome"
                 rec["blocked_kind"] = "session_error"
                 rec["error_detail"] = f"{type(exc).__name__}: {exc}"[:200]
                 out.append(rec)
+                pending_flush.append(rec)
+        finally:
+            _flush_checkpoint()
         return out
 
     @staticmethod
@@ -1320,21 +1665,13 @@ class Step10Variants(BaseStep):
         取证字段(写进失败记录, 与成功记录的字段同名同义):
           `final_url`(最终 URL, 优先浏览器自报) / `html_length`(HTML 字节数) /
           `page_title`(页面 `<title>`) / `blocked_kind`
-          (`captcha` 验证码页 / `signin` 登录页 / `empty` 空白页 / `content` 有内容但不符合商品页门槛 /
-           `error` 打开就抛异常)。
+          (`page_not_found` 404 下架页 / `captcha` 验证码页 / `signin` 登录或 checkpoint 页 /
+           `empty` 空白页 / `content` 有内容但不符合商品页门槛 / `error` 打开就抛异常)。
         ⚠️ 页面标题**只写 `page_title` 这个取证字段**, 绝不写进 `title`(那是"商品标题"业务字段) ——
         免得验证码页的 "Amazon.com" 被下游当成商品名。
         """
         text = text or ""
         low = text.lower()
-        if any(m in low for m in ("captcha", "robot check", "automated access", "verify you are human")):
-            kind = "captcha"
-        elif "ap/signin" in low or "signin" in low:
-            kind = "signin"
-        elif not text.strip():
-            kind = "empty"
-        else:
-            kind = "content"
         m = re.search(r"<title[^>]*>(.*?)</title>", text, re.I | re.S)
         title = re.sub(r"\s+", " ", m.group(1)).strip()[:200] if m else ""
         final_url = str(url or "")
@@ -1343,15 +1680,29 @@ class Step10Variants(BaseStep):
                 final_url = str(page.url)
         except Exception:                              # noqa: BLE001 — 取证失败不影响主流程
             pass
+        if "page not found" in title.lower():
+            kind = "page_not_found"
+        elif any(m in low for m in ("captcha", "robot check", "automated access", "verify you are human")):
+            kind = "captcha"
+        elif "ap/signin" in low or "signin" in low or "/checkpoint/continue" in final_url.lower():
+            kind = "signin"
+        elif not text.strip():
+            kind = "empty"
+        else:
+            kind = "content"
         return {"final_url": final_url, "html_length": len(text),
                 "page_title": title, "blocked_kind": kind}
 
     def _fetch_round(self, ctx: StepContext, asins: list[str], results_path: str) -> list[dict]:
-        """单轮并发抓取(2026-09-08 对齐 skill: 按剩余量动态并发 + 动态尝试次数)。
+        """单轮并发抓取(2026-09-08 对齐 skill; 2026-11-21 新增滑动窗口熔断)。
 
         终态跳过(ok / `_TERMINAL_STATUSES`: Page Not Found / 变体数越界)断点续爬不重抓;
         其余失败剪除旧行后重抓(允许成功覆盖); 写入用锁保护。
+        当 `FALLBACK != off` 且非 dry-run 时, 最近 `DIRECT_BREAKER_WINDOW`(默认 30)条
+        非终态直连成功率低于 `DIRECT_BREAKER_MIN_RATE`(默认 0.40) 即熔断本轮,
+        剩余 ASIN 记为失败交由新版无头浏览器接管。
         """
+        self._last_round_tripped = False
         existing = read_jsonl(results_path)
         done = {
             r.get("request_asin") for r in existing
@@ -1376,43 +1727,118 @@ class Step10Variants(BaseStep):
                                                             self._ASIN_TRIES_DEFAULT))
         lo = ctx.config.get("REQUEST_MIN_INTERVAL", 1.5)
         hi = ctx.config.get("REQUEST_MAX_INTERVAL", 3.0)
+        raw_win = ctx.config.get("DIRECT_BREAKER_WINDOW", self._DIRECT_BREAKER_WINDOW_DEFAULT)
+        breaker_window = (
+            max(0, int(raw_win))
+            if raw_win is not None
+            else self._DIRECT_BREAKER_WINDOW_DEFAULT
+        )
+        raw_rate = ctx.config.get("DIRECT_BREAKER_MIN_RATE", self._DIRECT_BREAKER_MIN_RATE_DEFAULT)
+        breaker_min_rate = (
+            max(0.0, min(1.0, float(raw_rate)))
+            if raw_rate is not None
+            else self._DIRECT_BREAKER_MIN_RATE_DEFAULT
+        )
+        breaker_on = (
+            (not ctx.dry_run)
+            and (self._fallback_mode(ctx) != "off")
+            and (breaker_window > 0)
+        )
         self.log(
             ctx,
             f"待抓 {len(pending)} 个 ASIN, 并发 {workers} 线程(动态), "
-            f"每 ASIN 尝试 {attempts} 次, 每线程独立 {lo}-{hi} 秒间隔",
+            f"每 ASIN 尝试 {attempts} 次, 每线程独立 {lo}-{hi} 秒间隔"
+            + (
+                f", 直连熔断=开(窗口 {breaker_window} 条, 门槛 {breaker_min_rate:.0%})"
+                if breaker_on
+                else ""
+            ),
         )
         lock = threading.Lock()
         long_every = max(0, int(ctx.config.get("FETCH_LONG_EVERY", 25) or 0))
         long_lo = float(ctx.config.get("FETCH_LONG_MIN", 8) or 8)
         long_hi = float(ctx.config.get("FETCH_LONG_MAX", 15) or 15)
         local = threading.local()
+        http_clients: list[HttpFetcher] = []
+        recent: deque[bool] = deque(maxlen=max(1, breaker_window))
+        tripped = threading.Event()
+        skipped_by_breaker: list[str] = []
+
+        def _thread_http() -> HttpFetcher:
+            client = getattr(local, "http", None)
+            if client is None:
+                client = HttpFetcher(
+                    ctx.config,
+                    cookie=str(ctx.config.get("COOKIE", "") or "") or None,
+                )
+                local.http = client
+                with lock:
+                    http_clients.append(client)
+            return client
 
         def work(asin: str) -> None:
+            if tripped.is_set():
+                with lock:
+                    skipped_by_breaker.append(asin)
+                return
             # 每线程计数, 每 long_every 条加一次长间隔(对齐实测稳定方案: 每25条 +8-15秒)
             count = getattr(local, "n", 0)
             if long_every > 0 and count > 0 and count % long_every == 0:
                 extra = random.uniform(long_lo, long_hi)
                 self.log(ctx, f"长间隔冷却 {extra:.1f} 秒(已抓 {count} 条)")
                 time.sleep(extra)
+                if tripped.is_set():
+                    with lock:
+                        skipped_by_breaker.append(asin)
+                    return
             local.n = count + 1
-            http = HttpFetcher(
-                ctx.config,
-                cookie=str(ctx.config.get("COOKIE", "") or "") or None,
-            )
+            http = _thread_http()
             try:
                 rec = self._fetch_one(ctx, http, asin, attempts=attempts)
             except Exception as exc:
                 rec = self._failed_record(asin, f"exception:{type(exc).__name__}", self.now())
+            trip_msg = ""
             with lock:
                 append_jsonl(results_path, [rec], dedup_key="request_asin")
+                if breaker_on and not _is_terminal(rec.get("status")) and not tripped.is_set():
+                    recent.append(bool(rec.get("ok")))
+                    if len(recent) >= breaker_window:
+                        ok_in_win = sum(1 for x in recent if x)
+                        rate = ok_in_win / len(recent)
+                        if rate < breaker_min_rate:
+                            tripped.set()
+                            self._last_round_tripped = True
+                            trip_msg = (
+                                f"直连触发滑动窗口熔断: 最近 {len(recent)} 条仅成功 "
+                                f"{ok_in_win} 条({rate:.0%}<{breaker_min_rate:.0%}), "
+                                f"提前中止本轮剩余 ASIN, 直接转新版无头浏览器补抓"
+                            )
             self.log(ctx, f"已抓取 {asin} ok={rec['ok']} status={rec['status']}")
+            if trip_msg:
+                self.log(ctx, trip_msg)
 
-        if workers <= 1 or len(pending) <= 1:
-            for asin in pending:
-                work(asin)
-        else:
-            with ThreadPoolExecutor(max_workers=workers) as executor:
-                list(executor.map(work, pending))
+        try:
+            if workers <= 1 or len(pending) <= 1:
+                for asin in pending:
+                    work(asin)
+            else:
+                with ThreadPoolExecutor(max_workers=workers) as executor:
+                    list(executor.map(work, pending))
+        finally:
+            for client in http_clients:
+                client.close()
+        if skipped_by_breaker:
+            now = self.now()
+            breaker_recs = []
+            for a in skipped_by_breaker:
+                r = self._failed_record(a, "failed", now)
+                r["error"] = "直连熔断跳过, 转浏览器补抓"
+                breaker_recs.append(r)
+            append_jsonl(results_path, breaker_recs, dedup_key="request_asin")
+            self.log(
+                ctx,
+                f"直连熔断跳过剩余 {len(skipped_by_breaker)} 个 ASIN(已记入台账交由浏览器补抓)",
+            )
         return read_jsonl(results_path)
 
     def _prune_failed(self, path: str, keys: set) -> None:

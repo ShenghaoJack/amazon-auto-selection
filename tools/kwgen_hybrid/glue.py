@@ -69,7 +69,7 @@ def site_code(value):
 
 def resolve_site(raw, cat):
     declared = [site_code(raw.get(field)) for field in ("MARKET", "SITE") if raw.get(field)]
-    suffix = re.search(r"-([A-Za-z]{2})-\d{6}$", cat)
+    suffix = re.search(r"-([A-Za-z]{2})-\d{6}(?:\d{2})?(?:-RECENT30)?$", cat, flags=re.I)
     if suffix:
         declared.append(site_code(suffix[1]))
     if not declared or len(set(declared)) != 1:

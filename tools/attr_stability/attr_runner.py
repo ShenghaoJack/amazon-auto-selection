@@ -174,7 +174,7 @@ def fill_missing_sources(rows, input_rows, known):
         from .unknowns import is_unknown
     except ImportError:
         from unknowns import is_unknown
-    fields = ("标题", "五点描述", "详细参数", "SKU")
+    fields = ("标题", "亮点", "五点描述", "详细参数", "SKU")
     filled, review = 0, []
     for rid, row in rows.items():
         attrs = row.get("attributes") if isinstance(row, Mapping) else None
@@ -187,7 +187,7 @@ def fill_missing_sources(rows, input_rows, known):
                     or str(attrs.get(name + "_来源") or "").strip()):
                 continue
             basis = str(attrs.get(name + "_依据") or "").strip()
-            match = re.match(r"^(标题|五点描述|详细参数|SKU)\s*[：:]\s*", basis, re.I)
+            match = re.match(r"^(标题|亮点|五点描述|详细参数|SKU)\s*[：:]\s*", basis, re.I)
             claimed = match.group(1) if match else ""
             quote = basis[match.end():].strip() if match else basis
             # 忽略空白和大小写，不拆句、不采用模糊或短词匹配。
@@ -443,9 +443,9 @@ class CallableProducer(Producer):
                     proposed = returned.get(name)
                     proposed = str(proposed).strip() if proposed is not None else ""
                     evidence = str(returned.get(basis) or "").strip()
-                    excerpt = re.sub(r"^(?:标题|五点描述|详细参数|SKU)\s*[：:]\s*", "", evidence, flags=re.I).strip()
+                    excerpt = re.sub(r"^(?:标题|亮点|五点描述|详细参数|SKU)\s*[：:]\s*", "", evidence, flags=re.I).strip()
                     supported = len(excerpt) >= 4 and any(excerpt.casefold() in str(original.get(f) or "").casefold()
-                                                          for f in ("标题", "五点描述", "详细参数", "SKU"))
+                                                          for f in ("标题", "亮点", "五点描述", "详细参数", "SKU"))
                     if proposed and (proposed in ("未明确", "未知", "待确认") or supported):
                         added[name] = "未明确" if proposed in ("未知", "待确认") else proposed
                         added[name + "_来源"] = str(returned.get(name + "_来源") or "")
@@ -461,8 +461,8 @@ class CallableProducer(Producer):
                 # only if the model repeats that judgement and quotes the input.
                 added.pop(basis, None)
                 evidence = str(returned.get(basis) or "").strip()
-                excerpt = re.sub(r"^(?:标题|五点描述|详细参数|SKU|图片OCR)\s*[：:]\s*", "", evidence, flags=re.I).strip()
-                fields = ("标题", "五点描述", "详细参数", "SKU")
+                excerpt = re.sub(r"^(?:标题|亮点|五点描述|详细参数|SKU|图片OCR)\s*[：:]\s*", "", evidence, flags=re.I).strip()
+                fields = ("标题", "亮点", "五点描述", "详细参数", "SKU")
                 supported = bool(excerpt) and any(excerpt.casefold() in str(original.get(f) or "").casefold() for f in fields)
                 if returned.get(name) == at[name] and supported:
                     added[basis] = evidence
@@ -535,7 +535,7 @@ class CallableProducer(Producer):
                 "不要只输出出错的那几个；",
                 "2. **删掉**上面列出的未定义键（如 `尺寸_拆列` → 改成写 `尺寸` 本身）；",
                 "3. 词表外的值按「典型取值」改写成受控值；确无受控值的，保留原文并确保键名正确；",
-                "4. `_来源` 只能是 标题/五点描述/详细参数/SKU/图片OCR/图片视觉 之一或空串；",
+                "4. `_来源` 只能是 标题/亮点/五点描述/详细参数/SKU/图片OCR/图片视觉 之一或空串；",
                 "5. `_依据` 必须是原文摘录，**不能为空**。", "",
                 "## 输入（本次要修复的行）", "",
                 "```json",
@@ -1130,6 +1130,7 @@ def _ensure_source_basis_keys(rows, rules, log=None) -> int:
 # `_来源` 常见别名 → 合法来源名（2026-10-27 用户口径：确定性归一，不重喂 LLM）
 _SOURCE_ALIASES = {
     "标题": "标题", "title": "标题", "商品标题": "标题",
+    "亮点": "亮点", "标题亮点": "亮点", "标题下亮点": "亮点",
     "五点描述": "五点描述", "五点": "五点描述", "要点": "五点描述",
     "bullet": "五点描述", "bullets": "五点描述", "五点图": "五点描述",
     "详细参数": "详细参数", "参数": "详细参数", "详情": "详细参数",

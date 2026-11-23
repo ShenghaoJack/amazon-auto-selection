@@ -209,7 +209,7 @@ REPAIR_CORE = """你是亚马逊砧板类目(Cutting Boards)的属性审校员�
            "尺寸规格": "<值>", "尺寸规格_原文": "<照抄>"}]}
 """
 
-REPAIR_FIELDS = ("标题", "五点描述", "SKU", "详细参数", "商品尺寸", "商品尺寸（单位换算）")
+REPAIR_FIELDS = ("标题", "亮点", "五点描述", "SKU", "详细参数", "商品尺寸", "商品尺寸（单位换算）")
 
 
 def build_repair_prompt(batch: Sequence[Mapping[str, Any]], max_chars: int = 1300) -> str:

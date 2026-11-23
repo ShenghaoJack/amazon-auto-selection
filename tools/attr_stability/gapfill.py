@@ -43,7 +43,7 @@ __all__ = ["GapPlan", "find_gaps", "build_gap_fill_prompt", "build_block_gap_pro
 # 为什么要写进提示词：此前只在类目配置里有 `evidence_priority`，
 # 但提示词从未引用它 —— 等于"声明了优先级却没执行"，模型只是被要求"写出依据"，
 # 不同来源冲突时取哪个全凭模型自己决定。
-SOURCE_PRIORITY = ['标题', '五点描述', '详细参数', '图片OCR', '图片视觉', 'SKU']
+SOURCE_PRIORITY = ['标题', '亮点', '五点描述', '详细参数', '图片OCR', '图片视觉', 'SKU']
 _PRIORITY_BLOCK = """\
 【证据来源优先级 —— 多个来源冲突时按此顺序取值】
 
@@ -272,7 +272,7 @@ def build_gap_fill_prompt(
     *,
     notes: Optional[Mapping[str, Mapping[str, str]]] = None,
     base_prompt: str = GAP_FILL_CORE,
-    evidence_cols: Sequence[str] = ('标题', '五点描述', 'SKU', '详细参数',
+    evidence_cols: Sequence[str] = ('标题', '亮点', '五点描述', 'SKU', '详细参数',
                                     '商品尺寸', '商品重量_换算'),
     image_urls: Optional[Sequence[str]] = None,
     original_values: Optional[Mapping[str, Any]] = None,
@@ -329,7 +329,7 @@ def build_block_gap_prompt(
     *,
     notes: Optional[Mapping[str, Mapping[str, str]]] = None,
     base_prompt: str = GAP_FILL_CORE,
-    evidence_cols: Sequence[str] = ('标题', '五点描述', 'SKU', '详细参数',
+    evidence_cols: Sequence[str] = ('标题', '亮点', '五点描述', 'SKU', '详细参数',
                                     '商品尺寸', '商品重量_换算'),
     max_chars: int = 2600,
 ) -> str:
@@ -437,7 +437,7 @@ def build_vision_prompt(
     values_by_attr: Optional[Mapping[str, Sequence[str]]] = None,
     base_prompt: str = GAP_FILL_CORE,
     n_images: int = 0,
-    evidence_cols: Sequence[str] = ('标题', '五点描述', 'SKU', '详细参数',
+    evidence_cols: Sequence[str] = ('标题', '亮点', '五点描述', 'SKU', '详细参数',
                                     '商品尺寸', '商品重量（单位换算）'),
     max_chars: int = 1500,
 ) -> str:
@@ -477,7 +477,7 @@ def build_vision_prompt(
         '```',
         '',
         '每个待补属性输出两样：`追问.<属性>` = 补出的值(判不出填 未明确)、',
-        '`来源.<属性>` = 依据来源(标题/五点描述/详细参数/图片OCR/图片视觉)。',
+        '`来源.<属性>` = 依据来源(标题/亮点/五点描述/详细参数/图片OCR/图片视觉)。',
     ]
     return '\n'.join(out)
 

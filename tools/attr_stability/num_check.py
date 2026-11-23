@@ -51,7 +51,7 @@ CHECK_NO_EVIDENCE = "原文无对应数值(疑似上游误判)"
 _NUM_RE = re.compile(r"[-+]?\d+(?:\.\d+)?")
 _MAG_FACTOR = 100.0        # 与中位数差 ≥100 倍视为量级离群（跨 2 个数量级）
 _EV_TOL = 0.05             # 与原文数值的一致性容差（5%）
-_EV_COLS = ("标题", "五点描述", "详细参数", "SKU")
+_EV_COLS = ("标题", "亮点", "五点描述", "详细参数", "SKU")
 
 
 def _nums(text: str) -> list[float]:

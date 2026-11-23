@@ -11,7 +11,7 @@ from typing import Mapping
 from .attr_stability import _key_of
 from .spec_io import write_json_atomic
 
-FIELDS = ("标题", "五点描述", "详细参数", "SKU")
+FIELDS = ("标题", "亮点", "五点描述", "详细参数", "SKU")
 UNKNOWN = {"未明确", "未知", "待确认"}
 
 
@@ -25,7 +25,7 @@ def _accepted(cell, source_row):
         return None
     if val in UNKNOWN:
         return {"value": "未明确", "source": "", "basis": basis}
-    match = re.match(r"^(标题|五点描述|详细参数|SKU)\s*[：:]\s*", basis, re.I)
+    match = re.match(r"^(标题|亮点|五点描述|详细参数|SKU)\s*[：:]\s*", basis, re.I)
     quote = basis[match.end():].strip() if match else basis
     norm = lambda s: re.sub(r"\s+", " ", str(s or "")).strip().casefold()
     needle = norm(quote)

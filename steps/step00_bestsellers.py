@@ -625,10 +625,13 @@ class Step00Bestsellers(BaseStep):
         if self._check_amazon(ctx):
             self.log(ctx, "亚马逊登录态有效")
             return
+        if not self._may_manage_amazon_login():
+            from core.errors import WaitingForHuman
+            raise WaitingForHuman("亚马逊共享登录态无效或已过期，请联系管理员重新登录该站点后续跑")
         cookie = str(ctx.config.get("COOKIE", "") or "").strip()
         if cookie:
             self.log(ctx, "Profile 无有效会话, 尝试用配置 COOKIE 导入浏览器")
-            if self._inject_amazon_cookie(ctx, cookie) and self._check_amazon(ctx):
+            if self._inject_amazon_cookie(ctx, cookie) and self._check_amazon(ctx, publish=True):
                 self.log(ctx, "COOKIE 导入成功, 登录态有效")
                 return
             self.log(ctx, "COOKIE 导入后仍无有效登录态(Cookie 可能已过期)")
@@ -649,11 +652,42 @@ class Step00Bestsellers(BaseStep):
             finally:
                 self._close_page(page)
 
-    def _check_amazon(self, ctx: StepContext) -> bool:
+    @staticmethod
+    def _may_manage_amazon_login() -> bool:
+        # Workbench jobs receive their role from the authenticated server.
+        # A missing role on a workbench job fails closed; local CLI is separate.
+        return not os.environ.get('PIPELINE_WORKBENCH_USER') or os.environ.get('PIPELINE_WORKBENCH_ROLE', '').strip().lower() == 'admin'
+
+    def _check_amazon(self, ctx: StepContext, publish: bool = False) -> bool:
+        allow_cap = bool(getattr(self, "_allow_captcha_passthrough", False))
         with ctx.browser("amazon") as browser:
             page = browser.new_page()
             try:
-                return bool(browser.check_amazon_login(page))
+                from core import amazon_login_share
+                if browser.check_amazon_login(page):
+                    if self._may_manage_amazon_login():
+                        try:
+                            amazon_login_share.save(page.context, ctx.paths.profile_root, ctx.config.market, replace=publish)
+                        except (OSError, ValueError, TypeError) as exc:
+                            self.log(ctx, f"亚马逊共享登录态保存失败: {type(exc).__name__}")
+                    return True
+                is_cap = getattr(browser, "is_amazon_captcha_page", None)
+                has_auth = getattr(browser, "has_valid_amazon_auth_cookie", None)
+                if allow_cap and callable(is_cap) and callable(has_auth) and is_cap(page) and has_auth(page):
+                    self.log(ctx, "亚马逊首页预检命中无头验证码(非掉登录；Profile 持有有效认证 Cookie)，放行交由步骤兜底链处理")
+                    return True
+                try:
+                    restored = amazon_login_share.restore(page.context, ctx.paths.profile_root, ctx.config.market)
+                except (OSError, ValueError, TypeError) as exc:
+                    self.log(ctx, f"亚马逊共享登录态读取失败: {type(exc).__name__}")
+                    restored = False
+                if restored and browser.check_amazon_login(page):
+                    self.log(ctx, "已验证并复用本亚马逊站点的共享登录态")
+                    return True
+                if allow_cap and restored and callable(is_cap) and callable(has_auth) and is_cap(page) and has_auth(page):
+                    self.log(ctx, "已恢复共享认证 Cookie，首页预检命中无头验证码(非掉登录)，放行交由步骤兜底链处理")
+                    return True
+                return False
             finally:
                 self._close_page(page)
 
@@ -723,6 +757,11 @@ class Step00Bestsellers(BaseStep):
                     time.sleep(3)
                     if site == "amazon":
                         if browser.check_amazon_login(page, navigate=False):
+                            try:
+                                from core import amazon_login_share
+                                amazon_login_share.save(page.context, ctx.paths.profile_root, ctx.config.market)
+                            except (OSError, ValueError, TypeError) as exc:
+                                self.log(ctx, f"亚马逊共享登录态保存失败: {type(exc).__name__}")
                             return True
                     else:
                         if browser.check_sellersprite_login(page, navigate=False):

@@ -321,6 +321,7 @@ class PipelineRunner:
             from steps.step00_bestsellers import Step00Bestsellers
             s0 = Step00Bestsellers()
             if need_amazon:
+                s0._allow_captcha_passthrough = bool(need_cookie and todo.issubset(COOKIE_STEPS))
                 s0.ensure_amazon_login(self.ctx)
             if need_ss:
                 self.log.info("开始检查卖家精灵浏览器和登录态")
@@ -498,6 +499,9 @@ class PipelineRunner:
                 # 步骤 0 自己完成两站登录检查；其余步骤只在实际执行前检查自身依赖。
                 # 避免步骤 11 的卖家精灵问题阻断与之无关的步骤 9/10。
                 if num != 0 and not self._precheck_step_login(num):
+                    if getattr(self, '_login_waiting_for_admin', False):
+                        self._log_run_summary(f"步骤 {num:02d} 等待管理员重新登录亚马逊")
+                        return 3
                     self._log_run_summary(f"步骤 {num:02d} 执行前登录检查失败")
                     return 2
                 code = self._run_one(step)
@@ -675,6 +679,12 @@ class PipelineRunner:
                 sent = notify.push_wecom(self.config.get('WECOM_WEBHOOK', ''), notify.with_context(msg, self.config))
                 if not sent:
                     self.log.warning('企业微信提醒未发送成功：机器人未配置、网络异常或企业微信返回错误')
+            elif num in (8, 15, 16, 18):
+                confirm_msg = (
+                    f"步骤 {num:02d} {step.title} 等待人工确认: "
+                    f"{exc}(耗时 {self._step_duration_text(num)})"
+                )
+                self._push_manual_confirmation_wecom(confirm_msg)
             self._log_step_usage(num, "WAITING")
             return 3
         except Exception as exc:
@@ -703,7 +713,8 @@ class PipelineRunner:
                 self.log.error("无法创建关键词确认停点，步骤 8 未完成: %s", exc)
                 return 2
         self.state.mark_done(num)
-        self.log.info(f"步骤 {num:02d} 完成(DONE)(耗时 {self._step_duration_text(num)})")
+        dur_text = self._step_duration_text(num)
+        self.log.info(f"步骤 {num:02d} 完成(DONE)(耗时 {dur_text})")
         if num == 13 and not self.config.dry_run:
             try:
                 from core.ss_auto_close import request_close
@@ -714,13 +725,92 @@ class PipelineRunner:
         self._sync_after_step(step)
         if num == 8 and not getattr(self, "_refreshing_keywords", False):
             self.log.info("⏸ 步骤 8 已完成，请核对关键词清单并确认后继续。")
+        confirm_msg = self._manual_confirmation_message(step, dur_text)
+        if confirm_msg:
+            self._push_manual_confirmation_wecom(confirm_msg)
         return 0
+
+    def _manual_confirmation_message(self, step: BaseStep, dur_text: str) -> str | None:
+        """步骤完成后若进入人工确认停点(步骤8/15/16/18), 返回待推送正文; 否则返回 None。"""
+        num = step.number
+        root = Path(self.paths.cat_root)
+        if num == 8:
+            if getattr(self, "_refreshing_keywords", False):
+                return None
+            if self._keyword_confirmation_pending():
+                return (
+                    f"步骤 {num:02d} {step.title} 等待人工确认: "
+                    f"请核对并确认关键词清单后继续。(耗时 {dur_text})"
+                )
+            return None
+        if num == 15:
+            try:
+                from core.step15_review import pending as report_pending
+                is_pending = bool(report_pending(root))
+            except Exception:
+                is_pending = True
+            if is_pending:
+                return (
+                    f"步骤 {num:02d} {step.title} 等待人工确认: "
+                    f"请查看步骤15选品指标及AI建议，确认后继续。(耗时 {dur_text})"
+                )
+            return None
+        if num == 16:
+            try:
+                from core.manual_gates import _load
+                from tools.attr_stability.catalog import resolve_spec_path
+                spec = resolve_spec_path(root.parent, root.name)
+                confirmed = _load(spec).get("status") == "confirmed"
+            except Exception:
+                confirmed = False
+            if not confirmed:
+                return (
+                    f"步骤 {num:02d} {step.title} 等待人工确认: "
+                    f"请核对并确认步骤16属性集后继续。(耗时 {dur_text})"
+                )
+            return None
+        if num == 17:
+            try:
+                from core.manual_gates import _export_confirmed
+                from tools.attr_stability.catalog import resolve_spec_path
+                spec = resolve_spec_path(root.parent, root.name)
+                confirmed = bool(_export_confirmed(root, spec))
+            except Exception:
+                confirmed = False
+            if not confirmed:
+                return (
+                    f"步骤 18 标准化 等待人工确认: "
+                    f"步骤 {num:02d} {step.title}已完成，请确认当前标准化结果并导出交付后继续。(耗时 {dur_text})"
+                )
+            return None
+        return None
+
+    def _push_manual_confirmation_wecom(self, msg: str) -> bool:
+        """向企业微信机器人推送人工确认提醒(失败/未配置不阻断流程)。"""
+        webhook = str(self.config.get("WECOM_WEBHOOK", "") or "").strip()
+        if not webhook:
+            return False
+        try:
+            payload = notify.with_context(msg, self.config, include_run_id=False)
+        except TypeError:
+            payload = notify.with_context(msg, self.config)
+        sent = notify.push_wecom(webhook, payload)
+        if sent:
+            self.log.info(f"已推送企业微信人工确认提醒: {msg}")
+        else:
+            self.log.warning("企业微信人工确认提醒未发送成功：网络异常或企业微信返回错误")
+        return sent
 
     def _precheck_step_login(self, num: int) -> bool:
         """检查单步依赖；失败时保留步骤状态并将原因写入持久日志。"""
+        self._login_waiting_for_admin = False
         try:
             self._precheck_login([num])
             return True
+        except WaitingForHuman as exc:
+            self._login_waiting_for_admin = True
+            self.log.info("步骤 %02d 等待人工处理: %s", num, exc)
+            return False
         except Exception as exc:
             msg = (f"步骤 {num:02d} 执行前登录检查失败: "
                    f"{type(exc).__name__}: {exc}；该步骤尚未开始，请处理后续跑")
@@ -889,6 +979,9 @@ class PipelineRunner:
         # MCP 接口步骤(5/6)不弹浏览器也不读 COOKIE, 由 _precheck_login 依赖表直接跳过;
         # 步骤 0/1/9/10 查亚马逊, 0/11/12/13 查卖家精灵, 1/10 另查 COOKIE
         if not self._precheck_step_login(num):
+            if getattr(self, '_login_waiting_for_admin', False):
+                self._log_run_summary(f"步骤 {num:02d} 等待管理员重新登录亚马逊")
+                return 3
             self._log_run_summary(f"步骤 {num:02d} 执行前登录检查失败")
             return 2
         if not getattr(self, "_snapshot", None):

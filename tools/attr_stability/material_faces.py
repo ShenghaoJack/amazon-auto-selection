@@ -140,7 +140,7 @@ def build_two_face_prompt(row: Mapping[str, Any], declared_value: Any, dual_decl
         out += ["", "## 随附图片", "",
                 "共 %d 张，均为**本行商品**的图片（主图在前，其后是 A+ 图文）。" % n_images]
     ev = []
-    for col in ("标题", "五点描述", "SKU", "详细参数"):
+    for col in ("标题", "亮点", "五点描述", "SKU", "详细参数"):
         v = row.get(col)
         if not v:
             continue

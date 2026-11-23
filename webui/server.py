@@ -724,7 +724,18 @@ OP_ACTIONS = {
     "/api/std-vocab/reannotate": "词表重判",
     "/api/std-vocab/prompts": "查看词表提示词",
     "/api/std-vocab/rollback": "词表回滚",
+    "/api/admin/amazon-login/start": "管理员启动亚马逊共享登录",
+    "/api/admin/amazon-login/cancel": "管理员取消亚马逊登录等待",
 }
+_AMZ_LOGIN_MANAGER = None
+
+
+def _amz_login_manager():
+    global _AMZ_LOGIN_MANAGER
+    if _AMZ_LOGIN_MANAGER is None:
+        from core.amazon_login_manager import AmazonLoginManager
+        _AMZ_LOGIN_MANAGER = AmazonLoginManager(PROJECT_ROOT)
+    return _AMZ_LOGIN_MANAGER
 # 步骤18 是 `/api/std-workspace/<action>`，按后缀映射
 STD_ACTIONS = {
     "preview": "步骤18 预览",
@@ -3007,9 +3018,9 @@ class Handler(BaseHTTPRequestHandler):
             if not csrf.isascii() or len(csrf) > 128 or not hmac.compare_digest(csrf, user["csrf"]):
                 self._json({"ok": False, "error": "会话验证失败，请刷新页面"}, 403); return None
         if (path == "/accounts" or path == "/api/auth/audit" or path in ("/oplog", "/api/oplog")
-                or path.startswith("/api/auth/users")) and user["role"] != "admin":
-            # 2026-11-12: 操作日志只给管理员看（含日志页面本身）
-            self._json({"ok": False, "error": "仅管理员可查看操作日志/管理账号"}, 403); return None
+                or path.startswith("/api/auth/users") or path.startswith("/api/admin/")) and user["role"] != "admin":
+            # 2026-11-12: 操作日志与管理员接口只给管理员看
+            self._json({"ok": False, "error": "仅管理员可执行此操作"}, 403); return None
         if user["role"] == "viewer":
             if not post and path in ("/", "/index.html"):
                 self._redirect("/readonly"); return None
@@ -3640,6 +3651,8 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/api/auth/users":
                 from webui import auth
                 self._json({"ok": True, "users": auth.list_users()})
+            elif path == "/api/admin/amazon-login":
+                self._json(_amz_login_manager().status())
             elif path in ("/api/auth/audit", "/api/oplog"):
                 # ★ 2026-11-12: 操作日志 —— admin 看全部；其他账号只能看自己的
                 from webui import auth
@@ -3878,6 +3891,21 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(self._api_std_vocab_prompts(self._read_body()))
             elif path == "/api/std-vocab/rollback":
                 self._json(self._api_std_vocab_rollback(self._read_body()))
+            elif path == "/api/admin/amazon-login/start":
+                body = self._read_body()
+                actor = str((getattr(self, "_user", None) or {}).get("name") or "admin")
+                try:
+                    res = _amz_login_manager().start_login(
+                        market=str(body.get("market") or "amazon.com"),
+                        wait_seconds=body.get("wait_seconds"),
+                        actor=actor,
+                        cookie=str(body.get("cookie") or ""),
+                    )
+                except RuntimeError as exc:
+                    raise UserFacingError(str(exc)) from exc
+                self._json(res)
+            elif path == "/api/admin/amazon-login/cancel":
+                self._json(_amz_login_manager().cancel_login())
             else:
                 self._json({"ok": False, "error": f"未知接口: {path}"}, 404)
         except Forbidden as exc:
@@ -4031,6 +4059,8 @@ class Handler(BaseHTTPRequestHandler):
         for key, value in (("SS_ACCOUNT", account), ("SS_PASSWORD", password)):
             out_lines = [line for line in out_lines if not re.match(rf"^{key}:", line)]
             out_lines.append(f"{key}: {json.dumps(value, ensure_ascii=False)}")
+        # 亚马逊登录态由管理员统一按站点发布共享态，新建类目不再复制旧类目的 AMZ_PROFILE / COOKIE
+        out_lines = [line for line in out_lines if not re.match(r"^(?:AMZ_PROFILE|COOKIE):", line)]
         target.parent.mkdir(parents=True, exist_ok=True)
         try:
             with target.open("x", encoding="utf-8", newline="\n") as fh:
@@ -6224,7 +6254,8 @@ class Handler(BaseHTTPRequestHandler):
         # A closed report dialog is not confirmation. Reject before starting a
         # process or allocating a browser; permit rerunning step 15 to repair a
         # missing/old report and permit earlier steps to run independently.
-        if mode not in ("confirm_keywords",):
+        target_after = mode == "resume" or (mode == "step" and int(body.get("step", 0)) > 15) or (mode == "from" and int(body.get("from_step", 0)) > 15)
+        if target_after:
             from core.step15_review import pending as report_pending
             gate_cfg = self._status_cfg(file)
             gate_cat = str(gate_cfg.get("CAT") or "").strip()
@@ -6233,8 +6264,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._require_run(gate_cat)
                 _, parsed = _hist_status_snapshot(monitor_dir(gate_cat, gate_root))
                 status15 = str(parsed.get(15, {}).get("status") or "PENDING")
-                target_after = mode == "resume" or (mode == "step" and int(body.get("step", 0)) > 15) or (mode == "from" and int(body.get("from_step", 0)) > 15)
-                if target_after and status15 == "DONE" and report_pending(cat_root_dir(gate_cat, gate_root)):
+                if status15 == "DONE" and report_pending(cat_root_dir(gate_cat, gate_root)):
                     raise UserFacingError("步骤15选品报告尚未确认，请打开报告并点击‘确认报告并继续’；如报告无法读取，请先单独重新运行步骤15")
 
         # 本次显式覆盖 > 类目配置 > 自动分配。旧逻辑只看 overrides，
@@ -6376,6 +6406,7 @@ class Handler(BaseHTTPRequestHandler):
                             extra_env={"PIPELINE_CONFIG_SOURCE": str(percat),
                                        "PIPELINE_CATEGORY_NAME": str(eff["CAT"]),
                                        "PIPELINE_CATEGORY_OWNER": _category_owner,
+                                       "PIPELINE_WORKBENCH_ROLE": str((getattr(self, "_user", None) or {}).get("role") or ""),
                                        "PIPELINE_WORKBENCH_USER": str((getattr(self, "_user", None) or {}).get("name") or "")},
                             user=str((getattr(self, "_user", None) or {}).get("name") or ""))
         info.pop("effective_conf", None)

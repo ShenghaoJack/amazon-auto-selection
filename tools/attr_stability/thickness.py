@@ -84,7 +84,7 @@ RE_LIMIT = re.compile(r'(?:no\s+more\s+than|up\s+to|max(?:imum)?|at\s+least|min(
 TEXT_LLM_NAME = "厚度-文本复核.json"
 TEXT_LLM_CKPT = "厚度-文本复核.checkpoint.json"
 # 交给文本模型的字段(与视觉同一套原文, 但**只让它读文字**)
-TEXT_LLM_FIELDS = ("标题", "五点描述", "SKU", "详细参数", "商品尺寸", "商品尺寸（单位换算）")
+TEXT_LLM_FIELDS = ("标题", "亮点", "五点描述", "SKU", "详细参数", "商品尺寸", "商品尺寸（单位换算）")
 THICK_TEXT_CORE = """你是亚马逊砧板类目(Cutting Boards)的数据校对员。
 下面每行是一件砧板商品的**文字资料**。请只依据文字, 回答这一行**单块板体**的厚度。
 
@@ -161,7 +161,7 @@ RE_DIM_TOKEN = re.compile(
 RE_NUM_UNIT = re.compile(r'(' + _NUM + r')\s*(' + _CM + r')', re.I)
 RE_NUM_UNIT_OPT = re.compile(r'(' + _NUM + r')\s*(' + _CM + r')?', re.I)
 
-EXPLICIT_FIELDS = ("标题", "五点描述", "SKU", "详细参数")
+EXPLICIT_FIELDS = ("标题", "亮点", "五点描述", "SKU", "详细参数")
 DIM_FIELDS = ("商品尺寸（单位换算）", "商品尺寸", "包装尺寸（单位换算）")
 
 # 物理合理区间(单块板体厚度): 0.03cm(0.3mm 软垫) ~ 15cm(6in 厚砧板)
@@ -445,7 +445,7 @@ def build_thickness_prompt(row: Mapping[str, Any], *, n_images: int = 0, notes: 
         out += ["", "## 随附图片", "",
                 "共 %d 张，均为**本行商品**的图片（主图在前，其后是 A+ 图文）。" % n_images]
     ev = []
-    for col in ("标题", "五点描述", "SKU", "商品尺寸", "商品重量（单位换算）"):
+    for col in ("标题", "亮点", "五点描述", "SKU", "商品尺寸", "商品重量（单位换算）"):
         v = row.get(col)
         if not v:
             continue

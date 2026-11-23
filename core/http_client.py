@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import random
+import re
 import time
 from dataclasses import dataclass, field
 
@@ -52,6 +53,30 @@ class HttpFetcher:
         self.cookie = cookie
         self._last_request_at = 0.0
         self._mock = MockHttp() if config.dry_run else None
+        self._session = None
+
+    def _get_session(self):
+        if self._session is None:
+            self._session = cffi_requests.Session(impersonate="chrome")
+        return self._session
+
+    def _reset_session(self) -> None:
+        sess = self._session
+        self._session = None
+        if sess is not None:
+            try:
+                sess.close()
+            except Exception:  # noqa: BLE001
+                pass
+
+    def close(self) -> None:
+        self._reset_session()
+
+    def __del__(self):
+        try:
+            self._reset_session()
+        except Exception:  # noqa: BLE001
+            pass
 
     def _headers(self) -> dict:
         headers = {
@@ -60,7 +85,11 @@ class HttpFetcher:
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             "Accept-Encoding": "gzip, deflate",
         }
-        cookie = self.cookie or self.config.get("COOKIE", "")
+        if self.cookie is not None:
+            cookie = self.cookie
+        else:
+            from core.amazon_login_share import resolve_cookie_header
+            cookie = resolve_cookie_header(self.config)
         if cookie:
             headers["Cookie"] = cookie
         return headers
@@ -88,23 +117,27 @@ class HttpFetcher:
         for attempt in range(retries):
             self._throttle()
             try:
-                with cffi_requests.Session(impersonate="chrome") as client:
-                    resp = client.get(
-                        url,
-                        headers=self._headers(),
-                        timeout=float(self.config.get("HTTP_TIMEOUT", 30)),
-                        allow_redirects=True,
-                    )
+                client = self._get_session()
+                resp = client.get(
+                    url,
+                    headers=self._headers(),
+                    timeout=float(self.config.get("HTTP_TIMEOUT", 30)),
+                    allow_redirects=True,
+                )
                 last = HttpResponse(resp.status_code, resp.text, str(resp.url))
                 last.status_class = classify_failure(resp.status_code, resp.text)
                 if last.status_class == "ok":
                     last.ok = True
                     return last
+                if last.status_class == "not_found":
+                    return last
             except OSError as exc:
-                # curl_cffi RequestsError/CurlError 均为 OSError 子类
+                # curl_cffi RequestsError/CurlError 均为 OSError 子类; 连接异常时重建 Session
+                self._reset_session()
                 last = HttpResponse(0, str(exc), url)
                 last.status_class = "http_0"
             except Exception as exc:  # 其他意外异常(页面解析/构造)同样降级
+                self._reset_session()
                 last = HttpResponse(0, str(exc), url)
                 last.status_class = "http_0"
             if attempt < retries - 1:
@@ -127,13 +160,24 @@ class HttpFetcher:
         return ProductPage(asin, True, "ok", title=title, bullets=bullets, fetched_at=now)
 
 
+def _is_not_found_title(text: str) -> bool:
+    m = re.search(r"<title[^>]*>(.*?)</title>", text or "", re.I | re.S)
+    if not m:
+        return False
+    title = re.sub(r"\s+", " ", m.group(1)).strip().lower()
+    return any(k in title for k in ("page not found", "page introuvable", "seite nicht gefunden"))
+
+
 def classify_failure(status: int, text: str) -> str:
     """FR-01 失败状态分类。
 
     真实商品页优先: 含 productTitle 的页面即使偶含错误提示短语
     (如"something went wrong"链接文案)也判定为 ok, 避免误判 blocked_page。
+    200 状态的 404 下架页(含 Page Not Found 标题与底部 automated access 注释)优先判 not_found。
     """
     if status == 200:
+        if _is_not_found_title(text):
+            return "not_found"
         if is_bot_page(text):
             return "bot_blocked"
         low = text.lower()

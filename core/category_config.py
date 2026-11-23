@@ -309,7 +309,7 @@ def pick_top_volume_candidates(rows, limit: int = NON_US_QUALIFIED_TOP) -> list[
 def cat_region_token(cat: str) -> str:
     """取类目名末尾的站点/地区码(先剥掉 `-YYYYMM`/`-v2` 后缀), 无则返回 ""。"""
     c = re.sub(r"-RECENT30$", "", str(cat or "").strip(), flags=re.I)
-    c = re.sub(r"-(?:20\d{4}|v\d{1,4})$", "", c, flags=re.I)
+    c = re.sub(r"-(?:20\d{4}(?:\d{2})?|v\d{1,4})$", "", c, flags=re.I)
     m = re.search(r"-([A-Za-z]{2,3})$", c)
     tok = m.group(1).lower() if m else ""
     return tok if tok in REGION_PROFILE else ""

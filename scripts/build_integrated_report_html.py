@@ -420,6 +420,12 @@ def _kw_dual_rank(src: Sources, phrases: list) -> dict:
                     _norm_phrase(" ".join([str(ev.get("title") or "")] + [str(b) for b in (ev.get("bullets") or [])])),
                 )
                 fetched += 1
+    missing_details = [asin for asin in union if not any(details.get(asin, ("", "")))]
+    if missing_details:
+        return {"available": False,
+                "reason": "FR-01 榜单详情不完整：%d/%d 个唯一 ASIN 缺少标题和五点，无法可靠计算词组支持与覆盖率"
+                          % (len(missing_details), len(union)),
+                "rows": [], "counts": []}
     both = bs_set & nr_set
     counts = [
         ["双榜原始出现次数(BS+NR)", len(bs) + len(nr), "保留全部榜单出现(每榜按 ASIN 计 1 次)"],

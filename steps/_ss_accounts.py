@@ -142,6 +142,19 @@ def _server_identity_verified(page, account: str, allow_bound_alias: bool = Fals
         return None
 
 
+def _log_verified_account(browser, account: str) -> None:
+    """Report the verified account and actual browser endpoint, never secrets."""
+    import logging
+    name = re.sub(r'[\r\n\t]+', ' ', str(account or '').strip())[:160]
+    try:
+        endpoint = urlparse(str(getattr(browser, 'cdp_url', '') or ''))
+        port = str(endpoint.port) if endpoint.port else ''
+        where = f'CDP端口={port}' if port else '独立浏览器（无CDP端口）'
+    except ValueError:
+        where = '浏览器端口无法识别'
+    logging.getLogger('pipeline').info('卖家精灵身份核验通过: 账号=%s；%s', name, where)
+
+
 def login_as_account(browser, page, acct: dict) -> None:
     """Replace the SellerSprite session in the leased profile, then log in explicitly.
 
@@ -161,6 +174,7 @@ def login_as_account(browser, page, acct: dict) -> None:
         BrowserAutomation.mark_login_verified(browser.profile_dir)
         import logging
         logging.getLogger('pipeline').info('已向卖家精灵核验当前账号会话，直接复用')
+        _log_verified_account(browser, account)
         return page
     if verification is None:
         raise BrowserError('卖家精灵会话暂时无法核验，已保留现有登录态，请检查网络后续跑')
@@ -204,6 +218,7 @@ def login_as_account(browser, page, acct: dict) -> None:
             if _server_identity_verified(page, account, True) is True:
                 _remember_session(browser, page, account)
                 BrowserAutomation.mark_login_verified(browser.profile_dir)
+                _log_verified_account(browser, account)
                 return page
             raise BrowserError('无法提交卖家精灵登录表单，请检查登录页或验证码')
         deadline = time.monotonic() + 60
@@ -213,6 +228,7 @@ def login_as_account(browser, page, acct: dict) -> None:
             if _server_identity_verified(page, account, True):
                 _remember_session(browser, page, account)
                 BrowserAutomation.mark_login_verified(browser.profile_dir)
+                _log_verified_account(browser, account)
                 # The login redirect can remain stuck even though the platform
                 # has confirmed the session; replace only our own stalled tab.
                 try:
@@ -227,6 +243,7 @@ def login_as_account(browser, page, acct: dict) -> None:
                 if _authenticated_sellersprite_body(body) and _server_identity_verified(page, account, True):
                     _remember_session(browser, page, account)
                     BrowserAutomation.mark_login_verified(browser.profile_dir)
+                    _log_verified_account(browser, account)
                     return page
             except Exception:
                 pass
@@ -248,6 +265,7 @@ def login_as_account(browser, page, acct: dict) -> None:
                             and _server_identity_verified(probe, account, True)):
                         _remember_session(browser, probe, account)
                         BrowserAutomation.mark_login_verified(browser.profile_dir)
+                        _log_verified_account(browser, account)
                         recovered = True
                         return probe
                 except Exception:
