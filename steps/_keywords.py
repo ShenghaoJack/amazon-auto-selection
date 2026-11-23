@@ -217,3 +217,325 @@ def crawl_words(report: dict, base: str, reject=None,
             if picked >= max(1, per_dim):
                 break
     return out
+
+
+def load_verified_longtail_csv(csv_path) -> list[dict]:
+    """读取 <CAT>-kwgen-candidates.csv 中已验证(is_longtail=True, relation=same_product)的长尾词。"""
+    import csv
+    from pathlib import Path
+
+    out: list[dict] = []
+    if not csv_path:
+        return out
+    p = Path(csv_path)
+    if not p.is_file():
+        return out
+    try:
+        with p.open(encoding="utf-8-sig", newline="") as fh:
+            for row in csv.DictReader(fh):
+                dim = str(row.get("dimension") or "").strip()
+                word = str(row.get("keyword") or "").strip()
+                is_lt = str(row.get("is_longtail") or "").strip().lower() in ("true", "1")
+                if not (dim and word and is_lt and row.get("relation") == "same_product"):
+                    continue
+                try:
+                    vol = float(str(row.get("searches") or 0).replace(",", "") or 0.0)
+                except (TypeError, ValueError):
+                    vol = 0.0
+                out.append({"dimension": dim, "keyword": word, "searches": vol})
+    except Exception:  # noqa: BLE001
+        return []
+    return out
+
+
+_REL_STOP_WORDS = {
+    "for", "with", "and", "of", "the", "a", "an", "to", "in", "on", "by", "at",
+    "from", "or", "as", "is", "are", "be", "best", "new", "cheap", "sale",
+    "clearance", "deals", "deal", "top", "rated", "review", "reviews", "kit",
+    "2023", "2024", "2025", "2026", "2027",
+}
+
+
+def _stem_token(tok: str) -> str:
+    t = str(tok or "").strip().lower()
+    if len(t) <= 2 or t in _REL_STOP_WORDS:
+        return ""
+    if len(t) > 4 and t.endswith("ies"):
+        return t[:-3] + "y"
+    if len(t) > 3 and t.endswith("s") and not t.endswith(("ss", "us", "is")):
+        return t[:-1]
+    return t
+
+
+def _content_tokens(phrase: str) -> set[str]:
+    raw = re.findall(r"[^\W_]+", str(phrase or "").lower(), re.UNICODE)
+    out = {_stem_token(t) for t in raw}
+    out.discard("")
+    return out
+
+
+def select_verified_first_longtails(
+    report: dict | None,
+    base: str,
+    qualified_core: list[str] | None = None,
+    verified_rows: list[dict] | None = None,
+    auto_tail: list[str] | None = None,
+    core_candidates: list[str] | set[str] | None = None,
+    auto_core: list[str] | set[str] | None = None,
+    reject=None,
+    limit: int = 5,
+) -> list[tuple[str, str, str]]:
+    """方案A(全选已验证优先 + 核心词增删动态关联): 返回最多 limit 条 [(维度, 来源说明, 抓取词)]。
+
+    优先级与核心词关联规则:
+      0. 核心词相关性过滤与加权:
+         - 若用户删除了部分核心词，凡命中「被删核心词独有细分词根」(如删掉 espresso machine 后的 espresso)
+           或仅匹配被删核心词而不匹配当前保留核心词的长尾词，一律自动排除;
+         - 若用户新增了核心词，优先提权匹配新增核心词的已验证长尾词;
+         - 所有入选长尾词必须与当前生效核心词(`qualified_core`)具备词根相关性。
+      1. 五维已验证长尾词: 按 场景/人群/功能/属性/痛点 顺序，每维优先选 1 条与当前核心词相关的已验证长尾词;
+      2. 已验证长尾词跨维补齐: 若不足 limit 条，从剩余与当前核心词相关的已验证长尾词(含 `其他 · 已验证`)
+         按「新增核心词关联度 > 核心词匹配度 > 真实搜索量」降序补齐至 limit 条;
+      3. 新增核心词专属兜底 & 未验证实体组词兜底:
+         - 若用户手动新增了核心词且已验证池中无任何词覆盖该新增核心词，自动用该新增核心词组装 1 条五维实体长尾词;
+         - 若已验证相关长尾词总数不足 limit 条，回退使用当前核心词基座 `crawl_words(report, base)` 补齐。
+    """
+    report = report or {}
+    max_items = max(1, int(limit or 5))
+    active_cores: list[str] = []
+    for w in (qualified_core or []):
+        s = str(w or "").strip().lower()
+        if s and s not in active_cores:
+            active_cores.append(s)
+    if not active_cores and base:
+        b_clean = str(base).strip().lower()
+        if b_clean:
+            active_cores.append(b_clean)
+    active_set = set(active_cores)
+
+    excluded: set[str] = {
+        str(w).strip().lower()
+        for w in list(qualified_core or []) + list(core_candidates or [])
+        if str(w).strip()
+    }
+    seen: set[str] = set(excluded)
+
+    # 计算活跃核心词词根、被删核心词词根、共享类目词根及新增核心词
+    active_toks_map: dict[str, set[str]] = {c: _content_tokens(c) for c in active_cores}
+    all_active_toks: set[str] = set().union(*active_toks_map.values()) if active_toks_map else set()
+
+    ref_pool: list[str] = []
+    for w in list(core_candidates or []) + list(auto_core or []) + active_cores:
+        s = str(w or "").strip().lower()
+        if s and s not in ref_pool:
+            ref_pool.append(s)
+
+    tok_doc_freq: dict[str, int] = {}
+    for c in ref_pool:
+        for t in _content_tokens(c):
+            tok_doc_freq[t] = tok_doc_freq.get(t, 0) + 1
+    if len(ref_pool) >= 4:
+        shared_threshold = max(2, int(len(ref_pool) * 0.35))
+    else:
+        shared_threshold = 2 if len(ref_pool) >= 2 else 1
+    shared_root_toks: set[str] = {
+        t for t, freq in tok_doc_freq.items() if freq >= shared_threshold
+    }
+
+    removed_cores = [c for c in ref_pool if c not in active_set]
+    removed_toks_map: dict[str, set[str]] = {c: _content_tokens(c) for c in removed_cores}
+    removed_only_toks: set[str] = (
+        (set().union(*removed_toks_map.values()) if removed_toks_map else set()) - all_active_toks
+    )
+    forbidden_subtype_toks: set[str] = removed_only_toks - shared_root_toks
+
+    baseline_set: set[str] = {
+        str(w).strip().lower()
+        for w in (auto_core if auto_core is not None else (core_candidates or []))
+        if str(w).strip()
+    }
+    added_cores: list[str] = [c for c in active_cores if baseline_set and c not in baseline_set]
+    added_set = set(added_cores)
+
+    def _core_relevance(word: str) -> tuple[bool, int, str]:
+        """判断长尾词是否与当前核心词相关且不命中被删核心词，返回 (是否可用, 关联分, 匹配的核心词)。"""
+        if not active_cores:
+            return True, 1, ""
+        w_toks = _content_tokens(word)
+        if not w_toks:
+            return False, 0, ""
+        # 1) 命中被删核心词的独有细分词根(如删掉 espresso machine 后的 espresso) -> 直接排除
+        if w_toks & forbidden_subtype_toks:
+            return False, 0, ""
+        # 2) 命中被删核心词的共享词根(如删掉 coffee machine 仅留 coffee maker 后的 machine)，
+        #    除非该长尾词同时完整包含某条当前保留核心词的全部词根，否则排除
+        if (w_toks & removed_only_toks) and not any(
+            c_toks and c_toks <= w_toks for c_toks in active_toks_map.values()
+        ):
+            return False, 0, ""
+        # 3) 必须与至少一条当前生效核心词正相关
+        best_score = 0
+        matched_core = ""
+        for c in active_cores:
+            c_toks = active_toks_map.get(c) or set()
+            if not c_toks:
+                continue
+            c_sub = c_toks - shared_root_toks
+            bonus = 2 if c in added_set else 0
+            score = 0
+            if c_toks <= w_toks:
+                score = 3 + bonus
+            elif c_sub:
+                if c_sub <= w_toks and len(w_toks & c_toks) >= max(1, len(c_toks) - 1):
+                    score = 2 + bonus
+            else:
+                head_tok = max(c_toks, key=len)
+                if head_tok in w_toks and len(w_toks & c_toks) >= max(1, len(c_toks) - 1):
+                    score = 1 + bonus
+            if score > best_score:
+                best_score = score
+                matched_core = c
+        return (best_score > 0), best_score, matched_core
+
+    def _can_pick(word: str) -> bool:
+        w = str(word or "").strip()
+        if not w:
+            return False
+        wl = w.lower()
+        if wl in seen:
+            return False
+        if reject is not None and reject(w):
+            return False
+        ok, _, _ = _core_relevance(w)
+        return ok
+
+    vol_map: dict[str, float] = {}
+    for r in verified_rows or []:
+        kw = str(r.get("keyword") or "").strip().lower()
+        if kw:
+            try:
+                vol_map[kw] = max(vol_map.get(kw, 0.0), float(r.get("searches") or 0.0))
+            except (TypeError, ValueError):
+                pass
+
+    # 构建各维度已验证词表(台账 `[维度.长尾词]` 优先，再合并 CSV 同维度已验证长尾词)
+    dim_verified: dict[str, list[str]] = {d: [] for d in DIM_RULES}
+    for d in DIM_RULES:
+        for w in (report.get(d) or {}).get("longtails") or []:
+            ws = str(w or "").strip()
+            if ws and ws.lower() not in {x.lower() for x in dim_verified[d]}:
+                dim_verified[d].append(ws)
+    for r in verified_rows or []:
+        d = str(r.get("dimension") or "").strip()
+        ws = str(r.get("keyword") or "").strip()
+        if d in dim_verified and ws and ws.lower() not in {x.lower() for x in dim_verified[d]}:
+            dim_verified[d].append(ws)
+
+    picked: list[tuple[str, str, str]] = []
+
+    # ① 第一优先级: 五维已验证长尾词，每维按(核心词关联分, 搜索量)降序先取 1 条
+    for d in DIM_RULES:
+        candidates_in_dim: list[tuple[int, float, int, str]] = []
+        for idx_w, w in enumerate(dim_verified.get(d, [])):
+            if _can_pick(w):
+                _, rel_score, _ = _core_relevance(w)
+                candidates_in_dim.append((rel_score, vol_map.get(w.lower(), 0.0), idx_w, w))
+        if candidates_in_dim:
+            candidates_in_dim.sort(key=lambda item: (-item[0], -item[1], item[2]))
+            _, _, _, best_w = candidates_in_dim[0]
+            vol = int(vol_map.get(best_w.lower(), 0))
+            src = f"已验证长尾词[{d}]" + (f" 月搜={vol}" if vol > 0 else "")
+            picked.append((d, src, best_w))
+            seen.add(best_w.lower())
+        if len(picked) >= max_items:
+            break
+
+    # ② 第二优先级: 剩余全部已验证长尾词(含 `其他 · 已验证` 及各维剩余已验证词)按(关联分, 搜索量)降序补齐
+    pool_candidates: list[tuple[int, float, int, str, str]] = []
+    pool_seen: set[str] = set()
+    idx = 0
+    for r in verified_rows or []:
+        d = str(r.get("dimension") or "").strip() or "其他"
+        w = str(r.get("keyword") or "").strip()
+        wl = w.lower()
+        if w and wl not in pool_seen and _can_pick(w):
+            pool_seen.add(wl)
+            _, rel_score, _ = _core_relevance(w)
+            pool_candidates.append((rel_score, vol_map.get(wl, 0.0), idx, d, w))
+            idx += 1
+    for d in DIM_RULES:
+        for w in dim_verified.get(d, []):
+            wl = w.lower()
+            if w and wl not in pool_seen and _can_pick(w):
+                pool_seen.add(wl)
+                _, rel_score, _ = _core_relevance(w)
+                pool_candidates.append((rel_score, vol_map.get(wl, -1.0), idx, d, w))
+                idx += 1
+    for w in auto_tail or []:
+        ws = str(w or "").strip()
+        wl = ws.lower()
+        if ws and wl not in pool_seen and _can_pick(ws):
+            pool_seen.add(wl)
+            _, rel_score, _ = _core_relevance(ws)
+            pool_candidates.append((rel_score, vol_map.get(wl, -2.0), idx, "已验证", ws))
+            idx += 1
+
+    pool_candidates.sort(key=lambda item: (-item[0], -item[1], item[2]))
+    for _, vol, _, d, w in pool_candidates:
+        if len(picked) >= max_items:
+            break
+        if _can_pick(w):
+            v_int = int(vol) if vol > 0 else 0
+            src = f"已验证长尾词补位[{d}]" + (f" 月搜={v_int}" if v_int > 0 else "")
+            picked.append((d, src, w))
+            seen.add(w.lower())
+
+    # ②-b 若用户手动新增了核心词(added_cores)，且已选长尾词中尚未覆盖该新增核心词，
+    #      优先从已验证池或实体组词中为新增核心词配齐相关长尾词
+    if added_cores and report:
+        for c_add in added_cores[:2]:
+            c_add_toks = active_toks_map.get(c_add) or set()
+            if not c_add_toks:
+                continue
+            already_covered = any(c_add_toks <= _content_tokens(w) for _, _, w in picked)
+            if already_covered:
+                continue
+            add_pairs = crawl_words(report, c_add, reject=reject, per_dim=1)
+            for d, ent, w in add_pairs:
+                if _can_pick(w):
+                    rows = (report.get(d) or {}).get("entities") or []
+                    records = next((r.get("records", 0) for r in rows if r.get("entity") == ent), 0)
+                    entry = (d, f"新增核心词关联组词(实体 {ent} {records}品 × 新增核心 {c_add})", w)
+                    if len(picked) < max_items:
+                        picked.append(entry)
+                    elif max_items >= 2:
+                        picked[-1] = entry
+                    seen.add(w.lower())
+                    break
+
+    # ③ 第三优先级: 仅当与当前核心词相关的已验证长尾词不足 limit 时，才用当前核心词的五维实体组词兜底
+    if len(picked) < max_items and report:
+        base_candidates = [base] if base else []
+        for c in active_cores:
+            if c not in base_candidates:
+                base_candidates.append(c)
+        for b_word in base_candidates:
+            if len(picked) >= max_items or not b_word:
+                break
+            covered_dims = {d for d, _, _ in picked}
+            raw_pairs = crawl_words(report, b_word, reject=reject, per_dim=1)
+            ordered_pairs = (
+                [p for p in raw_pairs if p[0] not in covered_dims]
+                + [p for p in raw_pairs if p[0] in covered_dims]
+            )
+            for d, ent, w in ordered_pairs:
+                if len(picked) >= max_items:
+                    break
+                if _can_pick(w):
+                    rows = (report.get(d) or {}).get("entities") or []
+                    records = next((r.get("records", 0) for r in rows if r.get("entity") == ent), 0)
+                    picked.append((d, f"未验证实体组词兜底(实体 {ent} {records}品 × 基座 {b_word})", w))
+                    seen.add(w.lower())
+
+    return picked
+

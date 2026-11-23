@@ -56,7 +56,13 @@ from core.keyword_lists import (
     write_used as write_used_keywords,
 )
 from core.validation import require_file, warn_missing
-from steps._keywords import DIM_RULES, crawl_words, parse_entity_artifact
+from steps._keywords import (
+    DIM_RULES,
+    crawl_words,
+    load_verified_longtail_csv,
+    parse_entity_artifact,
+    select_verified_first_longtails,
+)
 from steps.base import BaseStep, StepContext
 
 _DP_ASIN_RE = re.compile(r"/dp/([A-Z0-9]{10})")
@@ -178,13 +184,38 @@ class Step09SearchCollect(BaseStep):
         verify_path = ctx.resolve_artifact(f"{cat}-search-verify.json")
         collected = _load_existing(json_path)
         verified = _load_verified(verify_path)
-        todo = [w for w in collect_words if w not in collected]
         # 搜索页数可配置: 核心大词 CORE_SEARCH_PAGES(默认5页) / 长尾词 LONGTAIL_SEARCH_PAGES(默认4页)
         core_pages = max(1, int(ctx.config.get("CORE_SEARCH_PAGES", 5) or 5))
         tail_pages = max(1, int(ctx.config.get("LONGTAIL_SEARCH_PAGES", 4) or 4))
         self.log(ctx, f"搜索页数: 核心大词 {core_pages} 页 / 长尾词 {tail_pages} 页")
+
+        # 2026-11-23 修复:
+        #   1) 上轮为 0 个 ASIN(`[]`)的词必须自动重抓;
+        #   2) 多页搜索(>=4页)正常应有 64~280 个 ASIN，若上轮因 503 限流仅成功 1 页(如 16 / 31 / 48 个 ASIN，
+        #      即 <= 48 个)，断点续爬时同样判定为"残缺未完成"自动重抓并合并，避免停留在单页残缺数量。
+        def _min_complete_asins(w: str) -> int:
+            if ctx.dry_run:
+                return 1
+            pg = core_pages if w in qualified_core else tail_pages
+            if pg >= 4:
+                return max(1, int(ctx.config.get("STEP09_MIN_COMPLETE_ASINS", 50) or 50))
+            return max(1, pg * 10)
+
+        zero_words = [w for w in collect_words if w in collected and not collected.get(w)]
+        partial_words = [
+            w for w in collect_words
+            if w in collected and 0 < len(collected.get(w) or []) < _min_complete_asins(w)
+        ]
+        todo = [w for w in collect_words if len(collected.get(w) or []) < _min_complete_asins(w)]
         if todo:
-            self.log(ctx, f"待搜索词 {len(todo)} 个, 断点续爬跳过 {len(collect_words) - len(todo)} 个")
+            skip_n = len(collect_words) - len(todo)
+            hints = []
+            if zero_words:
+                hints.append(f"0-ASIN重抓 {len(zero_words)} 个")
+            if partial_words:
+                hints.append(f"单页残缺(<50)补抓 {len(partial_words)} 个")
+            hint_txt = f"({' / '.join(hints)})" if hints else ""
+            self.log(ctx, f"待搜索词 {len(todo)} 个{hint_txt}, 断点续爬跳过 {skip_n} 个")
             self._search_words(ctx, todo, qualified_core, collected, verified, json_path,
                                verify_path, core_pages, tail_pages)
         else:
@@ -279,37 +310,56 @@ class Step09SearchCollect(BaseStep):
 
     def _crawl_keywords(self, ctx: StepContext, qualified_core: list[str], bad: set,
                         report_lines: list[str] | None = None) -> list[str]:
-        """抓取词(2026-09-13 口径): 五维度中**每维频率最高的实体** × **搜索量最高的达标词**(基座)。
-
-        实体与频率来自 FR-04 台账 <CAT>-keywords-entities.txt; 基座必须是达标词 ——
-        这样组装出的抓取词天然与达标词同头, 不会像旧口径那样被"产品名词头"门槛全剔。
-        **非 US 站(2026-09-15 用户口径)**: 达标核心本身已是"搜索量前 5", 基座取其中
-        搜索量最高的那一个 —— 即"长尾词只用最大搜索量的核心关键词生成", 因此 5 条
-        抓取词全部围绕这同一个基座(不会分散到其它核心词上)。
-        report_lines: 仅供预览/测试直接传入台账内容(缺省从产物文件读)。
+        """抓取词(方案A 全选已验证优先):
+        1. 五维度中每维优先选 1 条步骤 4 已验证有真实搜索量的长尾词;
+        2. 若不足 5 条，从剩余全部已验证长尾词(含 `其他 · 已验证` 及各维剩余已验证词)按搜索量降序补齐至 5 条;
+        3. 仅当已验证长尾词总数不足 5 条时，才回退使用「每维最高频实体 × 最大搜索量达标基座词」未验证实体组词兜底。
         """
         base = self._top_volume_core(ctx, qualified_core)
         if not base:
             return []
         if not self._us_site(ctx):
             self.log(ctx, f"非美国站: 长尾词基座 = 搜索量最高的核心关键词「{base}」"
-                          f"(该站口径下只用这一个基座)")
+                          f"(该站口径下兜底实体组词只用这一个基座)")
+        cat = ctx.config.cat
+        verified_rows: list[dict] = []
+        core_candidates: list[str] = []
+        auto_core: list[str] | None = None
+        auto_tail: list[str] = []
         if report_lines is None:
-            path = ctx.resolve_artifact(f"{ctx.config.cat}-keywords-entities.txt")
-            if not os.path.exists(path):
+            path = ctx.resolve_artifact(f"{cat}-keywords-entities.txt")
+            csv_path = ctx.resolve_artifact(f"{cat}-kwgen-candidates.csv")
+            if not os.path.exists(path) and not os.path.exists(csv_path):
                 self.log(ctx, f"实体台账不存在(FR-04 未重跑?): {path}")
                 return []
-            report_lines = read_txt_lines(path)
+            report_lines = read_txt_lines(path) if os.path.exists(path) else []
+            verified_rows = load_verified_longtail_csv(csv_path)
+            cand_path = ctx.resolve_artifact(f"{cat}-keywords-candidates.txt")
+            if os.path.exists(cand_path):
+                core_candidates = read_txt_lines(cand_path)
+            screen_path = ctx.resolve_artifact(f"{cat}-screen-results.json")
+            if os.path.exists(screen_path):
+                s_map = _norm_screen(read_json(screen_path, default=[]))
+                auto_core = [w for w, v in s_map.items() if v == "达标"] or None
+            kw_path = ctx.resolve_artifact(f"{cat}-keywords.txt")
+            if os.path.exists(kw_path):
+                _, auto_tail = parse_keywords_file(read_txt_lines(kw_path))
         report = parse_entity_artifact(report_lines)
-        pairs = crawl_words(report, base, reject=lambda w: _matches_accessory(w, bad))
-        for dim, ent, word in pairs:
-            rows = (report.get(dim) or {}).get("entities") or []
-            records = next((r.get("records", 0) for r in rows if r.get("entity") == ent), 0)
-            self.log(ctx, f"抓取词[{dim}]: {word}  (实体 {ent} {records}品 × 基座 {base})")
-        missing = [d for d in DIM_RULES if d not in {p[0] for p in pairs}]
-        if missing:
-            self.log(ctx, f"抓取词: 以下维度没有可用实体(台账为空/实体与基座重复/命中配件词): "
-                          + "、".join(missing))
+        pairs = select_verified_first_longtails(
+            report,
+            base,
+            qualified_core=qualified_core,
+            verified_rows=verified_rows,
+            auto_tail=auto_tail,
+            core_candidates=core_candidates,
+            auto_core=auto_core,
+            reject=lambda w: _matches_accessory(w, bad),
+            limit=5,
+        )
+        for dim, src_label, word in pairs:
+            self.log(ctx, f"抓取词[{dim}]: {word}  ({src_label})")
+        if len(pairs) < 5:
+            self.log(ctx, f"抓取词: 已验证长尾词及五维实体组词合计仅选出 {len(pairs)} 条(不足 5 条)")
         return [w for _, _, w in pairs]
 
     def _top_volume_core(self, ctx: StepContext, qualified_core: list[str]) -> str:
@@ -339,82 +389,209 @@ class Step09SearchCollect(BaseStep):
     def _search_words(self, ctx: StepContext, words: list[str], qualified_core: list[str],
                       collected: dict, verified: dict, json_path: str, verify_path: str,
                       core_pages: int, tail_pages: int) -> None:
+        from core.amz_crawl_lock import (
+            AmzCrawlSlot,
+            DEFAULT_WAIT_SECONDS as _AMZ_WAIT_DEFAULT,
+            DEFAULT_YIELD_PAUSE,
+            PRIORITY_NORMAL,
+            PRIORITY_SHORT,
+            resolve_max_concurrent,
+        )
         market = ctx.config.market
         retries = max(1, int(ctx.config.get("REQUEST_RETRY", 2)))
         screenshot_dir = ctx.paths.screenshot_dir()
-        with ctx.browser("amazon") as browser:
-            page = browser.new_page()
-            for word in words:
-                pages = core_pages if word in qualified_core else tail_pages
-                asins, titles = self._search_one(ctx, browser, page, market, word, pages, retries)
-                collected[word] = asins
-                write_json(json_path, collected)
-                # 标题快照持久化(断点续爬不丢; 同词重搜时整体刷新)
-                verified[word] = titles
-                write_json(verify_path, verified)
-                self._screenshot(browser, page, screenshot_dir, word)
-                self.log(ctx, f"词 [{word}] 收集 {len(asins)} 个自然位 ASIN(主列表解析)")
-                if not ctx.dry_run:
-                    time.sleep(float(ctx.config.get("REQUEST_MIN_INTERVAL", 1.5)))
+        cat_label = f"{ctx.config.cat or 'pipeline'}·步骤9搜索"
+        slice_words = max(0, int(ctx.config.get("STEP09_SLICE_WORDS", 4) or 0))
+        short_word_thresh = max(0, int(ctx.config.get("STEP09_SHORT_WORDS", 5) or 5))
+        yield_pause = max(0.0, float(ctx.config.get("AMZ_CRAWL_YIELD_PAUSE", DEFAULT_YIELD_PAUSE) or 0.0))
+
+        idx = 0
+        total = len(words)
+        while idx < total:
+            remaining = total - idx
+            prio = PRIORITY_SHORT if (short_word_thresh > 0 and remaining <= short_word_thresh) else PRIORITY_NORMAL
+            slot = AmzCrawlSlot(
+                max_concurrent=resolve_max_concurrent(ctx.config),
+                wait_seconds=float(ctx.config.get("AMZ_CRAWL_LOCK_WAIT", _AMZ_WAIT_DEFAULT) or _AMZ_WAIT_DEFAULT),
+                label=cat_label,
+                log=lambda m: self.log(ctx, m),
+                warn=lambda m: ctx.log.warning(f"[Step09SearchCollect] {m}"),
+                enabled=not ctx.dry_run,
+                priority=prio,
+                remaining=remaining,
+            )
+            yielded = False
+            with slot:
+                with ctx.browser("amazon") as browser:
+                    page = browser.new_page()
+                    in_slice = 0
+                    while idx < total:
+                        word = words[idx]
+                        pages = core_pages if word in qualified_core else tail_pages
+                        asins, titles = self._search_one(ctx, browser, page, market, word, pages, retries)
+                        prev_asins = list(collected.get(word) or [])
+                        if prev_asins:
+                            merged_asins = _dedup(prev_asins + asins)
+                            prev_titles = dict(verified.get(word) or {})
+                            prev_titles.update({k: v for k, v in titles.items() if v or k not in prev_titles})
+                            collected[word] = merged_asins
+                            verified[word] = prev_titles
+                        else:
+                            collected[word] = asins
+                            verified[word] = titles
+                        write_json(json_path, collected)
+                        # 标题快照持久化(断点续爬不丢; 同词重搜时整体刷新/合并)
+                        write_json(verify_path, verified)
+                        self._screenshot(browser, page, screenshot_dir, word)
+                        self.log(ctx, f"词 [{word}] 收集 {len(collected[word])} 个自然位 ASIN(主列表解析)")
+                        idx += 1
+                        in_slice += 1
+                        if not ctx.dry_run and idx < total:
+                            if slice_words > 0 and in_slice >= slice_words and slot.has_waiters():
+                                self.log(
+                                    ctx,
+                                    f"公平时间片让渡: 本片已完成 {in_slice} 个词(剩余 {total - idx} 个), "
+                                    f"检测到其他类目正在排队({slot.waiters_summary()}), 主动释放槽位并重新入队...",
+                                )
+                                yielded = True
+                                break
+                            time.sleep(float(ctx.config.get("REQUEST_MIN_INTERVAL", 1.5)))
+            if yielded and not ctx.dry_run and yield_pause > 0:
+                time.sleep(yield_pause)
 
     def _search_one(self, ctx: StepContext, browser, page, market: str,
                     word: str, pages: int, retries: int) -> tuple[list[str], dict]:
         """搜索 word 共 pages 页, 返回 (去重 ASIN 列表, {asin: 标题快照})。
 
-        只取搜索结果主列表结果卡(见 _extract_result_items); 主列表解析为空时
-        回退旧全文 /dp/ 过滤并告警(可能混入推荐/广告, 标题留空待人工)。
+        加固(2026-11-23):
+          1. 翻页间加入随机微停顿 + 优先跟随页面真实 `s-pagination-next` 链接(携带 qid/ref)，若已到末页提前停止;
+          2. 单页解析为 0 个 ASIN(503 狗头限流页 / 验证码页 / 空壳 DOM)时，自动冷却退避并重试该页;
+          3. 浏览器重试仍为 0 个 ASIN 时，自动用 `HttpFetcher`(`curl_cffi` TLS 指纹 + 共享 Cookie)直连兜底补抓该页。
         """
+        import random
         last_err = ""
-        for attempt in range(1, retries + 1):
-            try:
-                items: list[dict] = []
-                for page_no in range(1, pages + 1):
-                    url = f"https://{market}/s?k={quote_plus(word)}"
-                    if page_no > 1:
-                        url += f"&page={page_no}"
-                    browser.goto(page, url)
-                    browser.scroll_to_bottom(page, times=2, delay=1.0)
-                    # 2026-09-09: Amazon 新搜索结果页部分卡片由 JS 客户端注入(空壳占位,
-                    # 仅有 data-asin + 固定高度), 需等标题/链接渲染完成再解析, 否则标题快照易缺失。
-                    try:
-                        page.wait_for_selector(
-                            "div[data-component-type='s-search-result'] h2, "
-                            "div[data-component-type='s-search-result'] a[href*='/dp/'], "
-                            "div[data-component-type='s-search-result'] .a-color-base, "
-                            "div[data-component-type='s-search-result'] .a-link-normal",
-                            timeout=8000)
-                    except Exception:
-                        page.wait_for_timeout(1500)
-                    try:
-                        browser.scroll_to_bottom(page, times=1, delay=0.8)
-                    except Exception:
-                        pass
-                    page_items = _extract_result_items(page.content())
-                    if not page_items:
-                        legacy = _extract_natural_asins(page.content())
-                        if legacy:
-                            if not ctx.dry_run:
-                                self.log(ctx, f"词 [{word}] 第{page_no}页未解析到结果主列表"
-                                              f"(页面结构漂移?), 回退全文 /dp/ 过滤 {len(legacy)} 个"
-                                              f"(可能混入推荐/广告模块, 标题留空待人工)")
-                            page_items = [{"asin": a, "title": ""} for a in legacy]
-                    items.extend(page_items)
-                asins: list[str] = []
-                titles: dict[str, str] = {}
-                for it in items:
-                    asin = it["asin"]
-                    if asin not in titles:
-                        titles[asin] = it["title"]
-                        asins.append(asin)
-                miss = sum(1 for t in titles.values() if not t)
-                if miss and not ctx.dry_run:
-                    self.log(ctx, f"词 [{word}] 标题快照缺失 {miss}/{len(titles)} 个"
-                                  f"(h2/锚点/aria-label 均未取到), 对应行将标'待人工'")
-                return asins, titles
-            except Exception as exc:
-                last_err = str(exc)
-                self.log(ctx, f"词 [{word}] 第 {attempt} 次搜索失败: {last_err}")
-        raise StepFailedError(f"搜索收集失败: 词 [{word}] 重试 {retries} 次仍失败: {last_err}")
+        base_interval = float(ctx.config.get("REQUEST_MIN_INTERVAL", 1.5) or 0.0)
+        page_retries = max(2, int(retries)) if not ctx.dry_run else 1
+        http_fallback = None
+        try:
+            for attempt in range(1, retries + 1):
+                try:
+                    items: list[dict] = []
+                    next_page_url = ""
+                    for page_no in range(1, pages + 1):
+                        if page_no > 1 and not ctx.dry_run and base_interval > 0:
+                            time.sleep(random.uniform(max(0.8, base_interval * 0.8), max(1.6, base_interval * 1.5)))
+                        default_url = f"https://{market}/s?k={quote_plus(word)}" + (
+                            f"&page={page_no}" if page_no > 1 else ""
+                        )
+                        url = next_page_url or default_url
+                        next_page_url = ""
+                        page_items: list[dict] = []
+                        html = ""
+                        for p_try in range(1, page_retries + 1):
+                            browser.goto(page, url)
+                            browser.scroll_to_bottom(page, times=2, delay=1.0)
+                            try:
+                                page.wait_for_selector(
+                                    "div[data-component-type='s-search-result'] h2, "
+                                    "div[data-component-type='s-search-result'] a[href*='/dp/'], "
+                                    "div[data-component-type='s-search-result'] .a-color-base, "
+                                    "div[data-component-type='s-search-result'] .a-link-normal",
+                                    timeout=8000 if p_try == 1 else 5000,
+                                )
+                            except Exception:
+                                page.wait_for_timeout(1500)
+                            try:
+                                browser.scroll_to_bottom(page, times=1, delay=0.8)
+                            except Exception:
+                                pass
+                            html = page.content() or ""
+                            page_items = _extract_result_items(html)
+                            if not page_items:
+                                legacy = _extract_natural_asins(html)
+                                if legacy:
+                                    if not ctx.dry_run:
+                                        self.log(ctx, f"词 [{word}] 第{page_no}页未解析到结果主列表"
+                                                      f"(页面结构漂移?), 回退全文 /dp/ 过滤 {len(legacy)} 个"
+                                                      f"(可能混入推荐/广告模块, 标题留空待人工)")
+                                    page_items = [{"asin": a, "title": ""} for a in legacy]
+                            if page_items or ctx.dry_run:
+                                break
+                            if _is_genuine_no_results_page(html):
+                                break
+                            if p_try < page_retries:
+                                cooldown = (3.5 * p_try) if base_interval > 0 else 0.0
+                                self.log(
+                                    ctx,
+                                    f"词 [{word}] 第{page_no}页解析为 0 个 ASIN(疑似 503 限流/验证码/空壳页), "
+                                    f"冷却 {cooldown:.1f}s 后重试该页({p_try}/{page_retries})...",
+                                )
+                                if cooldown > 0:
+                                    time.sleep(cooldown)
+                                try:
+                                    browser.goto(page, f"https://{market}/")
+                                except Exception:
+                                    pass
+                                url = default_url
+
+                        # 浏览器重试仍 0 个 ASIN → HttpFetcher (curl_cffi) 直连兜底补抓该页
+                        if not page_items and not ctx.dry_run and not _is_genuine_no_results_page(html):
+                            try:
+                                if http_fallback is None:
+                                    from core.http_client import HttpFetcher
+                                    http_fallback = HttpFetcher(ctx.config)
+                                resp = http_fallback.get(default_url, retries=1)
+                                if resp and resp.text:
+                                    http_items = _extract_result_items(resp.text)
+                                    if not http_items:
+                                        http_legacy = _extract_natural_asins(resp.text)
+                                        if http_legacy:
+                                            http_items = [{"asin": a, "title": ""} for a in http_legacy]
+                                    if http_items:
+                                        page_items = http_items
+                                        html = resp.text
+                                        self.log(
+                                            ctx,
+                                            f"词 [{word}] 第{page_no}页浏览器受限(0 ASIN), "
+                                            f"已由 HTTP 直连兜底成功恢复 {len(page_items)} 个 ASIN",
+                                        )
+                            except Exception:
+                                pass
+
+                        items.extend(page_items)
+                        if not ctx.dry_run and html:
+                            if _has_disabled_next_page(html):
+                                break
+                            next_page_url = _extract_next_page_url(html, market)
+
+                    asins: list[str] = []
+                    titles: dict[str, str] = {}
+                    for it in items:
+                        asin = it["asin"]
+                        if asin not in titles:
+                            titles[asin] = it["title"]
+                            asins.append(asin)
+                    if not asins and not ctx.dry_run and attempt < retries:
+                        cooldown = (5.0 * attempt) if base_interval > 0 else 0.0
+                        self.log(ctx, f"词 [{word}] 第 {attempt} 轮整词收集为 0 个 ASIN, 冷却 {cooldown:.1f}s 后整词重试...")
+                        if cooldown > 0:
+                            time.sleep(cooldown)
+                        continue
+                    miss = sum(1 for t in titles.values() if not t)
+                    if miss and not ctx.dry_run:
+                        self.log(ctx, f"词 [{word}] 标题快照缺失 {miss}/{len(titles)} 个"
+                                      f"(h2/锚点/aria-label 均未取到), 对应行将标'待人工'")
+                    return asins, titles
+                except Exception as exc:
+                    last_err = str(exc)
+                    self.log(ctx, f"词 [{word}] 第 {attempt} 次搜索失败: {last_err}")
+            raise StepFailedError(f"搜索收集失败: 词 [{word}] 重试 {retries} 次仍失败: {last_err}")
+        finally:
+            if http_fallback is not None:
+                try:
+                    http_fallback.close()
+                except Exception:
+                    pass
 
     def _verify_summary(self, ctx: StepContext, collected: dict, verified: dict) -> None:
         """收集正确性审计: 逐 词×ASIN 生成 标题×规则判定 清单 CSV + 汇总日志(零额外请求)。"""
@@ -798,3 +975,52 @@ def _load_existing(path: str) -> dict:
     if not isinstance(data, dict):
         data = {}
     return {str(k): (v if isinstance(v, list) else []) for k, v in data.items()}
+
+
+_NO_RESULTS_MARK_RE = re.compile(
+    r"No results for\s|Keine Ergebnisse für\s|Aucun résultat pour\s|Non ci sono risultati per\s|No hay resultados para\s",
+    re.I,
+)
+_THROTTLE_OR_CAPTCHA_RE = re.compile(
+    r"validateCaptcha|opfcaptcha|api-services-support@amazon|Sorry!\s*Something went wrong|To discuss automated access to Amazon data|503\s+Service\s+Unavailable",
+    re.I,
+)
+_DISABLED_NEXT_RE = re.compile(
+    r'<span[^>]*class="[^"]*\bs-pagination-next\b[^"]*\bs-pagination-disabled\b[^"]*"|'
+    r'<span[^>]*class="[^"]*\bs-pagination-disabled\b[^"]*\bs-pagination-next\b[^"]*"',
+    re.I,
+)
+_NEXT_HREF_RE = re.compile(
+    r'<a[^>]*href="([^"]+)"[^>]*class="[^"]*\bs-pagination-next\b[^"]*"|'
+    r'<a[^>]*class="[^"]*\bs-pagination-next\b[^"]*"[^>]*href="([^"]+)"',
+    re.I,
+)
+
+
+def _is_genuine_no_results_page(html: str) -> bool:
+    """判断页面是否为真实的"无匹配商品"结果页(且非 503/验证码拦截页)。"""
+    text = html or ""
+    if not text or _THROTTLE_OR_CAPTCHA_RE.search(text):
+        return False
+    return bool(_NO_RESULTS_MARK_RE.search(text))
+
+
+def _has_disabled_next_page(html: str) -> bool:
+    """判断搜索结果页底部的「下一页」按钮是否已处于 disabled(末页)。"""
+    return bool(_DISABLED_NEXT_RE.search(html or ""))
+
+
+def _extract_next_page_url(html: str, market: str) -> str:
+    """提取搜索结果页真实的「下一页」链接(带 qid / ref=sr_pg_N)，避免裸跳 &page=N 触发反爬。"""
+    m = _NEXT_HREF_RE.search(html or "")
+    if not m:
+        return ""
+    href = unescape((m.group(1) or m.group(2) or "").strip())
+    if not href or href.startswith("#") or "javascript:" in href.lower():
+        return ""
+    if href.startswith("http://") or href.startswith("https://"):
+        return href
+    if not href.startswith("/"):
+        href = "/" + href
+    return f"https://{market}{href}"
+

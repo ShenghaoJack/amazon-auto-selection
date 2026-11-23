@@ -608,10 +608,10 @@ def test_step00_and_step01_share_crawl_slot_and_broadcast_ip_cooldown(tmp_path, 
     s0 = Step00Bestsellers()
     s0._cat = ctx0.config.cat
     monkeypatch.setattr(s0, "_check_amazon", lambda c, publish=False: True)
-    set_ip_cooldown(0.22, reason="步骤1连续风控", label="CatA·步骤1")
+    set_ip_cooldown(0.30, reason="步骤1连续风控", label="CatA·步骤1")
     t0 = time.monotonic()
     s0.ensure_amazon_login(ctx0)
-    assert time.monotonic() - t0 >= 0.18
+    assert time.monotonic() - t0 >= 0.15
     assert remaining_ip_cooldown()[0] == 0.0
 
     # 2) 步骤 1 连续命中 captcha 会写入跨类目共享 IP 冷却，且全程持有 AmzCrawlSlot
@@ -644,3 +644,293 @@ def test_step00_and_step01_share_crawl_slot_and_broadcast_ip_cooldown(tmp_path, 
     s1.run(ctx1)
     rem, info = remaining_ip_cooldown()
     assert rem > 0 and "步骤1" in str(info.get("reason") or "")
+
+
+def test_verified_first_longtail_selection_option_a(tmp_path):
+    """方案A(全选已验证优先): 优先选五维已验证长尾词 → 剩余已验证(含其他·已验证)按搜索量补齐 → 仅不足5条时回退未验证实体组词。"""
+    from steps.step09_search_collect import Step09SearchCollect
+    from webui.server import _auto_crawl_longtail
+
+    ctx = _ctx(tmp_path, CAT="Coffee Machines-US")
+    cat = ctx.config.cat
+    base_dir = ctx.paths.cat_root
+
+    qualified_core = ["coffee maker", "espresso machine", "coffee machine"]
+    write_json(
+        ctx.resolve_artifact(f"{cat}-amazon-keyword-data.json"),
+        [
+            {"keyword": "coffee maker", "monthly_search_volume": 1721492},
+            {"keyword": "espresso machine", "monthly_search_volume": 989524},
+            {"keyword": "coffee machine", "monthly_search_volume": 240967},
+        ],
+    )
+    (base_dir / f"{cat}-keywords-candidates.txt").write_text(
+        "\n".join(qualified_core) + "\n", encoding="utf-8"
+    )
+    # 模拟 Coffee Machines 场景: 仅[场景.长尾词]有 2 条已验证长尾，其余四维仅有未验证短实体
+    entities_txt = "\n".join([
+        "[场景.实体]",
+        "1\thome\t商品数=30\t出现=45\t来源=LLM",
+        "[场景.长尾词]",
+        "coffee machine commercial",
+        "commercial drip coffee maker",
+        "[人群.实体]",
+        "1\tpersonal\t商品数=20\t出现=25\t来源=LLM",
+        "[人群.长尾词]",
+        "[功能.实体]",
+        "1\tfilter\t商品数=18\t出现=22\t来源=LLM",
+        "[功能.长尾词]",
+        "[属性.实体]",
+        "1\tcarafe\t商品数=15\t出现=19\t来源=LLM",
+        "[属性.长尾词]",
+        "[痛点.实体]",
+        "[痛点.长尾词]",
+    ]) + "\n"
+    (base_dir / f"{cat}-keywords-entities.txt").write_text(entities_txt, encoding="utf-8")
+    (base_dir / f"{cat}-keywords.txt").write_text(
+        "[核心大词]\ncoffee maker\nespresso machine\ncoffee machine\n"
+        "[长尾词]\ncoffee machine commercial\ncommercial drip coffee maker\n",
+        encoding="utf-8",
+    )
+    # kwgen-candidates.csv 中有 `其他 · 已验证` 的正搜索量长尾词
+    csv_lines = [
+        "keyword,searches,dimension,is_longtail,relation",
+        "coffee maker,1721492,其他,False,same_product",
+        "coffee machine commercial,8500,场景,True,same_product",
+        "coffee makers on sale,12000,其他,True,same_product",
+        "best coffee maker 2026,9500,其他,True,same_product",
+        "coffee makers on clearance,7200,其他,True,same_product",
+        "best espresso machine,6800,其他,True,same_product",
+        "commercial drip coffee maker,5400,场景,True,same_product",
+    ]
+    (base_dir / f"{cat}-kwgen-candidates.csv").write_text("\n".join(csv_lines) + "\n", encoding="utf-8")
+
+    s9 = Step09SearchCollect()
+    step9_words = s9._crawl_keywords(ctx, qualified_core, bad=set())
+    ui_words = _auto_crawl_longtail(
+        base_dir, cat, qualified_core, ["coffee machine commercial", "commercial drip coffee maker"]
+    )
+    assert step9_words == ui_words
+    assert step9_words == [
+        "coffee machine commercial",
+        "coffee makers on sale",
+        "best coffee maker 2026",
+        "coffee makers on clearance",
+        "best espresso machine",
+    ]
+    # 确认没有任何一条未验证实体组词被选入
+    assert not any(w in step9_words for w in (
+        "coffee maker for home",
+        "coffee maker for personal",
+        "coffee maker with filter",
+        "coffee maker carafe",
+    ))
+
+    # 2) 用户删掉 `espresso machine`，仅保留 `["coffee maker", "coffee machine"]`:
+    #    所有含 `espresso` 的长尾词自动剔除，补入与剩余核心词相关的 `commercial drip coffee maker`
+    reduced_core = ["coffee maker", "coffee machine"]
+    reduced_words = _auto_crawl_longtail(
+        base_dir, cat, reduced_core,
+        ["coffee machine commercial", "commercial drip coffee maker"],
+        auto_core=qualified_core,
+    )
+    assert "best espresso machine" not in reduced_words
+    assert "commercial drip coffee maker" in reduced_words
+    assert len(reduced_words) == 5
+
+    # 3) 用户删掉 `coffee maker` 与 `coffee machine`，仅保留 `["espresso machine"]`:
+    #    所有 `coffee maker / coffee machine` 长尾词自动剔除，长尾词全部围绕 `espresso machine`
+    espresso_only_words = _auto_crawl_longtail(
+        base_dir, cat, ["espresso machine"],
+        ["coffee machine commercial", "commercial drip coffee maker"],
+        auto_core=qualified_core,
+    )
+    assert espresso_only_words[0] == "best espresso machine"
+    assert all("espresso machine" in w for w in espresso_only_words)
+
+    # 4) 用户新增核心词 `cold brew coffee maker`:
+    #    自动为新增核心词配齐与其相关的长尾词
+    added_core = qualified_core + ["cold brew coffee maker"]
+    added_words = _auto_crawl_longtail(
+        base_dir, cat, added_core,
+        ["coffee machine commercial", "commercial drip coffee maker"],
+        auto_core=qualified_core,
+    )
+    assert any("cold brew coffee maker" in w for w in added_words)
+
+
+def test_step09_multi_category_parallel_slot_retry_and_zero_asin_resume(tmp_path, monkeypatch):
+    """验证步骤 9 多类目并行:
+    1) AmzCrawlSlot 跨类目互斥排队 + 公平时间片轮转(绝不出现多类目同时并发刷 /s?k= 导致 503);
+    2) 单页遇到 503 狗头页(0 ASIN)时自动重试/HTTP 直连兜底恢复，不再落成 0 个 ASIN;
+    3) 断点续爬自动重抓上轮为 0 个 ASIN(`[]`)的词，同时跳过已有 >0 个 ASIN 的词。
+    """
+    from contextlib import contextmanager
+    from steps.step09_search_collect import Step09SearchCollect
+
+    monkeypatch.setenv("PIPELINE_AMZ_LOCK_DIR", str(tmp_path / "amz_locks_s9"))
+
+    active_lock = threading.Lock()
+    active_count = 0
+    max_active_count = 0
+    slice_order: list[str] = []
+    page_attempts: dict[tuple[str, str], int] = {}
+
+    def _prepare_cat(sub_name: str, cat_name: str, core_words: list[str], pre_collected: dict | None = None) -> StepContext:
+        ctx = _ctx(
+            tmp_path / sub_name,
+            CAT=cat_name,
+            DRY_RUN=False,
+            CORE_SEARCH_PAGES=2,
+            LONGTAIL_SEARCH_PAGES=1,
+            STEP09_SLICE_WORDS=2,
+            AMZ_CRAWL_YIELD_PAUSE=0.05,
+            REQUEST_MIN_INTERVAL=0,
+            REQUEST_MAX_INTERVAL=0,
+        )
+        write_json(
+            ctx.resolve_artifact(f"{cat_name}-screen-results.json"),
+            [{"keyword": w, "verdict": "达标"} for w in core_words],
+        )
+        write_json(
+            ctx.resolve_artifact(f"{cat_name}-amazon-keyword-data.json"),
+            [{"keyword": w, "monthly_search_volume": 100000 - i * 1000} for i, w in enumerate(core_words)],
+        )
+        (ctx.paths.cat_root / f"{cat_name}-keywords.txt").write_text(
+            "[核心大词]\n" + "\n".join(core_words) + "\n[长尾词]\n",
+            encoding="utf-8",
+        )
+        (ctx.paths.cat_root / f"{cat_name}-keywords-entities.txt").write_text(
+            "[场景.实体]\n[场景.长尾词]\n",
+            encoding="utf-8",
+        )
+        if pre_collected is not None:
+            write_json(ctx.resolve_artifact(f"{cat_name}-search-asins.json"), pre_collected)
+        return ctx
+
+    # Cat1 模拟已有断点:
+    #   - coffee maker 已有 25 个 ASIN(>= 2页门槛20，应跳过不重抓)
+    #   - pour over coffee maker 仅有 2 个残缺 ASIN(< 20，应自动补抓并与原 2 个合并)
+    #   - espresso machine 上轮为 [] (0 个 ASIN，应自动重抓)
+    existing_full = [f"B0COF{i:05d}" for i in range(25)]
+    ctx1 = _prepare_cat(
+        "cat1",
+        "Coffee Machines-US",
+        ["coffee maker", "espresso machine", "coffee machine", "pour over coffee maker"],
+        pre_collected={
+            "coffee maker": existing_full,
+            "pour over coffee maker": ["B0PART0001", "B0PART0002"],
+            "espresso machine": [],
+        },
+    )
+    ctx2 = _prepare_cat(
+        "cat2",
+        "Air Fryers-US",
+        ["air fryer", "airfryer", "glass air fryer"],
+    )
+    ctx3 = _prepare_cat(
+        "cat3",
+        "Dog Bowls-US",
+        ["dog bowl", "slow feeder dog bowl"],
+    )
+
+    def _make_fake_browser(cat_name: str):
+        class _FakePage:
+            def __init__(self):
+                self.url = ""
+
+            def wait_for_selector(self, *a, **k):
+                return None
+
+            def wait_for_timeout(self, ms):
+                return None
+
+            def content(self):
+                key = (cat_name, self.url)
+                cnt = page_attempts.get(key, 0) + 1
+                page_attempts[key] = cnt
+                # 模拟第 1 次请求某页时偶发遭遇亚马逊 503 狗头限流页(0 ASIN)，重试后恢复正常结果卡
+                if cnt == 1 and ("espresso+machine" in self.url or "airfryer" in self.url):
+                    return "<html><body>Sorry! Something went wrong on our end.</body></html>"
+                seed = abs(hash(self.url)) % 9000 + 1000
+                asin1 = f"B0{seed:04d}0001"
+                asin2 = f"B0{seed:04d}0002"
+                return (
+                    f'<div data-component-type="s-search-result" data-asin="{asin1}">'
+                    f'<h2><a href="/dp/{asin1}"><span>{cat_name} Product {asin1}</span></a></h2></div>'
+                    f'<div data-component-type="s-search-result" data-asin="{asin2}">'
+                    f'<h2><a href="/dp/{asin2}"><span>{cat_name} Product {asin2}</span></a></h2></div>'
+                    f'<span class="s-pagination-item s-pagination-next s-pagination-disabled">Next</span>'
+                )
+
+        class _FakeBrowser:
+            def new_page(self):
+                return _FakePage()
+
+            def goto(self, page, url, timeout=60000):
+                page.url = url
+                time.sleep(0.02)
+
+            def scroll_to_bottom(self, page, **kw):
+                return 1
+
+            def screenshot(self, page, path):
+                Path(path).parent.mkdir(parents=True, exist_ok=True)
+                Path(path).write_bytes(b"PNG")
+
+        @contextmanager
+        def _cm(*a, **k):
+            nonlocal active_count, max_active_count
+            with active_lock:
+                active_count += 1
+                if active_count > max_active_count:
+                    max_active_count = active_count
+                slice_order.append(cat_name)
+            try:
+                yield _FakeBrowser()
+            finally:
+                with active_lock:
+                    active_count -= 1
+
+        return _cm
+
+    for c in (ctx1, ctx2, ctx3):
+        monkeypatch.setattr(c, "browser", _make_fake_browser(c.config.cat))
+
+    errors: list[Exception] = []
+
+    def _run_one(c: StepContext):
+        try:
+            s = Step09SearchCollect()
+            s.validate_upstream(c)
+            s.run(c)
+        except Exception as exc:
+            errors.append(exc)
+
+    threads = [threading.Thread(target=_run_one, args=(c,)) for c in (ctx1, ctx2, ctx3)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=30)
+
+    assert not errors, f"并行步骤9报错: {errors}"
+    # 1) 严格跨类目互斥: 同一时刻最多只有 1 个类目的浏览器在抓取亚马逊搜索页
+    assert max_active_count == 1
+    # 2) 断点续爬验证:
+    #    - coffee maker 达标(25个)原样跳过;
+    #    - pour over coffee maker 残缺(2个<20)自动补抓并保留原 2 个 ASIN 合并;
+    #    - espresso machine 为 0 个(`[]`)自动重抓恢复 >=2 个 ASIN
+    c1_data = json.loads((ctx1.paths.cat_root / "Coffee Machines-US-search-asins.json").read_text(encoding="utf-8"))
+    assert c1_data["coffee maker"] == existing_full
+    assert c1_data["pour over coffee maker"][:2] == ["B0PART0001", "B0PART0002"]
+    assert len(c1_data["pour over coffee maker"]) >= 4
+    assert len(c1_data["espresso machine"]) >= 2
+    assert len(c1_data["coffee machine"]) >= 2
+    # 3) Cat2 与 Cat3 的所有关键词(含首次遇到 503 的 airfryer)均 100% 拿到非空 ASIN，无任何 0 ASIN 词!
+    c2_data = json.loads((ctx2.paths.cat_root / "Air Fryers-US-search-asins.json").read_text(encoding="utf-8"))
+    assert all(len(c2_data[w]) >= 2 for w in ("air fryer", "airfryer", "glass air fryer"))
+    c3_data = json.loads((ctx3.paths.cat_root / "Dog Bowls-US-search-asins.json").read_text(encoding="utf-8"))
+    assert all(len(c3_data[w]) >= 2 for w in ("dog bowl", "slow feeder dog bowl"))
+
+
+

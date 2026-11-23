@@ -3692,6 +3692,25 @@ function restoreInject(word) {
 /* 点词 = "我要这个词": 非人工态下先以**当前生效词**为基础切到人工清单, 再把这个词加入/移出。
    为什么要先铺基础: 人工清单是**整体替换**语义, 从空清单开始点一个词会把其余自动词全丢掉,
    既不是用户意图, 也会让门槛判定突然不达标。 */
+let __kwCoreLinkSeq = 0;
+async function syncLongtailWithCoreChange() {
+  if (!kwData) return;
+  const seq = ++__kwCoreLinkSeq;
+  const file = selFile;
+  const previewParam = encodeURIComponent((kwEdit.core || []).join("\n"));
+  try {
+    const d = await api(`/api/keyword-lists?file=${encodeURIComponent(file)}&preview_core=${previewParam}`);
+    if (seq !== __kwCoreLinkSeq || file !== selFile || !d || d.ok === false) return;
+    if (kwData.longtail && d.longtail) {
+      kwData.longtail.crawl = d.longtail.crawl || [];
+      kwData.longtail.verified_pool = d.longtail.verified_pool || {};
+      kwData.longtail.generated_pool = d.longtail.generated_pool || {};
+    }
+    kwEdit.longtail = ((d.longtail || {}).crawl || []).slice();
+    renderKeywordPanel();
+  } catch (e) { /* ignore preview error */ }
+}
+
 function kwPickWord(kind, word) {
   const wasManual = currentKwMode() === "manual";
   if (!wasManual) {
@@ -3703,6 +3722,7 @@ function kwPickWord(kind, word) {
   if (i >= 0) arr.splice(i, 1); else arr.push(word);
   markKwDirty(kind);
   renderKeywordPanel();
+  if (kind === "core") syncLongtailWithCoreChange();
   if (!wasManual) {
     toast(`已${i >= 0 ? "移除" : "加入"}「${word}」，请核对核心词和长尾词后保存。`, "ok");
   }
@@ -3714,6 +3734,7 @@ function toggleKwWord(kind, word) {
   if (i >= 0) kwEdit[kind].splice(i, 1); else kwEdit[kind].push(word);
   markKwDirty(kind);
   renderKeywordPanel();
+  if (kind === "core") syncLongtailWithCoreChange();
 }
 function addKwWords(kind) {
   const el = $({ core: "kwCoreAdd", longtail: "kwTailAdd", inject: "kwInjectAdd" }[kind]);
@@ -3738,6 +3759,7 @@ function addKwWords(kind) {
   el.value = "";
   markKwDirty(kind);
   renderKeywordPanel();
+  if (kind === "core") syncLongtailWithCoreChange();
 }
 /* 内部助手（**不再对应任何按钮**，2026-10-12）：切到「人工清单」且编辑区为空时，
    用**当前生效词**给编辑区打底。
@@ -3752,6 +3774,7 @@ function seedKwFromEffective(kind) {
   kwEdit[kind] = src.slice();
   markKwDirty(kind);
   renderKeywordPanel();
+  if (kind === "core") syncLongtailWithCoreChange();
   toast("已用当前生效词打底, 现在可以逐条删除不需要的(记得保存并应用)", "ok");
 }
 function clearKwEdit(kind) {
@@ -3761,6 +3784,7 @@ function clearKwEdit(kind) {
   if (kind === "inject") kwEdit.noinject = [];
   markKwDirty(kind);
   renderKeywordPanel();
+  if (kind === "core") syncLongtailWithCoreChange();
 }
 
 /* ★★ 仅注入词：**独立保存**（2026-10-12 用户口径）。

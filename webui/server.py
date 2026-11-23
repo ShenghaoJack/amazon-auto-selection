@@ -1860,28 +1860,29 @@ def keyword_candidates(cat: str, data_root: str = "data") -> dict:
 # **2026-10-06**: 本面板「核心大词」列的生效词同时就是**步骤10 的判定参考词源**
 # (原「步骤10 注入词」面板已删除), 因此"面板 / 步骤9 搜索 / 步骤10 判定"三处永远是同一批词。
 def _auto_crawl_longtail(base: Path, cat: str, qualified_core: list[str],
-                         auto_tail: list[str]) -> list[str]:
+                         auto_tail: list[str], auto_core: list[str] | None = None) -> list[str]:
     """**自动态实际会抓**的长尾词（与步骤9 `_build_collect_list` 非人工分支**同口径**）。
 
     ★★ 为什么要有它（2026-10-12 用户口径 A："预填要给实际在用的那一批"）：
       面板里的「自动长尾词」是**候选池**（五维台账派生的 20-25 条），而自动态**实际只抓 5 条**
-      —— 五维各取"频率最高的实体 × 搜索量最高的达标词"组出来的那 5 条。
+      —— 优先选与当前生效核心词相关的已验证长尾词，不足时用五维实体组装兜底。
       拿整份池子去预填，用户不改直接保存 → 转人工清单 → 抓取量从 5 变 25（页数/耗时/成本暴涨）。
       所以这里算出**真在抓的那几条**给面板预填，做到"所见 = 所用"。
-
-    ⚠ **必须复用步骤9 自己的函数**，不能自己复刻：口径有好几层
-      （基座=搜索量最高且字母序最小的达标词、每维取频率最高的实体、命中的配件/耗材词要剔除、
-       台账缺失时回退"按相关度取最多 5 个"）—— 自己抄一遍必然漂移，那"所见=所用"就是假的。
     """
     try:
-        from steps._keywords import crawl_words, parse_entity_artifact
+        from steps._keywords import (
+            crawl_words,
+            load_verified_longtail_csv,
+            parse_entity_artifact,
+            select_verified_first_longtails,
+        )
         from steps.step09_search_collect import (
             _accessory_terms_from, _matches_accessory, _top_related_longtail,
         )
     except Exception:                                            # noqa: BLE001 — 拿不到就回空(前端退回旧行为)
         return []
     try:
-        # ① 基座 = 达标核心词里**站内月搜索量最高**的一个（并列时按**字母序**取最小，与 step09 逐字一致）
+        # ① 基座 = 当前生效核心词里**站内月搜索量最高**的一个（并列时按**字母序**取最小，与 step09 逐字一致）
         data = json.loads((base / f"{cat}-amazon-keyword-data.json").read_text(
             encoding="utf-8-sig", errors="replace")) if (base / f"{cat}-amazon-keyword-data.json").is_file() else []
         volume: dict[str, float] = {}
@@ -1895,37 +1896,67 @@ def _auto_crawl_longtail(base: Path, cat: str, qualified_core: list[str],
             return []
         ranked = sorted(qualified_core, key=lambda w: (-volume.get(w, 0.0), w))
         base_word = ranked[0]
-        # ② 五维台账 → 每维频率最高的实体 × 基座
+        # ② 方案A(全选已验证优先 + 核心词增删动态关联): 五维已验证长尾词 → 其他已验证长尾词按搜索量补齐 → 未验证实体组词兜底
         bad = _accessory_terms_from(json.loads(
             (base / f"{cat}-filter-prompt.json").read_text(encoding="utf-8-sig", errors="replace")
         ) if (base / f"{cat}-filter-prompt.json").is_file() else {})
         ent_path = base / f"{cat}-keywords-entities.txt"
-        if ent_path.is_file():
+        csv_path = base / f"{cat}-kwgen-candidates.csv"
+        cand_path = base / f"{cat}-keywords-candidates.txt"
+        core_candidates = (
+            [ln.strip() for ln in cand_path.read_text(encoding="utf-8-sig", errors="replace").splitlines() if ln.strip()]
+            if cand_path.is_file() else []
+        )
+        if ent_path.is_file() or csv_path.is_file():
             report = parse_entity_artifact(ent_path.read_text(
-                encoding="utf-8-sig", errors="replace").splitlines())
-            out = [w for _, _, w in crawl_words(
-                report, base_word, reject=lambda w: _matches_accessory(w, bad))]
+                encoding="utf-8-sig", errors="replace").splitlines()) if ent_path.is_file() else {}
+            verified_rows = load_verified_longtail_csv(csv_path)
+            pairs = select_verified_first_longtails(
+                report,
+                base_word,
+                qualified_core=qualified_core,
+                verified_rows=verified_rows,
+                auto_tail=auto_tail,
+                core_candidates=core_candidates,
+                auto_core=auto_core,
+                reject=lambda w: _matches_accessory(w, bad),
+                limit=5,
+            )
+            out = [w for _, _, w in pairs]
             if out:
                 return out
-        # ③ 台账缺失/无可用实体 → 与步骤9 完全一样地回退：按相关度取最多 5 个长尾词
+        # ③ 台账缺失/无可用词 → 与步骤9 完全一样地回退：按相关度取最多 5 个长尾词
         return list(_top_related_longtail(qualified_core, auto_tail, 5, bad))
     except Exception:                                            # noqa: BLE001
         return []
 
 
-def _longtail_pool(base: Path, cat: str, qualified_core: list[str]) -> tuple[dict, dict]:
+def _longtail_pool(base: Path, cat: str, qualified_core: list[str],
+                   auto_core: list[str] | None = None) -> tuple[dict, dict]:
     """Expose every verified long-tail and separately labelled generated ideas."""
     import csv
     from steps._keywords import crawl_words, parse_entity_artifact
     from steps.step09_search_collect import _accessory_terms_from, _matches_accessory
     verified, generated = {}, {}
+    cand_path = base / f"{cat}-keywords-candidates.txt"
+    core_cand_set = {
+        ln.strip().lower()
+        for ln in (cand_path.read_text(encoding="utf-8-sig", errors="replace").splitlines() if cand_path.is_file() else [])
+        if ln.strip()
+    } | {str(w).strip().lower() for w in (qualified_core or []) if str(w).strip()}
     source = base / f"{cat}-kwgen-candidates.csv"
     if source.is_file():
         with source.open(encoding="utf-8-sig", newline="") as fh:
             for row in csv.DictReader(fh):
                 dim = str(row.get("dimension") or "").strip()
                 word = str(row.get("keyword") or "").strip()
-                if dim and word and str(row.get("is_longtail") or "").strip().lower() in ("true", "1") and row.get("relation") == "same_product":
+                if (
+                    dim
+                    and word
+                    and word.lower() not in core_cand_set
+                    and str(row.get("is_longtail") or "").strip().lower() in ("true", "1")
+                    and row.get("relation") == "same_product"
+                ):
                     verified.setdefault(dim, []).append(word)
     path = base / f"{cat}-keywords-entities.txt"
     if path.is_file() and qualified_core:
@@ -1937,12 +1968,18 @@ def _longtail_pool(base: Path, cat: str, qualified_core: list[str]) -> tuple[dic
         policy_path = base / f"{cat}-filter-prompt.json"
         policy = json.loads(policy_path.read_text(encoding="utf-8-sig")) if policy_path.is_file() else {}
         bad = _accessory_terms_from(policy)
-        for dim, _, word in crawl_words(report, base_word, reject=lambda w: _matches_accessory(w, bad), per_dim=10000):
-            generated.setdefault(dim, []).append(word)
+        auto_set = {str(w).strip().lower() for w in (auto_core or []) if str(w).strip()}
+        added_cores = [str(w).strip() for w in qualified_core if str(w).strip() and auto_set and str(w).strip().lower() not in auto_set]
+        bases_to_gen = [base_word] + [c for c in added_cores if c.lower() != base_word.lower()]
+        for b_word in bases_to_gen:
+            for dim, _, word in crawl_words(report, b_word, reject=lambda w: _matches_accessory(w, bad), per_dim=10000):
+                bucket = generated.setdefault(dim, [])
+                if word not in bucket:
+                    bucket.append(word)
     return verified, generated
 
 
-def keyword_lists_panel(cat: str, data_root: str = "data") -> dict:
+def keyword_lists_panel(cat: str, data_root: str = "data", preview_core: list[str] | None = None) -> dict:
     """组装「关键词清单」面板数据(自动/人工/生效词 + 门槛判定 + 预计搜索量)。"""
     if not cat:
         return {"ok": False, "error": "配置缺少 CAT(类目名)"}
@@ -1980,14 +2017,18 @@ def keyword_lists_panel(cat: str, data_root: str = "data") -> dict:
         _, auto_tail = read_keywords_file(kw_path)
     verdict_flat = {str(r.get("word") or ""): str(r.get("verdict") or "")
                     for r in (inj.get("candidates") or [])}
+    auto_core_list = list(inj.get("auto_qualified") or [])
     plan = resolve_kw(base, cat,
-                      auto_core=inj.get("auto_qualified") or [],
+                      auto_core=auto_core_list,
                       auto_longtail=auto_tail,
                       screen_verdict=verdict_flat,
                       gate=gate,
                       gate_applies=inj.get("site_scope") == "us")
+    active_core_for_tail = list(preview_core) if preview_core is not None else list(plan.core)
     try:
-        verified_tail, generated_tail = _longtail_pool(base, cat, list(inj.get("auto_qualified") or []))
+        verified_tail, generated_tail = _longtail_pool(
+            base, cat, active_core_for_tail, auto_core=auto_core_list
+        )
     except (OSError, ValueError, TypeError):
         verified_tail, generated_tail = {}, {}
     # 抓取词条数: 人工长尾清单生效时就是清单本身; 自动态由五维实体组装, 最多 5 条
@@ -2005,7 +2046,7 @@ def keyword_lists_panel(cat: str, data_root: str = "data") -> dict:
         "mode_label": plan.mode_label,
         "stopped": plan.stopped,
         "core": {
-            "auto": list(inj.get("auto_qualified") or []),
+            "auto": auto_core_list,
             "manual": list(plan.manual_core),
             "effective": list(plan.core),
             "qualified": plan.qualified,
@@ -2018,10 +2059,9 @@ def keyword_lists_panel(cat: str, data_root: str = "data") -> dict:
             "auto": list(auto_tail),
             "manual": list(plan.manual_longtail),
             "effective": list(plan.longtail),
-            # ★ 自动态**实际会抓**的那几条（五维组装，≤5）；面板预填用它，做到"所见=所用"。
-            #   ⚠ 别拿 `auto`(候选池 20-25 条)去预填 —— 直接保存会把抓取量从 5 放大到 N。
-            "crawl": _auto_crawl_longtail(base, cat, list(inj.get("auto_qualified") or []),
-                                          auto_tail),
+            # ★ 自动态**实际会抓**的那几条（与当前生效核心词动态关联，≤5）；面板预填用它，做到"所见=所用"。
+            "crawl": _auto_crawl_longtail(base, cat, active_core_for_tail,
+                                          auto_tail, auto_core=auto_core_list),
             "dimensions": longtail_dimensions(base, cat),
             "verified_pool": verified_tail,
             "generated_pool": generated_tail,
@@ -3716,7 +3756,12 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(self._api_step15_settings(q))
             elif path == "/api/keyword-lists":
                 cfg = self._status_cfg(q.get("file", [None])[0])
-                panel = keyword_lists_panel(cfg["CAT"], cfg["DATA_ROOT"])
+                raw_preview = q.get("preview_core", [None])[0]
+                preview_core = (
+                    [w.strip() for w in str(raw_preview).splitlines() if w.strip()]
+                    if raw_preview is not None else None
+                )
+                panel = keyword_lists_panel(cfg["CAT"], cfg["DATA_ROOT"], preview_core=preview_core)
                 from core import keyword_confirmation as kc
                 root = cat_root_dir(cfg["CAT"], cfg["DATA_ROOT"])
                 gate = kc.read(root)
