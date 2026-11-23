@@ -88,66 +88,88 @@ class Step01Details(BaseStep):
         elif fallback_mode == "auto":
             self.log(ctx, "浏览器兜底=auto: 直连失败的 ASIN(bot_blocked/http_0 等)自动转单会话浏览器补抓"
                           + (f"(直连熔断: 窗口 {breaker_window} 条, 门槛 {breaker_min_rate:.0%})" if breaker_on else ""))
+        from core.amz_crawl_lock import (
+            AmzCrawlSlot,
+            DEFAULT_WAIT_SECONDS as _AMZ_WAIT_DEFAULT,
+            PRIORITY_NORMAL,
+            PRIORITY_SHORT,
+            resolve_max_concurrent,
+            resolve_short_batch,
+        )
+        short_thresh = resolve_short_batch(ctx.config)
+        run_slot = AmzCrawlSlot(
+            max_concurrent=resolve_max_concurrent(ctx.config),
+            wait_seconds=float(ctx.config.get("AMZ_CRAWL_LOCK_WAIT", _AMZ_WAIT_DEFAULT) or _AMZ_WAIT_DEFAULT),
+            label=f"{self._cat or 'pipeline'}·步骤1详情",
+            log=lambda m: self.log(ctx, m),
+            warn=lambda m: ctx.log.warning(f"[Step01Details] {m}"),
+            enabled=not ctx.dry_run,
+            priority=PRIORITY_SHORT if (short_thresh > 0 and len(pending) <= short_thresh) else PRIORITY_NORMAL,
+            remaining=len(pending),
+        )
         self._begin_shared_browser()
-        try:
-            for i, asin in enumerate(pending, 1):
-                rec = None
-                if fallback_mode == "always" or direct_tripped:
-                    rec = self._browser_fetch_one(ctx, asin)
-                else:
-                    page = http.fetch_product_page(asin)
-                    rec = {
-                        "request_asin": page.request_asin,
-                        "ok": page.ok,
-                        "status": page.status,
-                        "fetched_at": page.fetched_at,
-                        "title": page.title,
-                        "bullets": list(page.bullets),
-                    }
-                    if breaker_on and rec["status"] not in ("not_found", "skipped_page_not_found"):
-                        recent_http.append(bool(rec["ok"]))
-                        if len(recent_http) >= breaker_window:
-                            ok_in_win = sum(1 for x in recent_http if x)
-                            rate = ok_in_win / len(recent_http)
-                            if rate < breaker_min_rate:
-                                direct_tripped = True
-                                self.log(
-                                    ctx,
-                                    f"步骤1 直连触发滑动窗口熔断: 最近 {len(recent_http)} 条仅成功 "
-                                    f"{ok_in_win} 条({rate:.0%}<{breaker_min_rate:.0%}), "
-                                    f"剩余 {len(pending) - i} 个 ASIN 直接转单会话新版无头浏览器抓取",
-                                )
-                    if not rec["ok"] and fallback_mode == "auto" and self._needs_browser(rec["status"]):
-                        fallback = self._browser_fetch_one(ctx, asin)
-                        if fallback is not None:
-                            rec = dict(fallback, http_status=rec["status"])
-                if rec is None:                      # 浏览器会话不可用 -> 保留直连结果(如实记失败)
-                    rec = {
-                        "request_asin": asin, "ok": False, "status": "browser_unavailable", "source": "browser",
-                        "fetched_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                        "title": "", "bullets": [],
-                    }
-                if rec["ok"]:
-                    ok_total += 1
-                batch.append(rec)
-                # 每 10 条落盘一次并打印进度(**保持原口径不变**: 用户 2026-09-15 明确要求
-                # 与原有日志提示一致 —— 不额外插入逐条日志, 也不改批次大小)。
-                if i % _FLUSH_EVERY == 0:
-                    appended, skipped = append_jsonl(jsonl_path, batch, dedup_key="request_asin")
-                    appended_total += appended
-                    # 本批结果分布(2026-09-15, 用户要求保持原进度行不变的前提下补一行诊断):
-                    # 只报"累计成功N"时看不出失败原因 —— 实测 UK 站每批 10 条只成功 2 条(其余
-                    # bot_blocked), 必须能一眼看出是被风控还是真的抓不到。
-                    _dist: dict[str, int] = {}
-                    for _r in batch:
-                        _k = "ok" if _r.get("ok") else str(_r.get("status") or "?")
-                        _dist[_k] = _dist.get(_k, 0) + 1
-                    batch = []
-                    self.log(ctx, f"进度: {i}/{len(pending)} 本次追加{appended}条(跳过{skipped}条) 累计成功{ok_total}")
-                    self.log(ctx, "  本批结果: " + ", ".join(
-                        f"{k}×{v}" for k, v in sorted(_dist.items(), key=lambda x: -x[1])))
-        finally:
-            self._close_shared_browser()
+        self._run_crawl_slot = run_slot
+        with run_slot:
+            try:
+                for i, asin in enumerate(pending, 1):
+                    rec = None
+                    if fallback_mode == "always" or direct_tripped:
+                        rec = self._browser_fetch_one(ctx, asin)
+                    else:
+                        page = http.fetch_product_page(asin)
+                        rec = {
+                            "request_asin": page.request_asin,
+                            "ok": page.ok,
+                            "status": page.status,
+                            "fetched_at": page.fetched_at,
+                            "title": page.title,
+                            "bullets": list(page.bullets),
+                        }
+                        if breaker_on and rec["status"] not in ("not_found", "skipped_page_not_found"):
+                            recent_http.append(bool(rec["ok"]))
+                            if len(recent_http) >= breaker_window:
+                                ok_in_win = sum(1 for x in recent_http if x)
+                                rate = ok_in_win / len(recent_http)
+                                if rate < breaker_min_rate:
+                                    direct_tripped = True
+                                    self.log(
+                                        ctx,
+                                        f"步骤1 直连触发滑动窗口熔断: 最近 {len(recent_http)} 条仅成功 "
+                                        f"{ok_in_win} 条({rate:.0%}<{breaker_min_rate:.0%}), "
+                                        f"剩余 {len(pending) - i} 个 ASIN 直接转单会话新版无头浏览器抓取",
+                                    )
+                        if not rec["ok"] and fallback_mode == "auto" and self._needs_browser(rec["status"]):
+                            fallback = self._browser_fetch_one(ctx, asin)
+                            if fallback is not None:
+                                rec = dict(fallback, http_status=rec["status"])
+                    if rec is None:                      # 浏览器会话不可用 -> 保留直连结果(如实记失败)
+                        rec = {
+                            "request_asin": asin, "ok": False, "status": "browser_unavailable", "source": "browser",
+                            "fetched_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                            "title": "", "bullets": [],
+                        }
+                    if rec["ok"]:
+                        ok_total += 1
+                    batch.append(rec)
+                    # 每 10 条落盘一次并打印进度(**保持原口径不变**: 用户 2026-09-15 明确要求
+                    # 与原有日志提示一致 —— 不额外插入逐条日志, 也不改批次大小)。
+                    if i % _FLUSH_EVERY == 0:
+                        appended, skipped = append_jsonl(jsonl_path, batch, dedup_key="request_asin")
+                        appended_total += appended
+                        # 本批结果分布(2026-09-15, 用户要求保持原进度行不变的前提下补一行诊断):
+                        # 只报"累计成功N"时看不出失败原因 —— 实测 UK 站每批 10 条只成功 2 条(其余
+                        # bot_blocked), 必须能一眼看出是被风控还是真的抓不到。
+                        _dist: dict[str, int] = {}
+                        for _r in batch:
+                            _k = "ok" if _r.get("ok") else str(_r.get("status") or "?")
+                            _dist[_k] = _dist.get(_k, 0) + 1
+                        batch = []
+                        self.log(ctx, f"进度: {i}/{len(pending)} 本次追加{appended}条(跳过{skipped}条) 累计成功{ok_total}")
+                        self.log(ctx, "  本批结果: " + ", ".join(
+                            f"{k}×{v}" for k, v in sorted(_dist.items(), key=lambda x: -x[1])))
+            finally:
+                self._run_crawl_slot = None
+                self._close_shared_browser()
         if batch:
             appended, skipped = append_jsonl(jsonl_path, batch, dedup_key="request_asin")
             appended_total += appended
@@ -182,16 +204,18 @@ class Step01Details(BaseStep):
 
     def _ensure_shared_page(self, ctx: StepContext):
         if self._shared_browser is None:
-            from core.amz_crawl_lock import AmzCrawlSlot, DEFAULT_WAIT_SECONDS as _AMZ_WAIT_DEFAULT, resolve_max_concurrent
-            slot = AmzCrawlSlot(
-                max_concurrent=resolve_max_concurrent(ctx.config),
-                wait_seconds=float(ctx.config.get("AMZ_CRAWL_LOCK_WAIT", _AMZ_WAIT_DEFAULT) or _AMZ_WAIT_DEFAULT),
-                label=f"{ctx.config.cat or 'pipeline'}·步骤1浏览器",
-                log=lambda m: self.log(ctx, m),
-                warn=lambda m: ctx.log.warning(f"[Step01Details] {m}"),
-                enabled=not ctx.dry_run,
-            )
-            slot.acquire()
+            slot = None
+            if getattr(self, "_run_crawl_slot", None) is None:
+                from core.amz_crawl_lock import AmzCrawlSlot, DEFAULT_WAIT_SECONDS as _AMZ_WAIT_DEFAULT, resolve_max_concurrent
+                slot = AmzCrawlSlot(
+                    max_concurrent=resolve_max_concurrent(ctx.config),
+                    wait_seconds=float(ctx.config.get("AMZ_CRAWL_LOCK_WAIT", _AMZ_WAIT_DEFAULT) or _AMZ_WAIT_DEFAULT),
+                    label=f"{ctx.config.cat or 'pipeline'}·步骤1浏览器",
+                    log=lambda m: self.log(ctx, m),
+                    warn=lambda m: ctx.log.warning(f"[Step01Details] {m}"),
+                    enabled=not ctx.dry_run,
+                )
+                slot.acquire()
             try:
                 cm = ctx.browser("amazon")
                 browser = cm.__enter__()
@@ -200,7 +224,8 @@ class Step01Details(BaseStep):
                 self._shared_browser = browser
                 self._shared_page = browser.new_page()
             except Exception:
-                slot.release()
+                if slot is not None:
+                    slot.release()
                 raise
         elif self._shared_page is None:
             self._shared_page = self._shared_browser.new_page()
@@ -311,6 +336,17 @@ class Step01Details(BaseStep):
                         continue
                     if signin_streak >= 3 and not window_waited:
                         window_waited = True
+                        try:
+                            from core.amz_crawl_lock import resolve_ip_cooldown_seconds, set_ip_cooldown
+                            cd_sec = max(float(ckpt_wait), float(resolve_ip_cooldown_seconds(ctx.config) or 0))
+                            if cd_sec > 0:
+                                set_ip_cooldown(
+                                    cd_sec,
+                                    reason=f"{ctx.config.cat or 'pipeline'}·步骤1连续3次命中signin/checkpoint",
+                                    label=f"{ctx.config.cat or 'pipeline'}·步骤1",
+                                )
+                        except Exception:
+                            pass
                         self.log(
                             ctx,
                             f"浏览器补抓 {asin} 连续 3 次命中 signin/checkpoint → "
@@ -374,6 +410,21 @@ class Step01Details(BaseStep):
                     if self._shared_captcha_streak >= 2:
                         steps = (45.0, 90.0, 180.0)
                         step_wait = steps[min(self._shared_captcha_streak - 2, len(steps) - 1)]
+                        try:
+                            from core.amz_crawl_lock import resolve_ip_cooldown_seconds, set_ip_cooldown
+                            cd_sec = (
+                                max(float(step_wait), float(resolve_ip_cooldown_seconds(ctx.config) or 0))
+                                if self._shared_captcha_streak >= 3
+                                else float(step_wait)
+                            )
+                            if cd_sec > 0:
+                                set_ip_cooldown(
+                                    cd_sec,
+                                    reason=f"{ctx.config.cat or 'pipeline'}·步骤1连续{self._shared_captcha_streak}次captcha",
+                                    label=f"{ctx.config.cat or 'pipeline'}·步骤1",
+                                )
+                        except Exception:
+                            pass
                         self.log(
                             ctx,
                             f"步骤1 浏览器连续 {self._shared_captcha_streak} 次命中风控/captcha → "

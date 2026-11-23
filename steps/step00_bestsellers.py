@@ -454,44 +454,65 @@ class Step00Bestsellers(BaseStep):
         urls = clean
         self.log(ctx, f"开始榜单收集: CAT={self._cat} 输入URL数={len(urls)}")
 
-        self.ensure_amazon_login(ctx)
-        self.ensure_sellersprite_login(ctx)
+        from core.amz_crawl_lock import (
+            AmzCrawlSlot,
+            DEFAULT_WAIT_SECONDS as _AMZ_WAIT_DEFAULT,
+            PRIORITY_NORMAL,
+            PRIORITY_SHORT,
+            resolve_max_concurrent,
+            resolve_short_batch,
+        )
+        short_thresh = resolve_short_batch(ctx.config)
+        est_batch = max(1, len(urls) * 2)
+        crawl_slot = AmzCrawlSlot(
+            max_concurrent=resolve_max_concurrent(ctx.config),
+            wait_seconds=float(ctx.config.get("AMZ_CRAWL_LOCK_WAIT", _AMZ_WAIT_DEFAULT) or _AMZ_WAIT_DEFAULT),
+            label=f"{self._cat or 'pipeline'}·步骤0榜单",
+            log=lambda m: self.log(ctx, m),
+            warn=lambda m: ctx.log.warning(f"[Step00Bestsellers] {m}"),
+            enabled=not ctx.dry_run,
+            priority=PRIORITY_SHORT if (short_thresh > 0 and est_batch <= short_thresh) else PRIORITY_NORMAL,
+            remaining=est_batch,
+        )
+        with crawl_slot:
+            self.ensure_amazon_login(ctx)
+            self.ensure_sellersprite_login(ctx)
 
-        json_path = ctx.resolve_artifact(self.artifacts[0])
-        txt_path = ctx.resolve_artifact(self.artifacts[1])
-        bs_set, nr_set, processed = self._load_previous(json_path)
+            json_path = ctx.resolve_artifact(self.artifacts[0])
+            txt_path = ctx.resolve_artifact(self.artifacts[1])
+            bs_set, nr_set, processed = self._load_previous(json_path)
 
-        tasks = self._build_tasks(urls)
-        todo = [t for t in tasks if t[0] not in processed]
-        self.log(ctx, f"榜单任务: 共{len(tasks)}个 已处理{len(tasks) - len(todo)}个 待抓{len(todo)}个")
+            tasks = self._build_tasks(urls)
+            todo = [t for t in tasks if t[0] not in processed]
+            self.log(ctx, f"榜单任务: 共{len(tasks)}个 已处理{len(tasks) - len(todo)}个 待抓{len(todo)}个")
 
-        if todo:
-            remaining = list(todo)
-            while remaining:
-                blocked = None
-                with ctx.browser("amazon") as browser:
-                    while remaining:
-                        url, kind = remaining[0]
-                        try:
-                            asins = self._scrape_list(ctx, browser, url, kind=kind)
-                        except ListVerificationRequired:
-                            blocked = (url, kind)
-                            break
+            if todo:
+                remaining = list(todo)
+                while remaining:
+                    blocked = None
+                    with ctx.browser("amazon") as browser:
+                        while remaining:
+                            url, kind = remaining[0]
+                            try:
+                                asins = self._scrape_list(ctx, browser, url, kind=kind)
+                            except ListVerificationRequired:
+                                blocked = (url, kind)
+                                break
+                            self._record_list_result(ctx, json_path, txt_path, bs_set, nr_set, processed, url, kind, asins)
+                            remaining.pop(0)
+                    if blocked:
+                        url, kind = blocked
+                        reuse_ss = bool(str(ctx.config.get("SS_CDP_URL", "") or "").strip())
+                        if reuse_ss:
+                            self.log(ctx, f"[{kind}] 遇到亚马逊人机验证，正在卖家精灵浏览器新建标签，请手动完成验证：{url}")
+                        else:
+                            self.log(ctx, f"[{kind}] 遇到亚马逊人机验证，正在打开有头浏览器，请手动完成验证：{url}")
+                        with ctx.browser("sellersprite" if reuse_ss else "amazon", headed=True) as browser:
+                            asins = self._scrape_list(ctx, browser, url, kind=kind, manual_challenge=True)
                         self._record_list_result(ctx, json_path, txt_path, bs_set, nr_set, processed, url, kind, asins)
                         remaining.pop(0)
-                if blocked:
-                    url, kind = blocked
-                    reuse_ss = bool(str(ctx.config.get("SS_CDP_URL", "") or "").strip())
-                    if reuse_ss:
-                        self.log(ctx, f"[{kind}] 遇到亚马逊人机验证，正在卖家精灵浏览器新建标签，请手动完成验证：{url}")
-                    else:
-                        self.log(ctx, f"[{kind}] 遇到亚马逊人机验证，正在打开有头浏览器，请手动完成验证：{url}")
-                    with ctx.browser("sellersprite" if reuse_ss else "amazon", headed=True) as browser:
-                        asins = self._scrape_list(ctx, browser, url, kind=kind, manual_challenge=True)
-                    self._record_list_result(ctx, json_path, txt_path, bs_set, nr_set, processed, url, kind, asins)
-                    remaining.pop(0)
-        else:
-            self.log(ctx, "所有榜单 URL 均已处理, 跳过抓取")
+            else:
+                self.log(ctx, "所有榜单 URL 均已处理, 跳过抓取")
 
         union = sorted(bs_set | nr_set)
         if not union:
@@ -622,6 +643,19 @@ class Step00Bestsellers(BaseStep):
         if ctx.dry_run:
             self.log(ctx, "dry-run 跳过亚马逊登录检查")
             return
+        try:
+            from core.amz_crawl_lock import remaining_ip_cooldown
+            cd_rem, cd_info = remaining_ip_cooldown()
+            if cd_rem > 0:
+                cd_reason = str(cd_info.get("reason") or "跨类目连续风控冷却")
+                self.log(ctx, f"亚马逊登录预检等待本机 IP 冷却剩余 {int(round(cd_rem))}s ({cd_reason})")
+                while True:
+                    rem, _ = remaining_ip_cooldown()
+                    if rem <= 0:
+                        break
+                    time.sleep(min(2.0, rem))
+        except Exception:
+            pass
         if self._check_amazon(ctx):
             self.log(ctx, "亚马逊登录态有效")
             return

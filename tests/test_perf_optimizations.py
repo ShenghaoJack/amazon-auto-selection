@@ -593,3 +593,54 @@ def test_amz_crawl_slot_shared_ip_cooldown_and_network_error_breaker(tmp_path, m
     assert sleeps == [30.0, 60.0, 120.0, 120.0]
     assert out[6]["error"] == "连续网络异常熔断跳过, 交由后续兜底"
     assert out[7]["error"] == "连续网络异常熔断跳过, 交由后续兜底"
+
+
+def test_step00_and_step01_share_crawl_slot_and_broadcast_ip_cooldown(tmp_path, monkeypatch):
+    from contextlib import nullcontext
+    from core.amz_crawl_lock import remaining_ip_cooldown, set_ip_cooldown
+    from steps.step00_bestsellers import Step00Bestsellers
+    import steps.step01_details as s01mod
+
+    monkeypatch.setenv("PIPELINE_AMZ_LOCK_DIR", str(tmp_path / "amz_locks"))
+
+    # 1) 步骤 0 / 登录预检在共享 IP 冷却期内会先等待冷却到期再打开亚马逊
+    ctx0 = _ctx(tmp_path / "c0", DRY_RUN=False)
+    s0 = Step00Bestsellers()
+    s0._cat = ctx0.config.cat
+    monkeypatch.setattr(s0, "_check_amazon", lambda c, publish=False: True)
+    set_ip_cooldown(0.22, reason="步骤1连续风控", label="CatA·步骤1")
+    t0 = time.monotonic()
+    s0.ensure_amazon_login(ctx0)
+    assert time.monotonic() - t0 >= 0.18
+    assert remaining_ip_cooldown()[0] == 0.0
+
+    # 2) 步骤 1 连续命中 captcha 会写入跨类目共享 IP 冷却，且全程持有 AmzCrawlSlot
+    ctx1 = _ctx(tmp_path / "c1", DRY_RUN=False, STEP01_BROWSER_FALLBACK="always", AMZ_IP_COOLDOWN_SECONDS=120)
+    write_json(
+        ctx1.resolve_artifact(f"{ctx1.config.cat}-bestseller-newrelease.json"),
+        {"bs": ["B000000001", "B000000002"], "nr": [], "union": ["B000000001", "B000000002"], "processed_urls": []},
+    )
+    s1 = Step01Details()
+    s1.validate_upstream(ctx1)
+
+    class _DummyPage:
+        def close(self):
+            pass
+
+    class _DummyBrowser:
+        def new_page(self):
+            return _DummyPage()
+
+    monkeypatch.setattr(ctx1, "browser", lambda *a, **k: nullcontext(_DummyBrowser()))
+    monkeypatch.setattr(s01mod.time, "sleep", lambda *_: None)
+    monkeypatch.setattr(
+        s1,
+        "_browser_fetch_with_page",
+        lambda c, b, p, asin, now: {
+            "request_asin": asin, "ok": False, "status": "bot_blocked",
+            "fetched_at": now, "title": "", "bullets": [], "source": "browser",
+        },
+    )
+    s1.run(ctx1)
+    rem, info = remaining_ip_cooldown()
+    assert rem > 0 and "步骤1" in str(info.get("reason") or "")
