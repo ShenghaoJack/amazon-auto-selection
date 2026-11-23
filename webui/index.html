@@ -770,6 +770,9 @@
 #secMarketReport .mr-actions a[hidden]{display:none}
 #secMarketReport .mr-actions button,#secMarketReport .mr-actions a{border:1px solid #c0baff;background:#d6d2ff;color:#191827;border-radius:7px;padding:9px 15px;font-size:13px;font-weight:650;cursor:pointer;text-decoration:none;line-height:normal}
 #secMarketReport .mr-actions button:hover:not(:disabled),#secMarketReport .mr-actions a:hover{background:#e6e3ff}#secMarketReport .mr-actions button:disabled{opacity:.48;cursor:not-allowed}
+#secMarketReport .mr-actions button.mr-btn-reject{border-color:rgba(248,113,113,.45);background:rgba(248,113,113,.16);color:#fca5a5}
+#secMarketReport .mr-actions button.mr-btn-reject:hover:not(:disabled){background:rgba(248,113,113,.28);color:#fee2e2}
+#secMarketReport .mr-rejected-banner{margin-bottom:16px;padding:12px 16px;border-radius:9px;border:1px solid rgba(248,113,113,.45);background:rgba(248,113,113,.12);color:#fecaca;font-size:13px;line-height:1.6}
 @media(max-width:800px){
   #secMarketReport .mr-content{padding:20px 18px 26px}#secMarketReport .mr-overview{grid-template-columns:1fr}
   #secMarketReport .mr-decision{border-right:0;border-bottom:1px solid var(--mr-line)}
@@ -1379,7 +1382,7 @@
 </div>
 <section class="card" id="secMarketReport" style="display:none">
   <div id="marketReportBody" aria-live="polite">加载中…</div>
-  <div class="mr-actions"><span>查看指标与依据后确认报告</span><a id="marketReportPdf" class="btn" hidden>下载 PDF</a><button type="button" id="marketReportConfirm" disabled>确认报告并继续</button></div>
+  <div class="mr-actions"><span id="marketReportActionHint">查看指标与依据后决定是否继续深挖</span><a id="marketReportPdf" class="btn" hidden>下载 PDF</a><button type="button" id="marketReportReject" class="mr-btn-reject" disabled>否决（不推荐进入）</button><button type="button" id="marketReportConfirm" disabled>继续深挖该类目</button></div>
 </section>
 <section class="card" id="secStep15Settings" style="display:none">
   <p class="muted">所有类目共用一套标准，由管理员修改；标准改动后，已生成的报告须重跑步骤15。</p>
@@ -2259,7 +2262,8 @@ function initWorkbenchPanels() {
   $("openConfig").onclick=()=>openWorkbenchPanel("secCfg");
   $("openLog").onclick=()=>openWorkbenchPanel("secLog");
   $("workbenchClose").onclick=()=>closeWorkbenchPanel();
-  if ($("marketReportConfirm")) $("marketReportConfirm").onclick=confirmMarketReport;
+  if ($("marketReportReject")) $("marketReportReject").onclick=rejectMarketReport;
+if ($("marketReportConfirm")) $("marketReportConfirm").onclick=confirmMarketReport;
   if ($("openStep15Settings")) $("openStep15Settings").onclick=()=>openWorkbenchPanel("secStep15Settings");
   if ($("step15SettingsSave")) $("step15SettingsSave").onclick=saveStep15Settings;
 }
@@ -2361,9 +2365,10 @@ async function saveStep15Settings() {
 let marketReportRevision = "", marketReportFile = "";
 async function loadMarketReport() {
   const file = selFile, box = $("marketReportBody"), button = $("marketReportConfirm");
+  const rejectBtn = $("marketReportReject"), hintEl = $("marketReportActionHint");
   const pdfLink = $("marketReportPdf"); if (pdfLink) pdfLink.hidden = true;
   marketReportRevision = ""; marketReportFile = "";
-  button.disabled = true; box.innerHTML = '<div class="mr-state" role="status">正在读取选品报告…</div>';
+  button.disabled = true; if (rejectBtn) rejectBtn.disabled = true; box.innerHTML = '<div class="mr-state" role="status">正在读取选品报告…</div>';
   try {
     const data = await api(`/api/step15-review?file=${encodeURIComponent(file)}`);
     if (file !== selFile || __openWorkbenchPanel !== "secMarketReport") return;
@@ -2412,8 +2417,11 @@ async function loadMarketReport() {
       }
       return content;
     };
+    const isRejected = !!data.rejected || data.decision === "rejected";
+    const auditTag = [data.decided_by, data.decided_at].filter(Boolean).join(" · ");
     let html = `<div class="mr-content">`;
     if (reportOutdated) html += '<div class="mr-alert" role="status">当前为旧版指标报告，暂不符合现行的市场需求和竞争格局口径。请单独重新运行步骤15，生成新版报告后再确认。</div>';
+    if (isRejected && !reportOutdated && !data.settings_stale) html += `<div class="mr-rejected-banner" role="status">已人工否决${auditTag ? `（${safe(auditTag)}）` : ""}：不推荐进入该类目，已终止步骤 16 及后续深挖执行。如需恢复深挖，可点击下方「改选：继续深挖该类目」。</div>`;
     html += `<div class="mr-title"><div><h2>市场进入评估</h2><p>查看指标结果、AI 分析与各项指标依据。</p></div></div>`;
     html += `<section class="mr-overview" aria-label="报告结论"><div class="mr-decision"><div class="mr-label">指标概况</div><div class="mr-decision-text">${safe(decision)}</div></div><div class="mr-ai"><div class="mr-label">AI 市场建议</div><div class="mr-ai-text">${legacyAdvice ? "<p>该报告的 AI 建议基于旧规则，请重新运行步骤15生成新的建议。</p>" : aiSections()}</div></div></section>`;
     html += `<div class="mr-status-bar" role="group" aria-label="按判定筛选指标"><span class="mr-status-label">指标筛选</span><button type="button" class="mr-filter" data-mr-filter="全部" aria-pressed="true">全部 <span class="mr-count">${rows.length}</span></button>`;
@@ -2485,8 +2493,24 @@ async function loadMarketReport() {
         section.querySelector(".mr-section-head span").textContent = `${visible} 项`;
       });
     }));
-    button.disabled = !data.pending || !!data.settings_stale || reportOutdated;
-    button.textContent = data.settings_stale || reportOutdated ? "请重新运行步骤15" : (data.pending ? "确认报告并继续" : "报告已确认");
+    const isStaleOrOld = !!data.settings_stale || reportOutdated;
+    button.disabled = (!data.pending && !isRejected) || isStaleOrOld;
+    button.textContent = isStaleOrOld
+      ? "请重新运行步骤15"
+      : (isRejected ? "改选：继续深挖该类目" : (data.pending ? "继续深挖该类目" : "已确认继续深挖"));
+    if (rejectBtn) {
+      rejectBtn.disabled = isRejected || isStaleOrOld;
+      rejectBtn.textContent = isRejected ? "已否决（已终止后续）" : "否决（不推荐进入）";
+    }
+    if (hintEl) {
+      hintEl.textContent = isStaleOrOld
+        ? "标准或口径已更新，请重新运行步骤15"
+        : (isRejected
+            ? `已否决进入该类目${auditTag ? `（${auditTag}）` : ""}，后续步骤已终止`
+            : (data.pending
+                ? "查看指标与依据后，决定继续深挖或否决终止"
+                : `已确认继续深挖该类目${auditTag ? `（${auditTag}）` : ""}`));
+    }
   } catch (error) {
     if (file === selFile) box.innerHTML = `<div class="mr-state" role="alert">报告读取失败：${safeReportError(error)}</div>`;
   }
@@ -2495,16 +2519,59 @@ function safeReportError(error) { return esc(String(error && error.message || er
 async function confirmMarketReport() {
   const file = marketReportFile, revision = marketReportRevision;
   if (!file || file !== selFile || !revision) return;
-  const button = $("marketReportConfirm"); button.disabled = true;
+  const button = $("marketReportConfirm"), rejectBtn = $("marketReportReject");
+  button.disabled = true; if (rejectBtn) rejectBtn.disabled = true;
   try {
     await api("/api/step15-review/confirm", {method:"POST", body:{config_file:file, revision}});
     if (file !== selFile) return;
-    toast("步骤15报告已确认，正在继续流程", "ok");
+    __mandatoryGate = "";
+    __dismissedManualGate = file + "::market_report";
+    __manualGateMessage = "";
+    const allSteps = (lastStatus && Array.isArray(lastStatus.steps)) ? lastStatus.steps : [];
+    const laterSteps = allSteps.filter(s => Number(s.number) > 15);
+    const step16 = allSteps.find(s => Number(s.number) === 16);
+    const step16Done = !!(step16 && (step16.status === "DONE" || step16.status === "SKIP"));
+    const hasPendingLater = !laterSteps.length || laterSteps.some(s => s.status !== "DONE" && s.status !== "SKIP");
+    if (!hasPendingLater) {
+      toast("已确认继续深挖（后续步骤已全部完成，无需重新运行）", "ok");
+      closeWorkbenchPanel(true);
+      pollNow();
+      return;
+    }
     closeWorkbenchPanel(true);
+    if (step16Done) {
+      if (!window.confirm("已确认继续深挖该类目（步骤 16 已完成）。\n\n是否立即从首个未完成步骤续跑？\n点击「确定」继续续跑，点击「取消」暂不续跑。")) {
+        toast("已确认继续深挖该类目（暂不续跑，可随时在看板手动续跑）", "ok");
+        pollNow();
+        return;
+      }
+    }
+    toast("已确认继续深挖该类目，正在准备续跑后续流程", "ok");
     await startRun("resume");
     pollNow();
   } catch (error) {
     toast("确认失败：" + (error.message || error), "err");
+    if (file === selFile) await loadMarketReport();
+  }
+}
+async function rejectMarketReport() {
+  const file = marketReportFile, revision = marketReportRevision;
+  if (!file || file !== selFile || !revision) return;
+  if (!window.confirm("确认否决该类目（不推荐进入）并终止后续深挖步骤吗？\n\n否决后步骤 16 及之后将不会继续执行；如需恢复，可重新打开步骤15报告改选「继续深挖该类目」。")) return;
+  const rejectBtn = $("marketReportReject"), confirmBtn = $("marketReportConfirm");
+  if (rejectBtn) rejectBtn.disabled = true;
+  if (confirmBtn) confirmBtn.disabled = true;
+  try {
+    await api("/api/step15-review/reject", {method:"POST", body:{config_file:file, revision}});
+    if (file !== selFile) return;
+    toast("已否决该类目（不推荐进入），已终止后续深挖步骤", "ok");
+    __mandatoryGate = "";
+    __dismissedManualGate = file + "::market_report";
+    __manualGateMessage = "";
+    await loadMarketReport();
+    pollNow();
+  } catch (error) {
+    toast("否决失败：" + (error.message || error), "err");
     if (file === selFile) await loadMarketReport();
   }
 }

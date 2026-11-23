@@ -80,9 +80,11 @@ def pending_gates(cat_root, statuses):
     if pending:
         return [{'kind':'keywords','after':8,'message':'请核对并确认关键词清单后继续。'}]
     if status(15) == 'DONE':
-        from core.step15_review import pending as report_pending
-        if report_pending(root):
-            return [{'kind':'market_report','after':15,'message':'请查看步骤15选品指标及AI建议，确认后继续。'}]
+        from core.step15_review import needs_review as report_needs_review, rejected as report_rejected
+        if report_rejected(root):
+            return []
+        if report_needs_review(root):
+            return [{'kind':'market_report','after':15,'message':'请查看步骤15选品指标及AI建议，决定是否继续深挖。'}]
     spec = resolve_spec_path(root.parent, root.name)
     if status(16) == 'DONE':
         try:
@@ -104,6 +106,10 @@ def blocking_gate(cat_root, statuses, target):
     for step in (8, 15, 16, 17, 18):
         if target > step and statuses.get(step) != 'DONE':
             return {'kind':'prerequisite','after':step,'message':f'请先完成步骤 {step}，再进行后续步骤。'}
+        if step == 15 and target > 15 and statuses.get(15) == 'DONE':
+            from core.step15_review import rejected as report_rejected
+            if report_rejected(Path(cat_root)):
+                return {'kind':'market_report_rejected','after':15,'message':'步骤15已人工否决（不推荐进入该类目），已终止后续深挖步骤。如需继续，请打开步骤15报告改选「继续深挖该类目」。'}
         if target > step and pending and pending[0]['after'] == step:
             return pending[0]
     return None

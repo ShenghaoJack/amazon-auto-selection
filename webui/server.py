@@ -726,6 +726,9 @@ OP_ACTIONS = {
     "/api/std-vocab/rollback": "词表回滚",
     "/api/admin/amazon-login/start": "管理员启动亚马逊共享登录",
     "/api/admin/amazon-login/cancel": "管理员取消亚马逊登录等待",
+    "/api/step15-review/confirm": "步骤15 确认继续深挖",
+    "/api/step15-review/reject": "步骤15 否决（不推荐进入）",
+    "/api/step15-settings/save": "保存步骤15选品标准",
 }
 _AMZ_LOGIN_MANAGER = None
 
@@ -3421,8 +3424,19 @@ class Handler(BaseHTTPRequestHandler):
         self._require_run(cfg["CAT"])
         if RUNNER.active_for(cfg["CAT"]) or _lock_live_started(cfg["CAT"], cfg["DATA_ROOT"])[0]:
             raise ValueError("该类目仍在运行，请等待步骤15暂停后再确认")
-        confirm(root, body.get("revision"))
-        return {"ok": True, "cat": cfg["CAT"]}
+        actor = str((getattr(self, "_user", None) or {}).get("name") or "")
+        confirm(root, body.get("revision"), actor=actor)
+        return {"ok": True, "cat": cfg["CAT"], "decision": "confirmed"}
+
+    def _api_step15_review_reject(self, body):
+        from core.step15_review import reject
+        cfg, root = self._step15_review_root(str(body.get("config_file") or "config.yaml"))
+        self._require_run(cfg["CAT"])
+        if RUNNER.active_for(cfg["CAT"]) or _lock_live_started(cfg["CAT"], cfg["DATA_ROOT"])[0]:
+            raise ValueError("该类目仍在运行，请先停止或等待步骤15暂停后再否决")
+        actor = str((getattr(self, "_user", None) or {}).get("name") or "")
+        reject(root, body.get("revision"), body.get("reason", ""), actor=actor)
+        return {"ok": True, "cat": cfg["CAT"], "decision": "rejected"}
 
     def _api_status(self, q, path):
         after_raw = q.get("after", [None])[0]
@@ -3807,6 +3821,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(self._api_run(self._read_body()))
             elif path == "/api/step15-review/confirm":
                 self._json(self._api_step15_review_confirm(self._read_body()))
+            elif path == "/api/step15-review/reject":
+                self._json(self._api_step15_review_reject(self._read_body()))
             elif path == "/api/step15-settings/save":
                 self._json(self._api_step15_settings_save(self._read_body()))
             elif path == "/api/stop":
@@ -6256,7 +6272,7 @@ class Handler(BaseHTTPRequestHandler):
         # missing/old report and permit earlier steps to run independently.
         target_after = mode == "resume" or (mode == "step" and int(body.get("step", 0)) > 15) or (mode == "from" and int(body.get("from_step", 0)) > 15)
         if target_after:
-            from core.step15_review import pending as report_pending
+            from core.step15_review import pending as report_pending, rejected as report_rejected
             gate_cfg = self._status_cfg(file)
             gate_cat = str(gate_cfg.get("CAT") or "").strip()
             gate_root = str(gate_cfg.get("DATA_ROOT") or "data")
@@ -6264,8 +6280,11 @@ class Handler(BaseHTTPRequestHandler):
                 self._require_run(gate_cat)
                 _, parsed = _hist_status_snapshot(monitor_dir(gate_cat, gate_root))
                 status15 = str(parsed.get(15, {}).get("status") or "PENDING")
-                if status15 == "DONE" and report_pending(cat_root_dir(gate_cat, gate_root)):
-                    raise UserFacingError("步骤15选品报告尚未确认，请打开报告并点击‘确认报告并继续’；如报告无法读取，请先单独重新运行步骤15")
+                cat_root = cat_root_dir(gate_cat, gate_root)
+                if status15 == "DONE" and report_rejected(cat_root):
+                    raise UserFacingError("步骤15已人工否决（不推荐进入该类目），已终止后续深挖步骤；如需继续深挖，请打开步骤15报告改选「继续深挖该类目」")
+                if status15 == "DONE" and report_pending(cat_root):
+                    raise UserFacingError("步骤15选品报告尚未确认，请打开报告并选择「继续深挖该类目」或「否决（不推荐进入）」；如报告无法读取，请先单独重新运行步骤15")
 
         # 本次显式覆盖 > 类目配置 > 自动分配。旧逻辑只看 overrides，
         # 将类目配置中的固定端口误覆盖成另一个空闲端口。
