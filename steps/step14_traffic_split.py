@@ -722,8 +722,8 @@ class Step14TrafficSplit(BaseStep):
         顺序: 先补齐 BuyBox卖家(sellerName)、卖家所属地(sellerNation)、上架时间(availableDate)与原始 fulfillment;
               回填完成后由 _fill_logistics 统一按 BuyBox卖家含 amazon(忽略大小写) 将配送方式校正为 AMZ。
         候选: BuyBox卖家为空、非 Amazon 行的卖家所属地为空、配送方式为空(且非已知 Amazon)、或上架时间为空的变体;
-        月份: 配置月(趋势/竞品/流量 优先级依次回退)往前共 6 个月(最新在前); 最近30天查 NEAR_30_DAYS;
-        分批: 每 40 个一批, 每批内逐月调 competitor_lookup(仅查仍缺字段的 ASIN), 每批每月结果写临时文件;
+        月份: 配置月(趋势/竞品/流量 优先级依次回退)往前共 6 个月(最新在前); 最近30天先查 NEAR_30_DAYS，缺失再往前逐月查最多 6 个自然月;
+        分批: 按月由近到远循环, 每月仅汇总仍缺字段的变体重新按 40 个/批打包调 competitor_lookup(全补齐即提前结束), 每月每批结果写临时文件;
         取值: sellerName/sellerNation/fulfillment 仅取非空且 ≠NA; **只取最近月份的首次命中**(更早月份不覆盖);
         兜底: 6 个月查不到→配送方式标"未知"(步骤 13 兜底处理); 结束删临时文件; 单月失败不中断。
         """
@@ -743,8 +743,12 @@ class Step14TrafficSplit(BaseStep):
             self.log(ctx, "12. 缺少历史月份, 跳过MCP补齐(缺失将兜底标'未知')")
             return
         if is_recent30(month):
-            months = [""]  # V2 asin.list 不传 dataMonth 即 NEAR_30_DAYS
-            month_label = "最近30天"
+            now = datetime.now()
+            prev_ord = (now.year - 1) * 12 + now.month - 2  # 上一个已完成自然月
+            prev_month = f"{prev_ord // 12 + 1:04d}-{prev_ord % 12 + 1:02d}"
+            hist_months = _recent_months(prev_month, 6)  # 最新在前，共 6 个月
+            months = [""] + hist_months  # 先查 NEAR_30_DAYS，未补齐的继续往前逐月查最多 6 个月
+            month_label = f"最近30天 + {hist_months[-1]}~{hist_months[0]}"
         else:
             months = _recent_months(month, 6)  # 最新在前
             month_label = f"{months[-1]}~{months[0]}"
@@ -775,35 +779,39 @@ class Step14TrafficSplit(BaseStep):
         os.makedirs(tmpdir, exist_ok=True)
         self.log(
             ctx,
-            f"12. MCP 分批查询: 待补 {len(need)} 行, 每批 {batch}, 月份 {month_label}",
+            f"12. MCP 按月分批查询: 待补 {len(need)} 行, 每批上限 {batch}, 月份 {month_label}",
         )
-        total_batches = (len(need) + batch - 1) // batch
         filled = 0
         try:
-            for bi, start in enumerate(range(0, len(need), batch), 1):
-                chunk = need[start : start + batch]
-                for m in months:
-                    pending_rows = [i for i in chunk if _row_needs(i)]
-                    chunk_asins = [
-                        str(df.at[i, "变体ASIN"]).strip()
-                        for i in pending_rows
-                        if str(df.at[i, "变体ASIN"]).strip() and str(df.at[i, "变体ASIN"]).strip() != "nan"
-                    ]
+            for mi, m in enumerate(months, 1):
+                pending_rows = [i for i in need if _row_needs(i)]
+                if not pending_rows:
+                    break
+                month_batches = (len(pending_rows) + batch - 1) // batch
+                for bi, start in enumerate(range(0, len(pending_rows), batch), 1):
+                    chunk = pending_rows[start : start + batch]
+                    chunk_asins = list(
+                        dict.fromkeys(
+                            str(df.at[i, "变体ASIN"]).strip()
+                            for i in chunk
+                            if str(df.at[i, "变体ASIN"]).strip() and str(df.at[i, "变体ASIN"]).strip() != "nan"
+                        )
+                    )
                     if not chunk_asins:
-                        break
+                        continue
                     try:
                         items = query(m, chunk_asins) or []
                     except Exception as exc:
-                        self.log(ctx, f"12. 月份 {m or '最近30天'} 查询失败(不中断): {str(exc)[:120]}")
+                        self.log(ctx, f"12. 月份 {m or '最近30天'} 批次 {bi}/{month_batches} 查询失败(不中断): {str(exc)[:120]}")
                         items = []
-                    # 每批每月结果写临时文件(规格)
-                    tmp = os.path.join(tmpdir, f"mcp-b{bi}-{m or 'recent30'}.json")
+                    # 每月每批结果写临时文件(规格)
+                    tmp = os.path.join(tmpdir, f"mcp-{m or 'recent30'}-b{bi}.json")
                     try:
                         with open(tmp, "w", encoding="utf-8") as fh:
                             json.dump(items, fh, ensure_ascii=False)
                     except Exception:
                         pass
-                    # 回填顺序: 先补 BuyBox卖家 与 卖家所属地, 再补 上架时间 与 配送方式(最近月份优先)
+                    # 回填顺序: 先补 BuyBox卖家 与 卖家所属地, 再补 上架时间 与 配送方式(最近月份优先，不覆盖已有值)
                     for item in items or []:
                         if not isinstance(item, dict):
                             continue
@@ -840,7 +848,11 @@ class Step14TrafficSplit(BaseStep):
                         if df.at[idx, "配送方式"] == "" and ful:
                             df.at[idx, "配送方式"] = ful
                             filled += 1
-                self.log(ctx, f"12. MCP 批次 {bi}/{total_batches} 完成(月 {month_label})")
+                remain = sum(1 for i in pending_rows if _row_needs(i))
+                self.log(
+                    ctx,
+                    f"12. MCP 月份 {m or '最近30天'}({mi}/{len(months)}) 完成: 查询 {len(pending_rows)} 行({month_batches} 批), 累计回填 {filled} 个字段值, 仍缺 {remain} 行",
+                )
         finally:
             try:
                 for f in os.listdir(tmpdir):

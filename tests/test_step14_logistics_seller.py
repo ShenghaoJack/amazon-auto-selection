@@ -154,3 +154,87 @@ def test_sync_seller_nation_by_seller_and_unique_brand(tmp_path):
     assert out.at["T4", "卖家所属地"] == ""
     assert out.at["T5", "卖家所属地"] == ""
     assert out.at["T5", "配送方式"] == "AMZ"
+
+
+def test_recent30_mcp_backfills_up_to_six_prior_months(tmp_path):
+    calls = []
+
+    def fake_lookup(month, asins):
+        calls.append((month, list(asins)))
+        if month == "":
+            # R1 在最近30天内直接补齐；R2/R3 缺失
+            return [
+                {"asin": "R1", "sellerName": "RecentShop", "sellerNation": "US", "fulfillment": "FBA", "availableDate": "2025-01-10"},
+            ]
+        if len(calls) == 4:
+            # R2 在往前第 3 个历史自然月补齐
+            return [
+                {"asin": "R2", "sellerName": "HistShop", "sellerNation": "CN", "fulfillment": "FBM", "availableDate": "2024-06-01"},
+            ]
+        return []
+
+    ctx = _make_ctx(tmp_path, month="最近30天", lookup_fn=fake_lookup)
+    df = pd.DataFrame([
+        {"变体ASIN": "R1", "BuyBox卖家": "", "卖家所属地": "", "配送方式": "", "上架时间": ""},
+        {"变体ASIN": "R2", "BuyBox卖家": "", "卖家所属地": "", "配送方式": "", "上架时间": ""},
+        {"变体ASIN": "R3", "BuyBox卖家": "", "卖家所属地": "", "配送方式": "", "上架时间": ""},
+    ])
+    out = Step14TrafficSplit()._fill_logistics(ctx, df).set_index("变体ASIN")
+
+    # 1 次最近30天("") + 最多 6 个历史自然月 = 共 7 次
+    assert len(calls) == 7
+    assert calls[0][0] == ""
+    assert calls[0][1] == ["R1", "R2", "R3"]
+    # 第 2 次起为 YYYY-MM 历史自然月，且已补齐的 R1 不再重查
+    hist_months = [m for m, _ in calls[1:]]
+    assert len(hist_months) == 6
+    assert all(len(m) == 7 and m[4] == "-" for m in hist_months)
+    assert hist_months == sorted(hist_months, reverse=True)
+    assert "R1" not in calls[1][1]
+    # R2 在第 4 次调用(第 3 个历史月)补齐后，后续 3 个月只查 R3
+    assert calls[4][1] == ["R3"]
+    assert calls[6][1] == ["R3"]
+
+    assert out.at["R1", "BuyBox卖家"] == "RecentShop"
+    assert out.at["R1", "配送方式"] == "FBA"
+    assert out.at["R2", "BuyBox卖家"] == "HistShop"
+    assert out.at["R2", "卖家所属地"] == "CN"
+    assert out.at["R2", "配送方式"] == "FBM"
+    assert out.at["R3", "配送方式"] == "未知"
+
+
+def test_month_outer_rebatch_saves_calls_and_stops_early(tmp_path):
+    """50 个待补 ASIN(40+10 两批): 首月补齐 48 个, 跨批残余的 2 个在次月合并为 1 批查询, 补齐即停。"""
+    calls = []
+    miss_first_month = {"A00", "A45"}
+
+    def fake_lookup(month, asins):
+        calls.append((month, list(asins)))
+        if month == "2026-10":
+            return [
+                {"asin": a, "sellerName": f"S-{a}", "sellerNation": "US", "fulfillment": "FBA", "availableDate": "2025-01-01"}
+                for a in asins
+                if a not in miss_first_month
+            ]
+        if month == "2026-09":
+            return [
+                {"asin": a, "sellerName": f"Hist-{a}", "sellerNation": "CN", "fulfillment": "FBM", "availableDate": "2024-05-01"}
+                for a in asins
+            ]
+        return []
+
+    ctx = _make_ctx(tmp_path, month="202610", lookup_fn=fake_lookup)
+    df = pd.DataFrame([
+        {"变体ASIN": f"A{i:02d}", "BuyBox卖家": "", "卖家所属地": "", "配送方式": "", "上架时间": ""}
+        for i in range(50)
+    ])
+    out = Step14TrafficSplit()._fill_logistics(ctx, df).set_index("变体ASIN")
+
+    # 首月(2026-10): 2 批 (40 + 10); 次月(2026-09): 跨批残余的 A00+A45 合并成 1 批; 全部补齐后不再查更早 4 个月
+    assert len(calls) == 3
+    assert calls[0][0] == "2026-10" and len(calls[0][1]) == 40
+    assert calls[1][0] == "2026-10" and len(calls[1][1]) == 10
+    assert calls[2] == ("2026-09", ["A00", "A45"])
+    assert out.at["A00", "BuyBox卖家"] == "Hist-A00"
+    assert out.at["A45", "卖家所属地"] == "CN"
+    assert out.at["A01", "BuyBox卖家"] == "S-A01"
