@@ -30,7 +30,26 @@ BUSINESS_MEANINGS = {
     "评论壁垒": "观察销量靠前父体的评分数量水平，反映成熟竞品的评价积累；评分数不等于文字评论数。",
     "评分": "反映有效样本变体平均星级，是评价质量的参考；并非按评分数量加权。",
     "老品占比": "反映上架超过1095天的样本变体销额占比，并非全部老品的占比；上架不足或等于1095天的老品不包含在分子。",
+    "上架超3年链接销额占比": "反映上架超过1095天的样本变体销额占比，并非全部老品的占比；上架不足或等于1095天的老品不包含在分子。",
 }
+
+_METRIC_DISPLAY_ALIAS = {
+    "老品占比": "上架超3年链接销额占比",
+}
+
+
+def _display_metric_name(name) -> str:
+    s = str(name or "").strip()
+    return _METRIC_DISPLAY_ALIAS.get(s, s)
+
+
+def _normalize_advice_metric_names(text: str) -> str:
+    """兜底对齐 AI 输出中的历史指标简称，确保与报告指标明细表一致。"""
+    s = str(text or "")
+    for old, new in _METRIC_DISPLAY_ALIAS.items():
+        if old in s:
+            s = s.replace(old, new)
+    return s
 
 # Order, original thresholds and remarks are retained for user review.
 SPECS = [
@@ -280,7 +299,7 @@ def _summarize_assessment(rows: list[dict]) -> dict:
             elif status == "不达标":
                 bucket["不达标"] += 1
                 if name:
-                    bucket["不达标项"].append(name)
+                    bucket["不达标项"].append(_display_metric_name(name))
             elif status in ("待确认", "数据不足"):
                 bucket["待确认或数据不足"] += 1
 
@@ -325,11 +344,11 @@ def _summarize_assessment(rows: list[dict]) -> dict:
                     heavy_l = lim + 10.0 if lim > 0 else 70.0
                     if val >= heavy_l:
                         monopoly_level = bump(monopoly_level, "重度")
-                        note = f"头部链接高度集中({val:.1f}%≥{heavy_l:g}%)"
+                        note = f"头部链接销售额占比高度集中({val:.1f}%≥{heavy_l:g}%)"
                         monopoly_notes.append(note)
                         severe_fails.append(note)
                     else:
-                        monopoly_notes.append(f"头部链接偏集中({val:.1f}%)")
+                        monopoly_notes.append(f"头部链接销售额占比偏高({val:.1f}%)")
 
         # 维度 C：评价与成熟冷启动壁垒
         elif name in _BARRIER_METRICS:
@@ -373,9 +392,9 @@ def _summarize_assessment(rows: list[dict]) -> dict:
                 elif name in ("老品占比", "上架超3年链接销额占比") and val is not None:
                     if val >= (lim or 70.0) + 10.0:
                         barrier_level = bump(barrier_level, "中度")
-                        barrier_notes.append(f"老品固化偏高({val:.1f}%)")
+                        barrier_notes.append(f"上架超3年链接销额占比偏高({val:.1f}%)")
                     else:
-                        barrier_notes.append(f"老品占比略超标({val:.1f}%)")
+                        barrier_notes.append(f"上架超3年链接销额占比略超标({val:.1f}%)")
                 elif name in ("评分", "平均评分数") and val is not None:
                     barrier_notes.append(f"类目均分偏低({val:.2f}分)")
 
@@ -518,7 +537,14 @@ def build_advice_prompt(ctx, rows):
     enriched_rows = []
     for row in rows:
         item = {k: v for k, v in row.items() if k not in ("影响", "优先级")}
-        item["业务含义与解读边界"] = BUSINESS_MEANINGS.get(row.get("指标"), "未提供业务定义，按实际口径和证据解释，勿自行补造。")
+        raw_name = row.get("指标")
+        disp_name = _display_metric_name(raw_name)
+        item["指标"] = disp_name
+        item["业务含义与解读边界"] = (
+            BUSINESS_MEANINGS.get(disp_name)
+            or BUSINESS_MEANINGS.get(raw_name)
+            or "未提供业务定义，按实际口径和证据解释，勿自行补造。"
+        )
         enriched_rows.append(item)
     summary = _summarize_assessment(rows)
     return ("你是严谨的亚马逊类目研究分析师，为当前站点的本土卖家输出稳定、边界清晰、不可和稀泥的市场进入评估。"
@@ -531,9 +557,10 @@ def build_advice_prompt(ctx, rows):
               "Google趋势按各词指数相加口径判定，须注明各词可能独立归一化，合计指数不等于实际搜索量。"
               "季节性以达标核心词的逐月搜索量合计计算两年峰谷比并判断；单词峰谷比只作细分参考，不得据此推翻整体判定。"
               "不得依据显示取整值改写指标判定。金额统一使用明确的ISO币种代码（例如 USD 2.48），金额较大时用 M 或 B，不得换算汇率。"
+              "【指标名称严格对齐】输出中引用任何指标时，必须严格使用下方「指标」数组中的完整指标名称（例如使用‘上架超3年链接销额占比’而非‘老品占比’，使用‘头部链接销售额占比’而非‘头部链接占比’，使用‘新卖家占比’而非‘新卖家窗口’），确保正文与报告指标明细表逐字一致。"
               "【四维度×四档结论判定边界（按独立业务维度而非机械数项数判定，禁止将双维重度封锁类目放宽为‘有条件进入’）】："
-              "四维度=A需求底盘（健康/偏弱/不成立）、B垄断与自营控盘（含头部链接/品牌/卖家集中度与VC/AMZ占比；VC/AMZ≥50%或≥2.5×阈值即属重度控盘；品牌/卖家≥阈值+15pct即重度集中）、"
-              "C评价与冷启动壁垒（含大卖占比/评论壁垒/老品占比/评分；评论≥2×阈值或大卖偏高叠加高评论即重度壁垒）、D新品窗口（新卖家占比为主信号，本土卖家占比为辅助提醒）。"
+              "四维度=A需求底盘（健康/偏弱/不成立）、B垄断与自营控盘（含头部链接销售额占比/头部品牌集中度/卖家集中度与VC卖家占比；VC卖家占比≥50%或≥2.5×阈值即属重度控盘；品牌/卖家集中度≥阈值+15pct即重度集中）、"
+              "C评价与冷启动壁垒（含大卖占比/评论壁垒/上架超3年链接销额占比/评分；评论壁垒≥2×阈值或大卖占比偏高叠加高评论壁垒即重度壁垒）、D新品窗口（新卖家占比为主信号，本土卖家占比为辅助提醒）。"
               "1) 数据不足无法判断：有效已判定指标不足50%，或任一核心维度缺少有效判定；"
               "2) 暂不建议进入：满足任一即归入本档——①A需求底盘不成立；②B垄断/自营控盘与C评价壁垒双双为重度（例如VC/AMZ≥50%叠加评论破万或寡头垄断叠加高壁垒）；③B或C任一为重度且D无新品窗口；"
               "3) 可进入：A健康或仅1项次要需求指标偏弱且站内趋势达标、B与C均不超过轻度、且D不缺新品窗口；"
@@ -584,10 +611,14 @@ def advice(ctx, rows):
             if any(label in content for label in ("否决", "降级")):
                 prompt += "\n请重新回答，禁止输出已停用的影响等级；仅讨论达标情况、证据和市场进入建议。"
                 raise ValueError("AI 建议包含已停用的影响等级")
-            out = [{"项目": "指标概况", "内容": decision}, {"项目": "AI建议", "内容": advice_text}]
+            out = [{"项目": "指标概况", "内容": decision}, {"项目": "AI建议", "内容": _normalize_advice_metric_names(advice_text)}]
             for key in ("主要依据", "主要风险", "待验证"):
                 values = result.get(key)
-                if isinstance(values, list): out.extend({"项目": key, "内容": str(x)} for x in values if str(x).strip())
+                if isinstance(values, list):
+                    out.extend(
+                        {"项目": key, "内容": _normalize_advice_metric_names(str(x))}
+                        for x in values if str(x).strip()
+                    )
             return out
         except Exception as exc:
             ctx.log.warning("步骤15 AI建议第%d次生成失败：%s%s", attempt + 1, type(exc).__name__, "，准备重试" if attempt == 0 else "，已使用兜底提示")

@@ -3484,7 +3484,7 @@ function renderKeywordPanel() {
   renderKwCandPool();
 }
 
-/* 候选词按判定排序，选择只修改待保存的人工清单。 */
+/* 候选词按判定排序，选择只修改待保存的人工清单（原地无刷新更新勾选态，保持滚动位置）。 */
 function renderKwCandPool() {
   const box = $("kwCandChips");
   if (!box || !kwData) return;
@@ -3495,6 +3495,7 @@ function renderKwCandPool() {
     cc.textContent = cands.length ? `(候选 ${cands.length} 个 / 达标 ${q} 个)` : "";
   }
   if (!cands.length) {
+    box.dataset.kwCandSig = "";
     box.innerHTML = '<span class="tiny" style="color:var(--dim)">(暂无候选词池 — 请先跑步骤 4/5/7 生成候选与判定)</span>';
     return;
   }
@@ -3509,15 +3510,24 @@ function renderKwCandPool() {
   const rank = g => { const i = ORDER.indexOf(g); return i < 0 ? 99 : i; };
   const keys = [...groups.keys()].sort((a, b) => rank(a) - rank(b) || a.localeCompare(b));
   const number = v => v !== null && v !== undefined && Number.isFinite(Number(v)) ? Number(v).toLocaleString() : "—";
-  const rows = keys.flatMap(g => groups.get(g).map(c => `<tr><td><label><input type="checkbox" class="kw-cand-select" data-w="${esc(c.word)}" ${(kwEdit.core || []).includes(c.word)?"checked":""}><span>${esc(c.word)}</span></label></td><td>${esc(g)}</td><td>${number(c.volume)}</td><td>${number(c.cpc)}</td></tr>`));
+  const sig = JSON.stringify(keys.map(g => [g, groups.get(g).map(c => [c.word, c.volume, c.cpc])]));
+  const selectedCore = new Set(kwEdit.core || []);
+  if (box.dataset.kwCandSig === sig && box.querySelector(".kw-candidate-table")) {
+    box.querySelectorAll(".kw-cand-select").forEach(x => {
+      const want = selectedCore.has(x.dataset.w);
+      if (x.checked !== want) x.checked = want;
+    });
+    return;
+  }
+  const prevScroll = box.scrollTop;
+  const rows = keys.flatMap(g => groups.get(g).map(c => `<tr><td><label><input type="checkbox" class="kw-cand-select" data-w="${esc(c.word)}" ${selectedCore.has(c.word)?"checked":""}><span>${esc(c.word)}</span></label></td><td>${esc(g)}</td><td>${number(c.volume)}</td><td>${number(c.cpc)}</td></tr>`));
+  box.dataset.kwCandSig = sig;
   box.innerHTML = `<table class="kw-candidate-table"><thead><tr><th>关键词</th><th>判定</th><th>月搜索量</th><th>CPC</th></tr></thead><tbody>${rows.join("")}</tbody></table>`;
   box.querySelectorAll(".kw-cand-select").forEach(x => x.addEventListener("change", () => kwPickWord("core", x.dataset.w)));
+  box.scrollTop = prevScroll;
 }
 
-/* 长尾词池(2026-09-29 用户报"长尾词怎么不可以选择"后新增):
-   此前长尾词只能手打或用「以自动词为基础」, 没有可点的池子 —— 与核心词那边不对称。
-   现在按五维(场景/人群/功能/属性/痛点)分组展示**步骤4 台账派生的长尾词**,
-   并用 keywords.txt 的自动长尾词兜住"台账缺失/旧数据"的情况, 点词即加入/移出人工清单。 */
+/* 长尾词池(原地无刷新更新选中态，保持滚动位置)。 */
 function renderKwTailPool() {
   const box = $("kwTailPool");
   if (!box || !kwData) return;
@@ -3545,12 +3555,30 @@ function renderKwTailPool() {
   const rest = auto.filter(w => !seen.has(w));
   if (rest.length) groups.push([haveDims ? "其它(台账外)" : "自动长尾词", rest]);
   if (!groups.length) {
+    box.dataset.kwTailSig = "";
     box.innerHTML = '<span class="tiny" style="color:var(--dim)">暂无可展示长尾词；请检查步骤 4 结果及核心词。</span>';
     return;
   }
+  const selectedTail = new Set(kwEdit.longtail || []);
+  const sig = JSON.stringify(groups);
+  if (box.dataset.kwTailSig === sig && box.querySelector(".kw-pool")) {
+    box.querySelectorAll(".kw-pool").forEach(x => {
+      const w = x.dataset.w;
+      const on = selectedTail.has(w);
+      x.setAttribute("aria-pressed", String(on));
+      x.title = `点击${on ? "移出" : "加入"}人工长尾清单`;
+      x.style.background = on ? "rgba(52,211,153,.14)" : "rgba(140,170,255,.12)";
+      x.style.border = `1px solid ${on ? "rgba(52,211,153,.4)" : "rgba(140,170,255,.25)"}`;
+      const wantText = `${on ? "✓ " : ""}${w}`;
+      if (x.textContent !== wantText) x.textContent = wantText;
+    });
+    return;
+  }
+  const prevScroll = box.scrollTop;
+  box.dataset.kwTailSig = sig;
   box.innerHTML = groups.map(([d, words]) => {
     const chips = words.map(w => {
-      const on = (kwEdit.longtail || []).includes(w);
+      const on = selectedTail.has(w);
       const bg = on ? "rgba(52,211,153,.14)" : "rgba(140,170,255,.12)";
       const bd = on ? "rgba(52,211,153,.4)" : "rgba(140,170,255,.25)";
       return `<button type="button" class="chip kw-pool" data-kind="longtail" data-w="${esc(w)}" aria-pressed="${on}" title="点击${on ? "移出" : "加入"}人工长尾清单"
@@ -3559,6 +3587,7 @@ function renderKwTailPool() {
     return `<div style="margin-bottom:5px"><span class="tiny" style="color:var(--txt-2)">${esc(d)}(${words.length}):</span> ${chips}</div>`;
   }).join("");
   box.querySelectorAll(".kw-pool").forEach(x => x.onclick = () => kwPickWord(x.dataset.kind, x.dataset.w));
+  box.scrollTop = prevScroll;
 }
 
 /* 仅注入词池(2026-10-06 用户口径: "仅注入改成自选，可以从核心词中选择"):
@@ -3693,22 +3722,31 @@ function restoreInject(word) {
    为什么要先铺基础: 人工清单是**整体替换**语义, 从空清单开始点一个词会把其余自动词全丢掉,
    既不是用户意图, 也会让门槛判定突然不达标。 */
 let __kwCoreLinkSeq = 0;
-async function syncLongtailWithCoreChange() {
+let __kwCoreLinkTimer = null;
+function syncLongtailWithCoreChange() {
   if (!kwData) return;
-  const seq = ++__kwCoreLinkSeq;
-  const file = selFile;
-  const previewParam = encodeURIComponent((kwEdit.core || []).join("\n"));
-  try {
-    const d = await api(`/api/keyword-lists?file=${encodeURIComponent(file)}&preview_core=${previewParam}`);
-    if (seq !== __kwCoreLinkSeq || file !== selFile || !d || d.ok === false) return;
-    if (kwData.longtail && d.longtail) {
-      kwData.longtail.crawl = d.longtail.crawl || [];
-      kwData.longtail.verified_pool = d.longtail.verified_pool || {};
-      kwData.longtail.generated_pool = d.longtail.generated_pool || {};
-    }
-    kwEdit.longtail = ((d.longtail || {}).crawl || []).slice();
-    renderKeywordPanel();
-  } catch (e) { /* ignore preview error */ }
+  if (__kwCoreLinkTimer) clearTimeout(__kwCoreLinkTimer);
+  __kwCoreLinkTimer = setTimeout(async () => {
+    if (!kwData) return;
+    const seq = ++__kwCoreLinkSeq;
+    const file = selFile;
+    const previewParam = encodeURIComponent((kwEdit.core || []).join("\n"));
+    try {
+      const d = await api(`/api/keyword-lists?file=${encodeURIComponent(file)}&preview_core=${previewParam}`);
+      if (seq !== __kwCoreLinkSeq || file !== selFile || !d || d.ok === false) return;
+      if (kwData.longtail && d.longtail) {
+        kwData.longtail.crawl = d.longtail.crawl || [];
+        kwData.longtail.verified_pool = d.longtail.verified_pool || {};
+        kwData.longtail.generated_pool = d.longtail.generated_pool || {};
+      }
+      kwEdit.longtail = ((d.longtail || {}).crawl || []).slice();
+      const tc = $("kwTailCount");
+      if (tc) tc.textContent = `(自动 ${((kwData.longtail || {}).auto || []).length} 个 / 人工 ${kwEdit.longtail.length} 个)`;
+      renderKwChips("longtail");
+      renderKwTailPool();
+      updateKwSaveButton();
+    } catch (e) { /* ignore preview error */ }
+  }, 180);
 }
 
 function kwPickWord(kind, word) {
@@ -5648,8 +5686,10 @@ function watchKeywordRefresh(d) {
       toast("步骤16 有变动：属性集面板有未保存修改, 已跳过自动刷新(保存后点「重新加载」即可)", "err");
     }
     if (kwDone.length) {
-      if (__kwDirty) {
-        toast(`步骤 ${kwDone.map(n => pad(n)).join("、")} 已完成: 关键词清单面板有未保存修改, 已跳过自动刷新`, "err");
+      if (__kwDirty || __openWorkbenchPanel === "secKwLists") {
+        if (__kwDirty) {
+          toast(`步骤 ${kwDone.map(n => pad(n)).join("、")} 已完成: 关键词清单面板有未保存修改, 已跳过自动刷新`, "err");
+        }
       } else {
         __kwRefreshing = true;
         try { await loadKeywordPanel(true); msg.push("关键词清单面板已自动刷新"); }

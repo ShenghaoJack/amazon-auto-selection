@@ -933,4 +933,106 @@ def test_step09_multi_category_parallel_slot_retry_and_zero_asin_resume(tmp_path
     assert all(len(c3_data[w]) >= 2 for w in ("dog bowl", "slow feeder dog bowl"))
 
 
+def test_step09_tail_headless_recovery_and_headed_fallback(tmp_path, monkeypatch):
+    """验证步骤 9 对齐步骤 10 的三层补抓闭环:
+    首轮无头抓取 → 末尾无头补抓(救回首轮遇 503 窗的词) → 有头可见窗口兜底(救回无头持续受限的词)。
+    """
+    from contextlib import contextmanager
+    from steps.step09_search_collect import Step09SearchCollect
+
+    monkeypatch.setenv("PIPELINE_AMZ_LOCK_DIR", str(tmp_path / "amz_locks_s9_fb"))
+    cat_name = "Air Fryers-FB-US"
+    words = ["air fryer", "air fryer for meal prep", "glass air fryer"]
+    ctx = _ctx(
+        tmp_path / "fb",
+        CAT=cat_name,
+        DRY_RUN=False,
+        CORE_SEARCH_PAGES=1,
+        LONGTAIL_SEARCH_PAGES=1,
+        STEP09_RECOVERY_ROUNDS=1,
+        STEP09_RECOVERY_PAUSE=0,
+        BROWSER_HEADED_ROUNDS=1,
+        REQUEST_MIN_INTERVAL=0,
+        REQUEST_MAX_INTERVAL=0,
+        REQUEST_RETRY=1,
+    )
+    write_json(ctx.resolve_artifact(f"{cat_name}-screen-results.json"), [{"keyword": w, "verdict": "达标"} for w in words])
+    write_json(ctx.resolve_artifact(f"{cat_name}-amazon-keyword-data.json"), [{"keyword": w, "monthly_search_volume": 50000} for w in words])
+    (ctx.paths.cat_root / f"{cat_name}-keywords.txt").write_text("[核心大词]\n" + "\n".join(words) + "\n[长尾词]\n", encoding="utf-8")
+    (ctx.paths.cat_root / f"{cat_name}-keywords-entities.txt").write_text("[场景.实体]\n[场景.长尾词]\n", encoding="utf-8")
+
+    # 关闭真实 HttpFetcher 避免单测触发外网
+    import core.http_client as hc_mod
+    monkeypatch.setattr(hc_mod.HttpFetcher, "get", lambda self, url, retries=1: SimpleNamespace(status=503, text="", ok=False))
+
+    browser_calls: list[bool] = []
+    headless_session_no = 0
+
+    def _ok_html(tag: str) -> str:
+        cards = []
+        for i in range(12):
+            asin = f"B0{tag}{i:06d}"[:10]
+            cards.append(
+                f'<div data-component-type="s-search-result" data-asin="{asin}">'
+                f'<h2><a href="/dp/{asin}"><span>Air Fryer {asin}</span></a></h2></div>'
+            )
+        return "".join(cards)
+
+    @contextmanager
+    def _fake_browser(site="amazon", headed=False, **kw):
+        nonlocal headless_session_no
+        browser_calls.append(bool(headed))
+        if not headed:
+            headless_session_no += 1
+        cur_headless = headless_session_no
+
+        class _Page:
+            def __init__(self):
+                self.url = ""
+
+            def wait_for_selector(self, *a, **k):
+                return None
+
+            def wait_for_timeout(self, ms):
+                return None
+
+            def content(self):
+                if "meal+prep" in self.url:
+                    # 首轮无头(session 1)遇 503，第 2 轮末尾无头补抓(session 2)恢复!
+                    return "<html>Sorry! Something went wrong</html>" if (not headed and cur_headless == 1) else _ok_html("MP")
+                if "glass+air+fryer" in self.url:
+                    # 无头两轮均遇 503，仅第 3 层有头兜底(headed=True)恢复!
+                    return _ok_html("GL") if headed else "<html>Sorry! Something went wrong</html>"
+                return _ok_html("AF")
+
+        class _Browser:
+            def new_page(self):
+                return _Page()
+
+            def goto(self, page, url, timeout=60000):
+                page.url = url
+
+            def scroll_to_bottom(self, page, **kw):
+                return 1
+
+            def screenshot(self, page, path):
+                Path(path).parent.mkdir(parents=True, exist_ok=True)
+                Path(path).write_bytes(b"PNG")
+
+        yield _Browser()
+
+    monkeypatch.setattr(ctx, "browser", _fake_browser)
+    s9 = Step09SearchCollect()
+    s9.validate_upstream(ctx)
+    s9.run(ctx)
+
+    # 验证顺序: 首轮无头(False) → 末尾无头补抓(False) → 有头兜底(True)
+    assert browser_calls == [False, False, True]
+    out = json.loads((ctx.paths.cat_root / f"{cat_name}-search-asins.json").read_text(encoding="utf-8"))
+    assert len(out["air fryer"]) == 12
+    assert len(out["air fryer for meal prep"]) == 12
+    assert len(out["glass air fryer"]) == 12
+
+
+
 

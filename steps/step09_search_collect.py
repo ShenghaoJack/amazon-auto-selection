@@ -207,6 +207,7 @@ class Step09SearchCollect(BaseStep):
             if w in collected and 0 < len(collected.get(w) or []) < _min_complete_asins(w)
         ]
         todo = [w for w in collect_words if len(collected.get(w) or []) < _min_complete_asins(w)]
+        self._naturally_exhausted: set[str] = set()
         if todo:
             skip_n = len(collect_words) - len(todo)
             hints = []
@@ -220,6 +221,88 @@ class Step09SearchCollect(BaseStep):
                                verify_path, core_pages, tail_pages)
         else:
             self.log(ctx, "全部收集词已完成(断点续爬跳过)")
+
+        # ---- 2026-11-23 对齐步骤10三层补抓闭环: 末尾无头冷却补抓 → 有头可见窗口兜底 ----
+        if not ctx.dry_run:
+            fallback_off = str(ctx.config.get("FALLBACK", "auto") or "auto").strip().lower() == "off"
+            base_interval = float(ctx.config.get("REQUEST_MIN_INTERVAL", 1.5) or 0.0)
+            raw_rec_rounds = ctx.config.get("STEP09_RECOVERY_ROUNDS", 1)
+            try:
+                rec_rounds = max(0, int(raw_rec_rounds))
+            except (TypeError, ValueError):
+                rec_rounds = 1
+            raw_rec_pause = ctx.config.get("STEP09_RECOVERY_PAUSE", 30.0)
+            try:
+                rec_pause = max(0.0, float(raw_rec_pause)) if base_interval > 0 else 0.0
+            except (TypeError, ValueError):
+                rec_pause = 30.0 if base_interval > 0 else 0.0
+
+            def _unresolved_words() -> list[str]:
+                return [
+                    w for w in collect_words
+                    if w not in self._naturally_exhausted
+                    and len(collected.get(w) or []) < _min_complete_asins(w)
+                ]
+
+            # 阶段2: 末尾无头补抓(错开先前的瞬时 503 限流窗口)
+            for rr in range(1, rec_rounds + 1):
+                unresolved = _unresolved_words()
+                if not unresolved:
+                    break
+                self.log(
+                    ctx,
+                    f"步骤9末尾无头补抓第 {rr}/{rec_rounds} 轮: 仍有 {len(unresolved)} 个未达标/0-ASIN词"
+                    f"({', '.join(unresolved[:5])}{'…' if len(unresolved) > 5 else ''}), "
+                    f"冷却 {rec_pause:.0f}s 后统一补抓...",
+                )
+                if rec_pause > 0:
+                    time.sleep(rec_pause)
+                self._search_words(
+                    ctx, unresolved, qualified_core, collected, verified, json_path,
+                    verify_path, core_pages, tail_pages, headed=False, label_suffix="无头补抓",
+                )
+
+            # 阶段3: 有头可见窗口兜底(无头补抓后仍有未解决词时才弹窗)
+            raw_headed = ctx.config.get("BROWSER_HEADED_ROUNDS", 1)
+            try:
+                headed_rounds = max(0, int(raw_headed))
+            except (TypeError, ValueError):
+                headed_rounds = 1
+            for hb in range(1, headed_rounds + 1):
+                unresolved = _unresolved_words()
+                if not unresolved:
+                    if hb == 1:
+                        self.log(ctx, "步骤9有头兜底无需进行: 已无未解决/0-ASIN关键词")
+                    break
+                if fallback_off:
+                    self.log(
+                        ctx,
+                        f"FALLBACK=off: 不启用步骤9有头兜底, 仍有 {len(unresolved)} 个词未达标",
+                    )
+                    break
+                self.log(
+                    ctx,
+                    f"步骤9有头兜底第 {hb}/{headed_rounds} 轮: 仍有 {len(unresolved)} 个词未达标/0-ASIN"
+                    f"({', '.join(unresolved[:5])}{'…' if len(unresolved) > 5 else ''}) "
+                    f"→ 打开可见浏览器窗口补抓(窗口由程序自动开关, 请勿手动关闭)",
+                )
+                if hb > 1 and rec_pause > 0:
+                    time.sleep(rec_pause)
+                try:
+                    self._search_words(
+                        ctx, unresolved, qualified_core, collected, verified, json_path,
+                        verify_path, core_pages, tail_pages, headed=True, label_suffix="有头兜底",
+                    )
+                except Exception as exc:
+                    self.log(ctx, f"步骤9有头兜底第 {hb} 轮不可用/失败: {exc}(保留已抓结果继续)")
+                    break
+            still_bad = _unresolved_words()
+            if still_bad:
+                self.log(
+                    ctx,
+                    f"步骤9补抓结束后仍有 {len(still_bad)} 个词未达标/0-ASIN: "
+                    + "、".join(still_bad[:8]) + ("…" if len(still_bad) > 8 else ""),
+                )
 
         merged = self._merge_all(ctx, collected)
         txt_path = ctx.resolve_artifact(self.artifacts[1])
@@ -388,7 +471,8 @@ class Step09SearchCollect(BaseStep):
 
     def _search_words(self, ctx: StepContext, words: list[str], qualified_core: list[str],
                       collected: dict, verified: dict, json_path: str, verify_path: str,
-                      core_pages: int, tail_pages: int) -> None:
+                      core_pages: int, tail_pages: int, *, headed: bool = False,
+                      label_suffix: str = "") -> None:
         from core.amz_crawl_lock import (
             AmzCrawlSlot,
             DEFAULT_WAIT_SECONDS as _AMZ_WAIT_DEFAULT,
@@ -400,7 +484,8 @@ class Step09SearchCollect(BaseStep):
         market = ctx.config.market
         retries = max(1, int(ctx.config.get("REQUEST_RETRY", 2)))
         screenshot_dir = ctx.paths.screenshot_dir()
-        cat_label = f"{ctx.config.cat or 'pipeline'}·步骤9搜索"
+        suffix = f"({label_suffix})" if label_suffix else ""
+        cat_label = f"{ctx.config.cat or 'pipeline'}·步骤9搜索{suffix}"
         slice_words = max(0, int(ctx.config.get("STEP09_SLICE_WORDS", 4) or 0))
         short_word_thresh = max(0, int(ctx.config.get("STEP09_SHORT_WORDS", 5) or 5))
         yield_pause = max(0.0, float(ctx.config.get("AMZ_CRAWL_YIELD_PAUSE", DEFAULT_YIELD_PAUSE) or 0.0))
@@ -422,13 +507,26 @@ class Step09SearchCollect(BaseStep):
             )
             yielded = False
             with slot:
-                with ctx.browser("amazon") as browser:
+                browser_cm = ctx.browser("amazon", headed=True) if headed else ctx.browser("amazon")
+                with browser_cm as browser:
                     page = browser.new_page()
                     in_slice = 0
                     while idx < total:
                         word = words[idx]
                         pages = core_pages if word in qualified_core else tail_pages
-                        asins, titles = self._search_one(ctx, browser, page, market, word, pages, retries)
+                        try:
+                            asins, titles = self._search_one(ctx, browser, page, market, word, pages, retries)
+                        except StepFailedError as exc:
+                            self.log(ctx, f"词 [{word}] 本轮抓取异常({exc})，暂记已抓结果留待后续补抓/有头兜底恢复")
+                            asins, titles = [], {}
+                            try:
+                                page.close()
+                            except Exception:
+                                pass
+                            try:
+                                page = browser.new_page()
+                            except Exception:
+                                pass
                         prev_asins = list(collected.get(word) or [])
                         if prev_asins:
                             merged_asins = _dedup(prev_asins + asins)
@@ -478,6 +576,8 @@ class Step09SearchCollect(BaseStep):
                 try:
                     items: list[dict] = []
                     next_page_url = ""
+                    had_throttled_page = False
+                    reached_natural_end = False
                     for page_no in range(1, pages + 1):
                         if page_no > 1 and not ctx.dry_run and base_interval > 0:
                             time.sleep(random.uniform(max(0.8, base_interval * 0.8), max(1.6, base_interval * 1.5)))
@@ -558,9 +658,15 @@ class Step09SearchCollect(BaseStep):
                             except Exception:
                                 pass
 
+                        if not page_items and not ctx.dry_run:
+                            if _is_genuine_no_results_page(html):
+                                reached_natural_end = True
+                            else:
+                                had_throttled_page = True
                         items.extend(page_items)
                         if not ctx.dry_run and html:
                             if _has_disabled_next_page(html):
+                                reached_natural_end = True
                                 break
                             next_page_url = _extract_next_page_url(html, market)
 
@@ -571,6 +677,10 @@ class Step09SearchCollect(BaseStep):
                         if asin not in titles:
                             titles[asin] = it["title"]
                             asins.append(asin)
+                    if reached_natural_end and not had_throttled_page:
+                        exhausted = getattr(self, "_naturally_exhausted", None)
+                        if isinstance(exhausted, set):
+                            exhausted.add(word)
                     if not asins and not ctx.dry_run and attempt < retries:
                         cooldown = (5.0 * attempt) if base_interval > 0 else 0.0
                         self.log(ctx, f"词 [{word}] 第 {attempt} 轮整词收集为 0 个 ASIN, 冷却 {cooldown:.1f}s 后整词重试...")
@@ -585,6 +695,14 @@ class Step09SearchCollect(BaseStep):
                 except Exception as exc:
                     last_err = str(exc)
                     self.log(ctx, f"词 [{word}] 第 {attempt} 次搜索失败: {last_err}")
+                    if not ctx.dry_run and attempt < retries:
+                        cooldown = (4.0 * attempt) if base_interval > 0 else 0.0
+                        if cooldown > 0:
+                            time.sleep(cooldown)
+                        try:
+                            page = browser.new_page()
+                        except Exception:
+                            pass
             raise StepFailedError(f"搜索收集失败: 词 [{word}] 重试 {retries} 次仍失败: {last_err}")
         finally:
             if http_fallback is not None:

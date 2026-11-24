@@ -629,28 +629,111 @@ class Step14TrafficSplit(BaseStep):
         return df
 
     def _fill_logistics(self, ctx: StepContext, df: pd.DataFrame) -> pd.DataFrame:
-        self.log(ctx, "12. 配送方式/上架时间补齐(竞品数据已关联, MCP 查配置月份前 6 个月历史)")
-        for col in ("配送方式", "上架时间"):
+        self.log(ctx, "12. 卖家/物流补齐: 先补 BuyBox卖家、卖家所属地、上架时间及配送方式，再按 BuyBox卖家校正 AMZ 配送方式")
+        buybox_col = _find_buybox_col(df) or "BuyBox卖家"
+        for col in (buybox_col, "卖家所属地", "配送方式", "上架时间"):
             if col not in df.columns:
                 df[col] = ""
             df[col] = df[col].fillna("").astype(str).str.strip()
-        self._mcp_fill_logistics(ctx, df)
+        self._mcp_fill_logistics(ctx, df, buybox_col=buybox_col)
+        amz_fixed = self._enforce_amazon_fulfillment(df, buybox_col)
+        if amz_fixed:
+            self.log(ctx, f"12. BuyBox卖家含 amazon(忽略大小写) → 配送方式校正为 AMZ: {amz_fixed} 行")
+        by_seller, by_brand = self._sync_seller_nation(df, buybox_col)
+        if by_seller or by_brand:
+            self.log(
+                ctx,
+                f"12. 卖家所属地同表同步(跳过 AMZ 自营): 同 BuyBox卖家唯一同步 {by_seller} 行, 同品牌唯一同步 {by_brand} 行",
+            )
         self.log(ctx, "13. 兜底: 配送方式为空标'未知'(新老品缺失在步骤 14 标'未知')")
         df["配送方式"] = df["配送方式"].replace("", "未知")
         return df
 
-    def _mcp_fill_logistics(self, ctx: StepContext, df: pd.DataFrame) -> None:
-        """规格 FR-14-12: MCP competitor_lookup 补齐配送方式/上架时间。
+    @staticmethod
+    def _enforce_amazon_fulfillment(df: pd.DataFrame, buybox_col: str) -> int:
+        if df.empty or not buybox_col or buybox_col not in df.columns:
+            return 0
+        mask = df[buybox_col].map(_is_amazon_seller) & (df["配送方式"].str.upper() != "AMZ")
+        cnt = int(mask.sum())
+        if cnt:
+            df.loc[mask, "配送方式"] = "AMZ"
+        return cnt
 
-        候选: 配送方式或上架时间为空的变体(去重);
-        月份: 配置月(趋势/竞品/流量 优先级依次回退)往前共 6 个月(最新在前);
-        分批: 每 40 个一批, 每批内逐月调 competitor_lookup(每批每月一次), 每批每月结果写临时文件;
-        取值: 仅取 fulfillment 有效且 ≠NA; **只取最近月份的首次命中**(更早月份不覆盖);
-        回填: 配送方式为空→填查询值; 上架时间为空→毫秒时间戳转日期;
+    @staticmethod
+    def _sync_seller_nation(df: pd.DataFrame, buybox_col: str) -> tuple[int, int]:
+        """表内同步非 Amazon 自营行的缺失卖家所属地:
+        1) 优先按同 BuyBox卖家 唯一已知所属地同步;
+        2) 再按同 品牌 唯一已知所属地同步(排除 Generic/Unbranded/未知 等无品牌占位词;
+           同品牌存在多个不同所属地冲突时跳过不猜测);
+        3) BuyBox卖家含 amazon(忽略大小写) 或 配送方式==AMZ 的自营行不参与同步。
+        """
+        if df.empty or "卖家所属地" not in df.columns:
+            return 0, 0
+        has_bb = bool(buybox_col and buybox_col in df.columns)
+        has_brand = "品牌" in df.columns
+        if not has_bb and not has_brand:
+            return 0, 0
+
+        bb_s = df[buybox_col].map(_clean_mcp_str) if has_bb else pd.Series("", index=df.index)
+        bb_k = bb_s.str.casefold()
+        br_s = df["品牌"].map(_clean_mcp_str) if has_brand else pd.Series("", index=df.index)
+        br_k = br_s.str.casefold()
+        nation_s = df["卖家所属地"].map(_clean_mcp_str)
+        ful_u = df["配送方式"].fillna("").astype(str).str.strip().str.upper() if "配送方式" in df.columns else pd.Series("", index=df.index)
+        is_amz = bb_s.map(_is_amazon_seller) | (ful_u == "AMZ")
+
+        seller_nations: dict[str, set[str]] = {}
+        brand_nations: dict[str, set[str]] = {}
+        for idx in df.index:
+            if is_amz.at[idx]:
+                continue
+            nat = nation_s.at[idx]
+            if not nat:
+                continue
+            sk = bb_k.at[idx]
+            if sk:
+                seller_nations.setdefault(sk, set()).add(nat)
+            bk = br_k.at[idx]
+            if bk and bk not in _GENERIC_BRANDS:
+                brand_nations.setdefault(bk, set()).add(nat)
+
+        seller_unique = {k: next(iter(v)) for k, v in seller_nations.items() if len(v) == 1}
+        brand_unique = {k: next(iter(v)) for k, v in brand_nations.items() if len(v) == 1}
+
+        by_seller = 0
+        by_brand = 0
+        for idx in df.index:
+            if is_amz.at[idx] or nation_s.at[idx]:
+                continue
+            sk = bb_k.at[idx]
+            if sk and sk in seller_unique:
+                df.at[idx, "卖家所属地"] = seller_unique[sk]
+                by_seller += 1
+                continue
+            bk = br_k.at[idx]
+            if bk and bk not in _GENERIC_BRANDS and bk in brand_unique:
+                df.at[idx, "卖家所属地"] = brand_unique[bk]
+                by_brand += 1
+        return by_seller, by_brand
+
+    def _mcp_fill_logistics(self, ctx: StepContext, df: pd.DataFrame, *, buybox_col: str | None = None) -> None:
+        """规格 FR-14-12: MCP competitor_lookup(asin.list) 补齐 BuyBox卖家/卖家所属地/上架时间/配送方式。
+
+        顺序: 先补齐 BuyBox卖家(sellerName)、卖家所属地(sellerNation)、上架时间(availableDate)与原始 fulfillment;
+              回填完成后由 _fill_logistics 统一按 BuyBox卖家含 amazon(忽略大小写) 将配送方式校正为 AMZ。
+        候选: BuyBox卖家为空、非 Amazon 行的卖家所属地为空、配送方式为空(且非已知 Amazon)、或上架时间为空的变体;
+        月份: 配置月(趋势/竞品/流量 优先级依次回退)往前共 6 个月(最新在前); 最近30天查 NEAR_30_DAYS;
+        分批: 每 40 个一批, 每批内逐月调 competitor_lookup(仅查仍缺字段的 ASIN), 每批每月结果写临时文件;
+        取值: sellerName/sellerNation/fulfillment 仅取非空且 ≠NA; **只取最近月份的首次命中**(更早月份不覆盖);
         兜底: 6 个月查不到→配送方式标"未知"(步骤 13 兜底处理); 结束删临时文件; 单月失败不中断。
         """
         if df.empty:
             return
+        if not buybox_col:
+            buybox_col = _find_buybox_col(df) or "BuyBox卖家"
+        for col in (buybox_col, "卖家所属地", "配送方式", "上架时间"):
+            if col not in df.columns:
+                df[col] = ""
         month = (
             str(ctx.config.get("TREND_MONTH", "") or "")
             or str(ctx.config.get("COMPETITOR_MONTH", "") or "")
@@ -660,15 +743,28 @@ class Step14TrafficSplit(BaseStep):
             self.log(ctx, "12. 缺少历史月份, 跳过MCP补齐(缺失将兜底标'未知')")
             return
         if is_recent30(month):
-            # 最近30天 无具体月份, 无法推 6 个月链逐月查询 → 跳过(缺失兜底标"未知")
-            self.log(ctx, "12. MCP competitor_lookup: 月份为「最近30天」(无具体月份可推6个月链), 跳过补全")
-            return
-        months = _recent_months(month, 6)  # 最新在前
-        need = df.index[
-            (df["配送方式"] == "") | (df["上架时间"] == "")
-        ].tolist()
+            months = [""]  # V2 asin.list 不传 dataMonth 即 NEAR_30_DAYS
+            month_label = "最近30天"
+        else:
+            months = _recent_months(month, 6)  # 最新在前
+            month_label = f"{months[-1]}~{months[0]}"
+
+        def _row_needs(idx) -> bool:
+            bb = str(df.at[idx, buybox_col] or "").strip()
+            nation = str(df.at[idx, "卖家所属地"] or "").strip()
+            ful = str(df.at[idx, "配送方式"] or "").strip()
+            listed = str(df.at[idx, "上架时间"] or "").strip()
+            is_amz = _is_amazon_seller(bb) or ful.upper() == "AMZ"
+            return (
+                (bb == "")
+                or (listed == "")
+                or (ful == "" and not _is_amazon_seller(bb))
+                or (nation == "" and not is_amz)
+            )
+
+        need = [idx for idx in df.index if _row_needs(idx)]
         if not need:
-            self.log(ctx, "12. 无待补变体(配送方式/上架时间均已有值)")
+            self.log(ctx, "12. 无待补变体(BuyBox卖家/卖家所属地/配送方式/上架时间均已有值)")
             return
         query = getattr(ctx.mcp(), "competitor_lookup", None)
         if not callable(query):
@@ -679,34 +775,35 @@ class Step14TrafficSplit(BaseStep):
         os.makedirs(tmpdir, exist_ok=True)
         self.log(
             ctx,
-            f"12. MCP 分批查询: 待补 {len(need)} 行, 每批 {batch}, 月份 {months[-1]}~{months[0]}",
+            f"12. MCP 分批查询: 待补 {len(need)} 行, 每批 {batch}, 月份 {month_label}",
         )
         total_batches = (len(need) + batch - 1) // batch
         filled = 0
         try:
             for bi, start in enumerate(range(0, len(need), batch), 1):
                 chunk = need[start : start + batch]
-                chunk_asins = [
-                    str(df.at[i, "变体ASIN"]).strip()
-                    for i in chunk
-                    if str(df.at[i, "变体ASIN"]).strip() and str(df.at[i, "变体ASIN"]).strip() != "nan"
-                ]
-                if not chunk_asins:
-                    continue
                 for m in months:
+                    pending_rows = [i for i in chunk if _row_needs(i)]
+                    chunk_asins = [
+                        str(df.at[i, "变体ASIN"]).strip()
+                        for i in pending_rows
+                        if str(df.at[i, "变体ASIN"]).strip() and str(df.at[i, "变体ASIN"]).strip() != "nan"
+                    ]
+                    if not chunk_asins:
+                        break
                     try:
                         items = query(m, chunk_asins) or []
                     except Exception as exc:
-                        self.log(ctx, f"12. 月份 {m} 查询失败(不中断): {str(exc)[:120]}")
+                        self.log(ctx, f"12. 月份 {m or '最近30天'} 查询失败(不中断): {str(exc)[:120]}")
                         items = []
                     # 每批每月结果写临时文件(规格)
-                    tmp = os.path.join(tmpdir, f"mcp-b{bi}-{m}.json")
+                    tmp = os.path.join(tmpdir, f"mcp-b{bi}-{m or 'recent30'}.json")
                     try:
                         with open(tmp, "w", encoding="utf-8") as fh:
                             json.dump(items, fh, ensure_ascii=False)
                     except Exception:
                         pass
-                    # 回填: 仅取 fulfillment 有效且≠NA; 最近月份优先(只填仍为空的行, 更早不覆盖)
+                    # 回填顺序: 先补 BuyBox卖家 与 卖家所属地, 再补 上架时间 与 配送方式(最近月份优先)
                     for item in items or []:
                         if not isinstance(item, dict):
                             continue
@@ -717,11 +814,14 @@ class Step14TrafficSplit(BaseStep):
                         if len(hit) == 0:
                             continue
                         idx = hit[0]
-                        ful = item.get("fulfillment")
-                        if not isinstance(ful, str) or ful.strip() in ("", "NA", "null", "None"):
-                            ful = ""
-                        if df.at[idx, "配送方式"] == "" and ful:
-                            df.at[idx, "配送方式"] = ful.strip()
+                        seller_name = _clean_mcp_str(item.get("sellerName"))
+                        if df.at[idx, buybox_col] == "" and seller_name:
+                            df.at[idx, buybox_col] = seller_name
+                            filled += 1
+                        cur_is_amz = _is_amazon_seller(df.at[idx, buybox_col]) or _is_amazon_seller(seller_name)
+                        nation = _clean_mcp_str(item.get("sellerNation"))
+                        if not cur_is_amz and df.at[idx, "卖家所属地"] == "" and nation:
+                            df.at[idx, "卖家所属地"] = nation
                             filled += 1
                         ad = item.get("availableDate")
                         if df.at[idx, "上架时间"] == "" and ad not in (None, ""):
@@ -736,7 +836,11 @@ class Step14TrafficSplit(BaseStep):
                                         filled += 1
                                 except (TypeError, ValueError, OSError):
                                     pass
-                self.log(ctx, f"12. MCP 批次 {bi}/{total_batches} 完成(月 {months[-1]}~{months[0]})")
+                        ful = _clean_mcp_str(item.get("fulfillment"))
+                        if df.at[idx, "配送方式"] == "" and ful:
+                            df.at[idx, "配送方式"] = ful
+                            filled += 1
+                self.log(ctx, f"12. MCP 批次 {bi}/{total_batches} 完成(月 {month_label})")
         finally:
             try:
                 for f in os.listdir(tmpdir):
@@ -1064,3 +1168,30 @@ def _parse_brand(html: str) -> str:
         if text and len(text) < 80:
             return text
     return ""
+
+
+_GENERIC_BRANDS = frozenset({
+    "", "generic", "unbranded", "unknown", "未知", "n/a", "na", "none", "null", "-", "--",
+})
+
+
+def _clean_mcp_str(value) -> str:
+    if value is None or (isinstance(value, float) and math.isnan(value)):
+        return ""
+    s = str(value).strip()
+    if s.casefold() in ("", "na", "n/a", "null", "none", "nan", "-", "--", "未知"):
+        return ""
+    return s
+
+
+def _is_amazon_seller(value) -> bool:
+    s = _clean_mcp_str(value)
+    return bool(s) and ("amazon" in s.casefold())
+
+
+def _find_buybox_col(df: pd.DataFrame) -> str | None:
+    lookup = {str(c).strip().casefold(): c for c in df.columns}
+    for name in ("BuyBox卖家", "buybox seller", "购物车卖家"):
+        if name.casefold() in lookup:
+            return lookup[name.casefold()]
+    return None
