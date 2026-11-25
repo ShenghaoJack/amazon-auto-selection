@@ -491,8 +491,31 @@ class AmazonLoginManager:
                                 message=f"管理员已取消 {target_label} 登录等待。",
                             )
                             return
-                        if browser.check_amazon_login(page, navigate=False):
+                        # 兼容用户在同窗口新开标签页完成登录：依次检查主页面及上下文内其他已打开的亚马逊标签页
+                        cand_pages = [page]
+                        ctx_pages = getattr(getattr(page, "context", None), "pages", None) or []
+                        for p_other in ctx_pages:
+                            if p_other is page:
+                                continue
+                            try:
+                                if callable(getattr(p_other, "is_closed", None)) and p_other.is_closed():
+                                    continue
+                                u_other = str(getattr(p_other, "url", "") or "").lower()
+                                if market in u_other:
+                                    cand_pages.append(p_other)
+                            except Exception:  # noqa: BLE001
+                                continue
+                        logged_now = False
+                        for cand in cand_pages:
+                            if browser.check_amazon_login(cand, navigate=False):
+                                logged_now = True
+                                break
+                        if logged_now:
                             confirm_streak += 1
+                            if confirm_streak == 1:
+                                self._update_task(
+                                    message=f"已检测到 {target_label} 登录态，正在二次确认并保存共享态…"
+                                )
                             if confirm_streak >= 2:
                                 saved = amazon_login_share.save(
                                     page.context, self.profile_root(), market, **save_kw

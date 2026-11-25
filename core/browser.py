@@ -976,21 +976,57 @@ class BrowserAutomation:
         try:
             from urllib.parse import urlparse as _urlparse
             cur_url = str(getattr(page, "url", "") or "").lower()
-            cur_path = _urlparse(cur_url).path or ""
+            parsed = _urlparse(cur_url)
+            cur_host = (parsed.hostname or "").lower()
+            cur_path = parsed.path or ""
             # 只检查 URL path，避免误杀登录成功跳回首页时的 query 参数(如 ?ref_=nav_ya_signin)
             if any(tok in cur_path for tok in (
                 "/ap/", "/ax/claim", "validatecaptcha", "/cvf/", "/mfa", "challenge", "approval", "/signin",
             )):
                 return False
-            link = page.wait_for_selector("#nav-link-accountList", timeout=8000)
-            href = str(link.get_attribute('href') or '').lower()
-            if not href and hasattr(link, 'query_selector'):
-                # 亚马逊新版页头中 #nav-link-accountList 改为 <div> 容器，真实链接在内层 <a>
-                inner = link.query_selector('a[href]')
-                href = str(inner.get_attribute('href') or '').lower() if inner else ''
-            if not href or '/ap/signin' in href or '/ap/register' in href:
+            if not self.has_valid_amazon_auth_cookie(page):
                 return False
-            return self.has_valid_amazon_auth_cookie(page)
+            link = None
+            try:
+                # 使用 state="attached" 避免窄窗口或大促页头折叠时因不可见而误判超时
+                link = page.wait_for_selector("#nav-link-accountList", state="attached", timeout=3000)
+            except TypeError:
+                link = page.wait_for_selector("#nav-link-accountList", timeout=3000)
+            except Exception:
+                link = None
+            if link is not None:
+                href = str(link.get_attribute('href') or '').lower()
+                if not href and hasattr(link, 'query_selector'):
+                    # 亚马逊新版页头中 #nav-link-accountList 改为 <div> 容器，真实链接在内层 <a>
+                    inner = link.query_selector('a[href]')
+                    href = str(inner.get_attribute('href') or '').lower() if inner else ''
+                if '/ap/signin' in href or '/ap/register' in href:
+                    return False
+                if href:
+                    return True
+            # 兜底：部分大促/窄屏页头无标准 href 时，检查问候语文本与是否处于目标站正常页
+            if hasattr(page, "query_selector"):
+                try:
+                    greet = page.query_selector("#nav-link-accountList-nav-line-1")
+                    gtxt = (greet.inner_text() or "").strip().lower() if greet else ""
+                    if gtxt:
+                        if any(tok in gtxt for tok in (
+                            "sign in", "anmelden", "identifiez", "iniciar", "accedi", "ログイン", "登录",
+                        )):
+                            return False
+                        return True
+                except Exception:
+                    pass
+                market_dom = str(self.config.market or "").lower().lstrip(".")
+                if market_dom and (cur_host == market_dom or cur_host.endswith("." + market_dom)):
+                    try:
+                        if not self.is_amazon_captcha_page(page) and not page.query_selector(
+                            "#ap_email, #ap_password, input[name='email']"
+                        ):
+                            return True
+                    except Exception:
+                        pass
+            return False
         except Exception:
             return False
 
