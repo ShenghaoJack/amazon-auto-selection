@@ -141,33 +141,58 @@ def _close_verified(resource, record):
     return True
 
 
+def _port_tag(resource: str) -> str:
+    user = str(os.environ.get('PIPELINE_WORKBENCH_USER') or '').strip() or 'default'
+    port = resource.rsplit(':', 1)[-1] if ':' in str(resource or '') else '?'
+    return f'用户={user}, 端口={port}'
+
+
+def _emit(log, msg: str) -> None:
+    try:
+        if log:
+            log(msg)
+        else:
+            import logging
+            lg = logging.getLogger('pipeline')
+            if lg.handlers:
+                lg.info(msg)
+    except Exception:
+        pass
+
+
 def _try_pending(resource, log=None):
     directory = _directory(resource)
     pending, launch = directory / 'pending.json', directory / 'launch.json'
-    if not pending.exists() or _has_live_leases(directory):
+    if not pending.exists():
+        return
+    tag = _port_tag(resource)
+    if _has_live_leases(directory):
+        _emit(log, f'[卖家精灵CDP] 仍有其他类目占用，暂缓关闭 ({tag})')
         return
     if not launch.exists():
         pending.unlink(missing_ok=True)
-        if log: log('卖家精灵步骤后保留窗口：没有系统自动启动记录')
+        _emit(log, f'[卖家精灵CDP] 保留窗口：没有系统自动启动记录 ({tag})')
         return
     # The resource lock protects against legacy clients that do not register leases.
     try:
         lock = ss_lock.acquire(resource=resource, wait_seconds=0)
     except ss_lock.SsBrowserLockTimeout:
+        _emit(log, f'[卖家精灵CDP] 端口锁被占用，暂缓关闭 ({tag})')
         return
     try:
         if lock.degraded:
             return
         record = json.loads(launch.read_text(encoding='utf-8'))
+        pid = record.get('pid')
         if _close_verified(resource, record):
             pending.unlink(missing_ok=True)
             launch.unlink(missing_ok=True)
-            if log: log('卖家精灵步骤后已关闭系统自动启动的卖家精灵 Chrome')
+            _emit(log, f'[卖家精灵CDP] 已自动关闭浏览器 ({tag}, PID={pid})')
         else:
             pending.unlink(missing_ok=True)
-            if log: log('卖家精灵步骤后保留窗口：无法确认该 Chrome 是系统启动的目标进程')
+            _emit(log, f'[卖家精灵CDP] 保留窗口：无法确认该 Chrome 是系统启动的目标进程 ({tag}, PID={pid})')
     except Exception as exc:
-        if log: log('卖家精灵步骤后保留窗口：浏览器身份或关闭状态无法核验 (%s)' % type(exc).__name__)
+        _emit(log, f'[卖家精灵CDP] 保留窗口：浏览器身份或关闭状态无法核验 ({tag}, {type(exc).__name__})')
     finally:
         lock.release()
 

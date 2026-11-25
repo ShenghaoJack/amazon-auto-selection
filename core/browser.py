@@ -161,32 +161,44 @@ def ensure_ss_chrome(config, log=None, timeout: float = 60.0) -> bool:
 
     未配置 SS_CDP_URL(有头兜底模式)无需外部 Chrome, 直接返回 True。
     返回 True=CDP 可用; False=自动启动失败或等待超时(调用方应明确报错, 不再静默崩溃)。
-    log: 可选单参回调(打印启动/就绪进度), 无则用 print。
+    log: 可选单参回调(打印启动/就绪进度), 无则写入 pipeline 日志(无 handler 时回退 print)。
     """
     cdp_url = str(config.get("SS_CDP_URL", "") or "").strip()
     if not cdp_url:
         return True
 
+    user = str(os.environ.get("PIPELINE_WORKBENCH_USER") or "").strip() or "default"
+    port = cdp_port_from_url(cdp_url)
+    tag = f"用户={user}, 端口={port}, 地址={cdp_url}"
+
     def _log(msg: str) -> None:
         try:
-            (log(msg) if log else print(f"[ss-chrome] {msg}", flush=True))
+            if log:
+                log(msg)
+            else:
+                import logging
+                lg = logging.getLogger("pipeline")
+                if lg.handlers:
+                    lg.info(msg)
+                else:
+                    print(f"[ss-chrome] {msg}", flush=True)
         except Exception:
             pass
 
     if _cdp_alive(cdp_url):
+        _log(f"[卖家精灵CDP] 复用已启动浏览器 ({tag})")
         return True
-    port = cdp_port_from_url(cdp_url)
-    _log(f"CDP Chrome 未启动({cdp_url}), 自动启动中…")
+    _log(f"[卖家精灵CDP] 自动开启浏览器 ({tag})…")
     if not launch_ss_chrome(config, port, managed=True):
-        _log("自动启动 Chrome 失败(请手动运行 python scripts/start_ss_chrome.py 排查)")
+        _log(f"[卖家精灵CDP] 自动开启浏览器失败 ({tag}，请手动运行 python scripts/start_ss_chrome.py 排查)")
         return False
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if _cdp_alive(cdp_url):
-            _log(f"CDP Chrome 已就绪({cdp_url})")
+            _log(f"[卖家精灵CDP] 浏览器已就绪 ({tag})")
             return True
         time.sleep(1.0)
-    _log(f"等待 CDP Chrome 就绪超时({int(timeout)}s): {cdp_url} —— 可能同 Profile 已被其它 Chrome 占用")
+    _log(f"[卖家精灵CDP] 等待浏览器就绪超时({int(timeout)}s) ({tag}) —— 可能同 Profile 已被其它 Chrome 占用")
     return False
 
 
@@ -576,6 +588,16 @@ class BrowserAutomation:
                         "请运行 python scripts/start_ss_chrome.py 并保持 Chrome 运行, "
                         "或检查 SS_CDP_URL / 是否同 Profile 已被其它 Chrome 占用"
                     )
+            else:
+                try:
+                    import logging
+                    lg = logging.getLogger("pipeline")
+                    if lg.handlers:
+                        _u = str(os.environ.get("PIPELINE_WORKBENCH_USER") or "").strip() or "default"
+                        _p = cdp_port_from_url(self.cdp_url)
+                        lg.info(f"[卖家精灵CDP] 复用已启动浏览器 (用户={_u}, 端口={_p}, 地址={self.cdp_url})")
+                except Exception:  # noqa: BLE001
+                    pass
             if os.environ.get('PIPELINE_WORKBENCH_USER'):
                 from .ss_lock import find_profile_cdp_port
                 actual = find_profile_cdp_port(self.profile_dir)
