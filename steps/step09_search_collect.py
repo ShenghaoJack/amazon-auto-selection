@@ -507,7 +507,7 @@ class Step09SearchCollect(BaseStep):
             )
             yielded = False
             with slot:
-                browser_cm = ctx.browser("amazon", headed=True) if headed else ctx.browser("amazon")
+                browser_cm = ctx.browser("amazon", headed=True, block_media=True) if headed else ctx.browser("amazon", block_media=True)
                 with browser_cm as browser:
                     page = browser.new_page()
                     in_slice = 0

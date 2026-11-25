@@ -267,7 +267,7 @@ class Step01Details(BaseStep):
                 slot.acquire()
             try:
                 _headed = bool(getattr(self, "_shared_headed", False))
-                cm = ctx.browser("amazon", headed=_headed, block_media=not _headed)
+                cm = ctx.browser("amazon", headed=_headed, block_media=True)
                 browser = cm.__enter__()
                 self._shared_crawl_slot = slot
                 self._shared_cm = cm

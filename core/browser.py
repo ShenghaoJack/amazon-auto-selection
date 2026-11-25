@@ -666,6 +666,16 @@ class BrowserAutomation:
         return self
 
     _BLOCKED_RESOURCE_TYPES = frozenset({"image", "media", "font", "stylesheet"})
+    _HEADED_BLOCKED_RESOURCE_TYPES = frozenset({"media", "font"})
+    _CAPTCHA_IMAGE_HINTS = (
+        "captcha",
+        "opfcaptcha",
+        "cvf",
+        "waf",
+        "puzzle",
+        "arkose",
+        "challenge",
+    )
     _BLOCKED_TELEMETRY_HOSTS = (
         "amazon-adsystem.com",
         "fls-na.amazon.com",
@@ -680,20 +690,31 @@ class BrowserAutomation:
     )
 
     def _should_block_media(self) -> bool:
-        """仅无头非 CDP 抓取且调用方显式开启 block_media 时拦截图片/媒体/字体/CSS/广告埋点。"""
-        if self.dry_run or self.headed or self.is_cdp or not self.block_media:
+        """非 CDP 抓取且调用方显式开启 block_media 时拦截图片/媒体/字体/广告埋点（无头额外拦 CSS，有头保留样式与验证码图）。"""
+        if self.dry_run or self.is_cdp or not self.block_media:
             return False
         raw = self.config.get("BROWSER_BLOCK_MEDIA", "true") if self.config is not None else "true"
         return str(raw if raw is not None else "true").strip().lower() not in ("0", "false", "no", "off")
 
     @classmethod
-    def _is_blocked_request(cls, resource_type: str, url: str) -> bool:
-        if str(resource_type or "").lower() in cls._BLOCKED_RESOURCE_TYPES:
-            return True
-        if url:
+    def _is_blocked_request(cls, resource_type: str, url: str, *, headed: bool = False) -> bool:
+        rtype = str(resource_type or "").lower()
+        low_url = str(url or "").lower()
+        if headed:
+            if rtype in cls._HEADED_BLOCKED_RESOURCE_TYPES:
+                return True
+            if rtype == "image":
+                # 有头兜底放行验证码/人机挑战图片，拦截普通商品图以大幅压降内存
+                if any(tok in low_url for tok in cls._CAPTCHA_IMAGE_HINTS):
+                    return False
+                return True
+        else:
+            if rtype in cls._BLOCKED_RESOURCE_TYPES:
+                return True
+        if low_url:
             try:
                 from urllib.parse import urlparse
-                host = (urlparse(url).hostname or "").lower()
+                host = (urlparse(low_url).hostname or "").lower()
                 if host and any(host == h or host.endswith("." + h) for h in cls._BLOCKED_TELEMETRY_HOSTS):
                     return True
             except Exception:  # noqa: BLE001
@@ -701,15 +722,16 @@ class BrowserAutomation:
         return False
 
     def _install_media_blocker(self) -> bool:
-        """在无头抓取上下文安装资源拦截器：加速商品页加载并显著降低 Chromium 内存与假死风险。"""
+        """在抓取上下文安装资源拦截器：加速页面加载并显著降低 Chromium 内存占用与假死风险。"""
         self._media_blocking_active = False
         if not self._should_block_media() or self._context is None:
             return False
+        headed = bool(self.headed)
         try:
             def _route_handler(route) -> None:
                 try:
                     req = route.request
-                    if self._is_blocked_request(req.resource_type, req.url):
+                    if self._is_blocked_request(req.resource_type, req.url, headed=headed):
                         route.abort()
                     else:
                         route.continue_()

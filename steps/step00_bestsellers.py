@@ -494,7 +494,7 @@ class Step00Bestsellers(BaseStep):
                 while remaining:
                     blocked = None
                     block_reason = ""
-                    with ctx.browser("amazon") as browser:
+                    with ctx.browser("amazon", block_media=True) as browser:
                         while remaining:
                             url, kind = remaining[0]
                             try:
@@ -538,7 +538,7 @@ class Step00Bestsellers(BaseStep):
                                 self.log(ctx, f"[{kind}] 有头浏览器兜底补抓(复用卖家精灵窗口，原因={block_reason})：{url}")
                             else:
                                 self.log(ctx, f"[{kind}] 有头浏览器兜底补抓(打开有头亚马逊浏览器，原因={block_reason})：{url}")
-                        with ctx.browser("sellersprite" if reuse_ss else "amazon", headed=True) as browser:
+                        with ctx.browser("sellersprite" if reuse_ss else "amazon", headed=True, block_media=not reuse_ss) as browser:
                             if reuse_ss:
                                 sync_fn = getattr(browser, "sync_shared_amazon_login", None)
                                 if callable(sync_fn):

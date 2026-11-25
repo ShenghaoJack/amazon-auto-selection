@@ -1486,7 +1486,7 @@ class Step10Variants(BaseStep):
                 )
                 yielded = False
                 processed_in_slice = 0
-                with crawl_slot, ctx.browser("amazon", headed=headed, block_media=not headed) as browser:
+                with crawl_slot, ctx.browser("amazon", headed=headed, block_media=True) as browser:
                     page = browser.new_page()
                     while cursor < len(asins):
                         idx = cursor + 1
