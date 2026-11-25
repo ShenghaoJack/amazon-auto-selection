@@ -651,8 +651,20 @@ class Step09SearchCollect(BaseStep):
                                     pass
                                 url = default_url
 
-                        # 浏览器重试仍 0 个 ASIN → HttpFetcher (curl_cffi) 直连兜底补抓该页
-                        if not page_items and not ctx.dry_run and not _is_genuine_no_results_page(html):
+                        # 浏览器重试仍 0 个 ASIN 或疑似残页(<8 个且非明确末页/无结果页) → HttpFetcher (curl_cffi) 直连兜底补抓
+                        _need_http_fallback = (
+                            not ctx.dry_run
+                            and not _is_genuine_no_results_page(html)
+                            and (
+                                not page_items
+                                or (
+                                    len(page_items) < 8
+                                    and not _has_disabled_next_page(html)
+                                    and (page_no < pages or any(c >= 16 for c in page_counts))
+                                )
+                            )
+                        )
+                        if _need_http_fallback:
                             try:
                                 if http_fallback is None:
                                     from core.http_client import HttpFetcher
@@ -662,21 +674,49 @@ class Step09SearchCollect(BaseStep):
                                         proxy_url=(_slot or {}).get("proxy_url") or None,
                                         slot_id=(_slot or {}).get("slot_id") or "",
                                     )
-                                resp = http_fallback.get(default_url, retries=1)
-                                if resp and resp.text:
-                                    http_items = _extract_result_items(resp.text)
-                                    if not http_items:
-                                        http_legacy = _extract_natural_asins(resp.text)
-                                        if http_legacy:
-                                            http_items = [{"asin": a, "title": ""} for a in http_legacy]
-                                    if http_items:
-                                        page_items = http_items
-                                        html = resp.text
-                                        self.log(
-                                            ctx,
-                                            f"词 [{word}] 第{page_no}页浏览器受限(0 ASIN), "
-                                            f"已由 HTTP 直连兜底成功恢复 {len(page_items)} 个 ASIN",
-                                        )
+                                best_http_items: list[dict] = []
+                                best_http_html = ""
+                                best_http_is_legacy = True
+                                for h_try in range(1, 4):
+                                    resp = http_fallback.get(default_url, retries=2)
+                                    if resp and resp.text:
+                                        h_items = _extract_result_items(resp.text)
+                                        h_is_legacy = False
+                                        if not h_items:
+                                            h_legacy = _extract_natural_asins(resp.text)
+                                            if h_legacy:
+                                                h_items = [{"asin": a, "title": ""} for a in h_legacy]
+                                                h_is_legacy = True
+                                        # 主列表结果优先于 legacy 兜底，同类结果取数量更多者
+                                        better = False
+                                        if h_items:
+                                            if not best_http_items:
+                                                better = True
+                                            elif best_http_is_legacy and not h_is_legacy:
+                                                better = True
+                                            elif best_http_is_legacy == h_is_legacy and len(h_items) > len(best_http_items):
+                                                better = True
+                                        if better:
+                                            best_http_items = h_items
+                                            best_http_html = resp.text
+                                            best_http_is_legacy = h_is_legacy
+                                        if (not h_is_legacy and len(h_items) >= 8) or _is_genuine_no_results_page(resp.text):
+                                            break
+                                    if h_try < 3 and base_interval > 0:
+                                        time.sleep(1.5 * h_try)
+                                if best_http_items and (
+                                    not page_items
+                                    or (not best_http_is_legacy and len(best_http_items) > len(page_items))
+                                    or (best_http_is_legacy and len(best_http_items) > len(page_items) and len(best_http_items) >= 8)
+                                ):
+                                    prev_cnt = len(page_items)
+                                    page_items = best_http_items
+                                    html = best_http_html
+                                    self.log(
+                                        ctx,
+                                        f"词 [{word}] 第{page_no}页浏览器受限({prev_cnt} ASIN), "
+                                        f"已由 HTTP 直连兜底成功恢复 {len(page_items)} 个 ASIN",
+                                    )
                             except Exception:
                                 pass
 
