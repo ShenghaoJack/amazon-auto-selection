@@ -647,6 +647,9 @@ class BrowserAutomation:
                 "timeout": 60000,
                 "args": base_args,
             }
+            if self.headed:
+                # 有头模式关闭 Playwright 默认 1280x720 固定视口，避免窗口最大化后右侧大片留白
+                headed_kw["no_viewport"] = True
             if pw_proxy is not None:
                 headed_kw["proxy"] = pw_proxy
             self._browser = self._pw.chromium.launch_persistent_context(**headed_kw)
@@ -919,16 +922,23 @@ class BrowserAutomation:
             import re
             market = self.config.market.lower().lstrip('.')
             now = time.time()
-            return any(
-                re.match(r'^(?:at-|sess-at-)', str(c.get('name') or ''))
-                and c.get('value')
-                and (float(c.get('expires', -1)) <= 0 or float(c['expires']) > now)
-                and (
-                    str(c.get('domain') or '').lstrip('.').lower() == market
-                    or str(c.get('domain') or '').lstrip('.').lower().endswith('.' + market)
-                )
-                for c in page.context.cookies()
-            )
+            for c in page.context.cookies():
+                name = str(c.get('name') or '')
+                if not (re.match(r'^(?:at-|sess-at-)', name) and c.get('value')):
+                    continue
+                dom = str(c.get('domain') or '').lstrip('.').lower()
+                if not (dom == market or dom.endswith('.' + market)):
+                    continue
+                exp = c.get('expires')
+                if exp is None:
+                    return True
+                try:
+                    exp_f = float(exp)
+                except (TypeError, ValueError):
+                    return True
+                if exp_f <= 0 or exp_f > now:
+                    return True
+            return False
         except Exception:
             return False
 
@@ -948,6 +958,86 @@ class BrowserAutomation:
             )
         except Exception:
             return False
+
+    def diagnose_amazon_login(self, page) -> tuple[bool, str]:
+        """不导航页面，返回 `(是否已登录, 诊断说明)` 供管理员登录轮询实时展示。"""
+        self.touch_watchdog()
+        if self.dry_run:
+            return True, "dry-run"
+        try:
+            import re
+            from urllib.parse import urlparse as _urlparse
+            cur_url = str(getattr(page, "url", "") or "").lower()
+            parsed = _urlparse(cur_url)
+            cur_host = (parsed.hostname or "").lower()
+            cur_path = parsed.path or ""
+            # 只检查 URL path，避免误杀登录成功跳回首页时的 query 参数(如 ?ref_=nav_ya_signin)
+            if any(tok in cur_path for tok in (
+                "/ap/", "/ax/claim", "validatecaptcha", "/cvf/", "/mfa", "challenge", "approval", "/signin",
+            )):
+                return False, f"当前仍在登录/验证页（{cur_path[:36]}）"
+            if not self.has_valid_amazon_auth_cookie(page):
+                market = self.config.market.lower().lstrip('.')
+                try:
+                    all_c = page.context.cookies()
+                except Exception:
+                    all_c = []
+                matched = [
+                    c for c in all_c
+                    if str(c.get('domain') or '').lstrip('.').lower() == market
+                    or str(c.get('domain') or '').lstrip('.').lower().endswith('.' + market)
+                ]
+                auth_names = [
+                    str(c.get('name') or '')
+                    for c in matched
+                    if re.match(r'^(?:at-|sess-at-|x-main|sst-)', str(c.get('name') or ''))
+                ]
+                if auth_names:
+                    return False, f"发现 {market} 认证Cookie({','.join(auth_names[:4])})但已过期或无有效 at-/sess-at-"
+                return False, f"未检测到 {market} 认证Cookie（当前站点Cookie数={len(matched)}）"
+            link = None
+            try:
+                # 使用 state="attached" 避免窄窗口或大促页头折叠时因不可见而误判超时
+                link = page.wait_for_selector("#nav-link-accountList", state="attached", timeout=3000)
+            except TypeError:
+                link = page.wait_for_selector("#nav-link-accountList", timeout=3000)
+            except Exception:
+                link = None
+            if link is not None:
+                href = str(link.get_attribute('href') or '').lower()
+                if not href and hasattr(link, 'query_selector'):
+                    # 亚马逊新版页头中 #nav-link-accountList 改为 <div> 容器，真实链接在内层 <a>
+                    inner = link.query_selector('a[href]')
+                    href = str(inner.get_attribute('href') or '').lower() if inner else ''
+                if '/ap/signin' in href or '/ap/register' in href:
+                    return False, "账号菜单链接仍指向登录页"
+                if href:
+                    return True, "已确认登录态"
+            # 兜底：部分大促/窄屏页头无标准 href 时，检查问候语文本与是否处于目标站正常页
+            if hasattr(page, "query_selector"):
+                try:
+                    greet = page.query_selector("#nav-link-accountList-nav-line-1")
+                    gtxt = (greet.inner_text() or "").strip().lower() if greet else ""
+                    if gtxt:
+                        if any(tok in gtxt for tok in (
+                            "sign in", "anmelden", "identifiez", "iniciar", "accedi", "ログイン", "登录",
+                        )):
+                            return False, f"页头仍显示未登录（{gtxt[:24]}）"
+                        return True, f"已确认登录态（{gtxt[:24]}）"
+                except Exception:
+                    pass
+                market_dom = str(self.config.market or "").lower().lstrip(".")
+                if market_dom and (cur_host == market_dom or cur_host.endswith("." + market_dom)):
+                    try:
+                        if not self.is_amazon_captcha_page(page) and not page.query_selector(
+                            "#ap_email, #ap_password, input[name='email']"
+                        ):
+                            return True, "已确认登录态（认证Cookie+目标站首页）"
+                    except Exception:
+                        pass
+            return False, f"未识别到登录态（当前URL={cur_host}{cur_path[:24]}）"
+        except Exception as exc:
+            return False, f"检测异常: {type(exc).__name__}"
 
     def check_amazon_login(self, page, navigate: bool = True) -> bool:
         """检测亚马逊登录态：账号菜单不能指向登录页，且必须有有效认证 Cookie。
@@ -973,62 +1063,8 @@ class BrowserAutomation:
             if last_exc is not None:
                 raise last_exc
             time.sleep(2)
-        try:
-            from urllib.parse import urlparse as _urlparse
-            cur_url = str(getattr(page, "url", "") or "").lower()
-            parsed = _urlparse(cur_url)
-            cur_host = (parsed.hostname or "").lower()
-            cur_path = parsed.path or ""
-            # 只检查 URL path，避免误杀登录成功跳回首页时的 query 参数(如 ?ref_=nav_ya_signin)
-            if any(tok in cur_path for tok in (
-                "/ap/", "/ax/claim", "validatecaptcha", "/cvf/", "/mfa", "challenge", "approval", "/signin",
-            )):
-                return False
-            if not self.has_valid_amazon_auth_cookie(page):
-                return False
-            link = None
-            try:
-                # 使用 state="attached" 避免窄窗口或大促页头折叠时因不可见而误判超时
-                link = page.wait_for_selector("#nav-link-accountList", state="attached", timeout=3000)
-            except TypeError:
-                link = page.wait_for_selector("#nav-link-accountList", timeout=3000)
-            except Exception:
-                link = None
-            if link is not None:
-                href = str(link.get_attribute('href') or '').lower()
-                if not href and hasattr(link, 'query_selector'):
-                    # 亚马逊新版页头中 #nav-link-accountList 改为 <div> 容器，真实链接在内层 <a>
-                    inner = link.query_selector('a[href]')
-                    href = str(inner.get_attribute('href') or '').lower() if inner else ''
-                if '/ap/signin' in href or '/ap/register' in href:
-                    return False
-                if href:
-                    return True
-            # 兜底：部分大促/窄屏页头无标准 href 时，检查问候语文本与是否处于目标站正常页
-            if hasattr(page, "query_selector"):
-                try:
-                    greet = page.query_selector("#nav-link-accountList-nav-line-1")
-                    gtxt = (greet.inner_text() or "").strip().lower() if greet else ""
-                    if gtxt:
-                        if any(tok in gtxt for tok in (
-                            "sign in", "anmelden", "identifiez", "iniciar", "accedi", "ログイン", "登录",
-                        )):
-                            return False
-                        return True
-                except Exception:
-                    pass
-                market_dom = str(self.config.market or "").lower().lstrip(".")
-                if market_dom and (cur_host == market_dom or cur_host.endswith("." + market_dom)):
-                    try:
-                        if not self.is_amazon_captcha_page(page) and not page.query_selector(
-                            "#ap_email, #ap_password, input[name='email']"
-                        ):
-                            return True
-                    except Exception:
-                        pass
-            return False
-        except Exception:
-            return False
+        ok, _reason = self.diagnose_amazon_login(page)
+        return ok
 
     def inject_cookies(self, page, cookie_header: str) -> bool:
         """把配置的 Cookie 头注入当前浏览器上下文(Profile 初始化导入)。

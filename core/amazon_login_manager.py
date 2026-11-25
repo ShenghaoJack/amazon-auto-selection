@@ -506,8 +506,17 @@ class AmazonLoginManager:
                             except Exception:  # noqa: BLE001
                                 continue
                         logged_now = False
+                        diag_reason = ""
+                        diag_fn = getattr(browser, "diagnose_amazon_login", None)
                         for cand in cand_pages:
-                            if browser.check_amazon_login(cand, navigate=False):
+                            if callable(diag_fn):
+                                ok_cand, r_cand = diag_fn(cand)
+                                if ok_cand:
+                                    logged_now = True
+                                    break
+                                if r_cand and not diag_reason:
+                                    diag_reason = r_cand
+                            elif browser.check_amazon_login(cand, navigate=False):
                                 logged_now = True
                                 break
                         if logged_now:
@@ -528,8 +537,15 @@ class AmazonLoginManager:
                                         message=f"{target_label} 登录确认成功！已发布加密共享登录态。",
                                     )
                                     return
+                                self._update_task(
+                                    message=f"已检测到 {target_label} 登录态，但共享态保存未命中有效认证Cookie，继续重试…"
+                                )
                         else:
                             confirm_streak = 0
+                            if diag_reason:
+                                self._update_task(
+                                    message=f"等待 {target_label} 登录完成（{diag_reason}）…"
+                                )
                         cancel_ev.wait(timeout=_POLL_INTERVAL)
 
                     self._update_task(
