@@ -93,7 +93,7 @@ def decision_meta(root):
 
 def view(root):
     from core.step15_display import format_indicator_text, format_text
-    from core.step15_trend_detail import trend_detail
+    from core.step15_trend_detail import season_google_trend_detail, trend_detail
     from tools.step15_indicator_assessment import BUSINESS_MEANINGS
     path = report_path(root)
     before = revision(path)
@@ -114,6 +114,9 @@ def view(root):
     result["趋势明细"] = {r["指标"]: detail for r in result["指标"]
                           if r.get("指标") in ("趋势方向（站内）", "趋势方向（Google）")
                           if (detail := trend_detail(r)) is not None}
+    season_google = season_google_trend_detail(root, result["指标"])
+    if season_google is not None:
+        result["季节Google趋势"] = season_google
     meta = decision_meta(root)
     decision = meta["status"]
     result["revision"] = before

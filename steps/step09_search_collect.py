@@ -514,19 +514,27 @@ class Step09SearchCollect(BaseStep):
                     while idx < total:
                         word = words[idx]
                         pages = core_pages if word in qualified_core else tail_pages
+                        browser_broken = False
                         try:
                             asins, titles = self._search_one(ctx, browser, page, market, word, pages, retries)
                         except StepFailedError as exc:
                             self.log(ctx, f"词 [{word}] 本轮抓取异常({exc})，暂记已抓结果留待后续补抓/有头兜底恢复")
                             asins, titles = [], {}
-                            try:
-                                page.close()
-                            except Exception:
-                                pass
-                            try:
-                                page = browser.new_page()
-                            except Exception:
-                                pass
+                            if getattr(browser, "_watchdog_tripped", False):
+                                browser_broken = True
+                            else:
+                                try:
+                                    page.close()
+                                except Exception:
+                                    pass
+                                try:
+                                    page = browser.new_page()
+                                except Exception:
+                                    browser_broken = True
+                        except Exception as exc:
+                            self.log(ctx, f"词 [{word}] 浏览器会话异常断开({type(exc).__name__}: {str(exc)[:120]})，重建浏览器后继续")
+                            asins, titles = [], {}
+                            browser_broken = True
                         prev_asins = list(collected.get(word) or [])
                         if prev_asins:
                             merged_asins = _dedup(prev_asins + asins)
@@ -541,9 +549,16 @@ class Step09SearchCollect(BaseStep):
                         # 标题快照持久化(断点续爬不丢; 同词重搜时整体刷新/合并)
                         write_json(verify_path, verified)
                         self._screenshot(browser, page, screenshot_dir, word)
-                        self.log(ctx, f"词 [{word}] 收集 {len(collected[word])} 个自然位 ASIN(主列表解析)")
+                        _pc = getattr(self, "_last_page_counts", None) or []
+                        _pc_txt = f", 页明细: {'/'.join(str(x) for x in _pc)}" if _pc else ""
+                        _merge_txt = ", 含续爬合并" if prev_asins else ""
+                        self.log(ctx, f"词 [{word}] 收集 {len(collected[word])} 个自然位 ASIN(主列表解析{_pc_txt}{_merge_txt})")
                         idx += 1
                         in_slice += 1
+                        if browser_broken:
+                            self.log(ctx, "检测到浏览器会话已失效/看门狗触发，释放当前槽位并重建新浏览器继续剩余词...")
+                            yielded = True
+                            break
                         if not ctx.dry_run and idx < total:
                             if slice_words > 0 and in_slice >= slice_words and slot.has_waiters():
                                 self.log(
@@ -571,10 +586,12 @@ class Step09SearchCollect(BaseStep):
         base_interval = float(ctx.config.get("REQUEST_MIN_INTERVAL", 1.5) or 0.0)
         page_retries = max(2, int(retries)) if not ctx.dry_run else 1
         http_fallback = None
+        self._last_page_counts = []
         try:
             for attempt in range(1, retries + 1):
                 try:
                     items: list[dict] = []
+                    page_counts: list[int] = []
                     next_page_url = ""
                     had_throttled_page = False
                     reached_natural_end = False
@@ -639,7 +656,12 @@ class Step09SearchCollect(BaseStep):
                             try:
                                 if http_fallback is None:
                                     from core.http_client import HttpFetcher
-                                    http_fallback = HttpFetcher(ctx.config)
+                                    _slot = ctx.amz_slot() if hasattr(ctx, "amz_slot") else None
+                                    http_fallback = HttpFetcher(
+                                        ctx.config,
+                                        proxy_url=(_slot or {}).get("proxy_url") or None,
+                                        slot_id=(_slot or {}).get("slot_id") or "",
+                                    )
                                 resp = http_fallback.get(default_url, retries=1)
                                 if resp and resp.text:
                                     http_items = _extract_result_items(resp.text)
@@ -664,12 +686,14 @@ class Step09SearchCollect(BaseStep):
                             else:
                                 had_throttled_page = True
                         items.extend(page_items)
+                        page_counts.append(len(page_items))
                         if not ctx.dry_run and html:
                             if _has_disabled_next_page(html):
                                 reached_natural_end = True
                                 break
                             next_page_url = _extract_next_page_url(html, market)
 
+                    self._last_page_counts = page_counts
                     asins: list[str] = []
                     titles: dict[str, str] = {}
                     for it in items:

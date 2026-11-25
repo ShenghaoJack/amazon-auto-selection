@@ -139,6 +139,95 @@
   .btn-ghost{background:transparent}
   .btn-sm{padding:6px 12px;font-size:12px;border-radius:9px}
 
+  /* ---------- 顶栏右侧操作组 ---------- */
+  .hdr-actions{display:inline-flex;align-items:center;gap:8px;flex-wrap:wrap}
+  .hdr-sep{width:1px;height:16px;background:var(--line-2);margin:0 2px;opacity:.75}
+  .hdr-btn{
+    display:inline-flex;align-items:center;justify-content:center;gap:6px;
+    height:32px;padding:0 12px;border-radius:10px;
+    font-family:inherit;font-size:12px;font-weight:600;letter-spacing:.01em;line-height:1;
+    color:var(--txt-2);text-decoration:none;white-space:nowrap;cursor:pointer;
+    background:rgba(255,255,255,.04);border:1px solid var(--line);
+    transition:transform .18s var(--ease),background .22s,border-color .22s,color .22s,box-shadow .22s;
+  }
+  .hdr-btn:visited{color:var(--txt-2)}
+  .hdr-btn svg{width:14px;height:14px;flex:none;opacity:.82;transition:opacity .2s,transform .2s}
+  .hdr-btn:hover{
+    color:var(--txt);background:rgba(255,255,255,.085);border-color:var(--line-2);
+    transform:translateY(-1px);box-shadow:0 6px 16px -10px rgba(0,0,0,.75);
+  }
+  .hdr-btn:hover svg{opacity:1}
+  .hdr-btn:active{transform:translateY(0) scale(.98)}
+  .hdr-btn:focus-visible{outline:none;box-shadow:0 0 0 3px rgba(122,162,255,.38)}
+  .hdr-btn[hidden]{display:none !important}
+  .hdr-btn.hdr-account{
+    background:rgba(255,255,255,.05);color:var(--txt);
+  }
+  .hdr-btn.hdr-account .dot-user{
+    width:6px;height:6px;border-radius:50%;background:var(--ok);
+    box-shadow:0 0 6px rgba(52,211,153,.75);flex:none;
+  }
+  .hdr-btn.hdr-accent{
+    color:#c7dbff;background:linear-gradient(135deg,rgba(110,168,255,.14),rgba(139,123,255,.10));
+    border-color:rgba(122,162,255,.32);
+  }
+  .hdr-btn.hdr-accent:visited{color:#c7dbff}
+  .hdr-btn.hdr-accent:hover{
+    color:#fff;background:linear-gradient(135deg,rgba(110,168,255,.24),rgba(139,123,255,.18));
+    border-color:rgba(122,162,255,.58);box-shadow:0 6px 18px -8px rgba(110,168,255,.55);
+  }
+  .hdr-btn.hdr-logout{
+    color:var(--txt-2);background:rgba(255,255,255,.025);border-color:rgba(255,255,255,.09);
+  }
+  .hdr-btn.hdr-logout:hover{
+    color:#fda4af;background:rgba(251,113,133,.13);border-color:rgba(251,113,133,.45);
+    box-shadow:0 6px 18px -10px rgba(251,113,133,.45);
+  }
+
+  /* ---------- 关键词清单：跨池移动与高亮 ---------- */
+  .kw-chip-item{
+    display:inline-flex;align-items:center;gap:5px;
+    background:rgba(52,211,153,.12);border:1px solid rgba(52,211,153,.4);
+    border-radius:20px;padding:2px 9px;margin:2px 4px;font-size:12px;line-height:1.5;
+    transition:background .2s,border-color .2s,box-shadow .2s;
+  }
+  .kw-chip-item.kw-moved{
+    background:rgba(251,191,36,.18);border-color:rgba(251,191,36,.72);
+    box-shadow:0 0 10px -2px rgba(251,191,36,.42);color:#fef3c7;
+  }
+  .kw-moved-tag{
+    font-size:10px;font-weight:700;padding:0 5px;border-radius:999px;
+    background:rgba(251,191,36,.24);color:#fde68a;border:1px solid rgba(251,191,36,.48);
+    line-height:1.45;white-space:nowrap;
+  }
+  .kw-move-btn{
+    display:inline-flex;align-items:center;padding:0 5px;height:18px;border-radius:999px;
+    font-size:10.5px;font-weight:600;line-height:1;cursor:pointer;text-decoration:none;
+    color:#93c5fd;background:rgba(122,162,255,.14);border:1px solid rgba(122,162,255,.32);
+    transition:background .18s,border-color .18s,color .18s;white-space:nowrap;
+  }
+  .kw-drag-item{cursor:grab;-webkit-user-drag:element;transition:background .18s,border-color .18s,box-shadow .18s !important}
+  .kw-drag-item:hover{transform:none !important}
+  .kw-drag-item:active{cursor:grabbing;transform:none !important}
+  .kw-drag-item.is-dragging{opacity:.45}
+  .kw-grip{color:var(--dim);font-size:11px;letter-spacing:-1px;margin-right:3px;opacity:.7}
+  .kw-drop-zone{transition:border-color .18s,box-shadow .18s,background .18s}
+  .kw-drop-zone.kw-drop-over{
+    border-color:rgba(122,162,255,.85) !important;
+    box-shadow:inset 0 0 18px rgba(122,162,255,.18),0 0 0 2px rgba(122,162,255,.28);
+    background:rgba(122,162,255,.07) !important;
+  }
+  .kw-pool.is-moved-in{
+    border-color:rgba(251,191,36,.75) !important;background:rgba(251,191,36,.18) !important;
+    box-shadow:0 0 10px -2px rgba(251,191,36,.42);color:#fef3c7;
+  }
+  .kw-row-moved td{
+    background:rgba(251,191,36,.12) !important;
+  }
+  .kw-row-moved td:first-child{
+    box-shadow:inset 3px 0 0 #fbbf24;
+  }
+
   /* ---------- 表单控件 ---------- */
   select,input[type=text],input[type=number],#newCatOverlay input[type=password],textarea{
     font-family:inherit;color:var(--txt);font-size:13px;
@@ -758,6 +847,18 @@
 #secMarketReport .mr-trend-grid .mr-trend-total{font-weight:650;color:#f1f1f5}
 #secMarketReport .mr-trend-mean{display:flex;justify-content:space-between;gap:20px;padding:12px;color:#f1f1f5;font-size:12px;font-weight:650}
 #secMarketReport .mr-trend-note{margin:4px 0 14px;color:#a4a4b2;font-size:12px;line-height:1.7}
+#secMarketReport .mr-season-chart-box{position:relative;margin:8px 0 12px;padding:14px 16px 12px;border:1px solid #303038;border-radius:8px;background:#141419}
+#secMarketReport .mr-season-legend{display:flex;flex-wrap:wrap;gap:8px 10px;margin:0 0 10px}
+#secMarketReport .mr-season-legend-btn{display:inline-flex;align-items:center;gap:6px;padding:3px 9px;border:1px solid #343440;border-radius:999px;background:#1d1d25;color:#dedee6;font:inherit;font-size:11px;line-height:1.4;cursor:pointer;transition:opacity .15s ease,border-color .15s ease}
+#secMarketReport .mr-season-legend-btn:hover{border-color:#585870}
+#secMarketReport .mr-season-legend-btn[data-hidden="true"]{opacity:.38;text-decoration:line-through}
+#secMarketReport .mr-season-dot{width:8px;height:8px;border-radius:50%;flex:0 0 auto}
+#secMarketReport .mr-season-svg-wrap{position:relative;width:100%;overflow-x:auto}
+#secMarketReport .mr-season-svg{display:block;width:100%;min-width:560px;height:220px;user-select:none}
+#secMarketReport .mr-season-tooltip{position:absolute;top:10px;left:0;z-index:5;pointer-events:none;min-width:150px;max-width:260px;padding:8px 10px;border:1px solid #444456;border-radius:7px;background:rgba(20,20,27,.95);box-shadow:0 6px 20px rgba(0,0,0,.45);color:#ececf2;font-size:11px;line-height:1.6}
+#secMarketReport .mr-season-tooltip-head{font-weight:650;color:#d6d2ff;margin-bottom:4px;font-variant-numeric:tabular-nums}
+#secMarketReport .mr-season-tooltip-row{display:flex;align-items:center;justify-content:space-between;gap:10px;font-variant-numeric:tabular-nums}
+#secMarketReport .mr-season-tooltip-name{display:inline-flex;align-items:center;gap:5px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 #secMarketReport .mr-more{margin-top:26px;border-top:1px solid var(--mr-line);padding-top:19px}
 #secMarketReport .mr-more summary{font-size:13px;color:#d4d1f5}
 #secMarketReport .mr-more-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px 30px;margin-top:16px}
@@ -821,10 +922,26 @@
   <div class="pill" id="connPill"><span class="pd"></span><span id="connTxt">连接中…</span></div>
   <span class="pill" style="opacity:.9;cursor:default" title="服务端构建版本(与启动控制台一致为最新)"><span class="tiny" style="font-family:var(--mono)">build <b id="buildTag">—</b></span></span>
   <div class="spacer" style="flex:1"></div>
-  <a href="/account" class="btn-sm btn-ghost" id="accountLink">账号设置</a>
-  <a href="/accounts#amzLoginPanel" class="btn-sm btn-ghost" id="amzLoginLink" hidden>亚马逊登录</a>
-  <a href="/oplog" class="btn-sm btn-ghost" id="oplogLink">操作日志</a>
-  <button class="btn-sm btn-ghost" id="authLogout" type="button">退出登录</button>
+  <nav class="hdr-actions" aria-label="账号与系统操作">
+    <a href="/account" class="hdr-btn hdr-account" id="accountLink" title="账号设置与权限管理">
+      <span class="dot-user" aria-hidden="true"></span>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 20c1.8-3.6 5-5 8-5s6.2 1.4 8 5"/></svg>
+      <span class="lbl">账号设置</span>
+    </a>
+    <a href="/accounts#amzLoginPanel" class="hdr-btn hdr-accent" id="amzLoginLink" hidden title="管理亚马逊账号与代理出口槽位">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3.6 9h16.8M3.6 15h16.8M12 3a13 13 0 0 1 0 18M12 3a13 13 0 0 0 0 18"/></svg>
+      <span class="lbl">亚马逊登录</span>
+    </a>
+    <a href="/oplog" class="hdr-btn" id="oplogLink" title="查看系统操作审计日志">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M8 13h8M8 17h5"/></svg>
+      <span class="lbl">操作日志</span>
+    </a>
+    <span class="hdr-sep" aria-hidden="true"></span>
+    <button class="hdr-btn hdr-logout" id="authLogout" type="button" title="退出当前账号登录">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="M16 17l5-5-5-5M21 12H9"/></svg>
+      <span class="lbl">退出登录</span>
+    </button>
+  </nav>
 </header>
 
 <div id="offBanner" class="banner-off" style="display:none">
@@ -1155,12 +1272,12 @@
       <!-- 第二排: 候选词池(左) + 长尾词池(右) 并排对齐 -->
       <div style="display:flex;gap:18px;flex-wrap:wrap;margin-top:14px">
         <div style="flex:1;min-width:320px">
-          <div class="tiny" style="color:var(--txt-2);margin-bottom:2px">候选词池 <span id="kwCandCount" class="tiny" style="color:var(--dim)"></span>（勾选加入核心大词，保存后生效）</div>
-          <div id="kwCandChips" style="max-height:320px;overflow:auto;border:1px solid var(--line);border-radius:10px;padding:6px"></div>
+          <div class="tiny" style="color:var(--txt-2);margin-bottom:2px">候选词池 <span id="kwCandCount" class="tiny" style="color:var(--dim)"></span>（勾选加入核心大词；<b>可拖拽至右侧长尾词池</b>）</div>
+          <div id="kwCandChips" class="kw-drop-zone" style="max-height:320px;overflow:auto;border:1px solid var(--line);border-radius:10px;padding:6px"></div>
         </div>
         <div style="flex:1;min-width:320px">
-          <div class="tiny" style="color:var(--txt-2);margin-bottom:2px">长尾词池（点击加入或移出人工清单）</div>
-          <div id="kwTailPool" style="max-height:320px;overflow:auto;border:1px solid var(--line);border-radius:10px;padding:6px"></div>
+          <div class="tiny" style="color:var(--txt-2);margin-bottom:2px">长尾词池（点击加入或移出人工清单；<b>可拖拽至左侧候选词池</b>）</div>
+          <div id="kwTailPool" class="kw-drop-zone" style="max-height:320px;overflow:auto;border:1px solid var(--line);border-radius:10px;padding:6px"></div>
         </div>
       </div>
 
@@ -1708,7 +1825,9 @@ async function boot() {
   try {
     const authUser = await api("/api/auth/me");
     authCsrf = authUser.csrf;
-    $("accountLink").textContent = authUser.name + " · 账号设置";
+    const _accLbl = $("accountLink")?.querySelector(".lbl");
+    if (_accLbl) _accLbl.textContent = authUser.name + " · 账号设置";
+    else $("accountLink").textContent = authUser.name + " · 账号设置";
     // 2026-11-12: 操作日志仅管理员可见 —— 非 admin 直接隐藏入口（后端也会 403）
     if (authUser.role !== "admin") { const _ol = $("oplogLink"); if (_ol) _ol.hidden = true; }
     else { const _al = $("amzLoginLink"); if (_al) _al.hidden = false; }
@@ -2453,10 +2572,13 @@ async function loadMarketReport() {
         const actual = safe(shownValue) + unit;
         const trend = (data["趋势明细"] || {})[r["指标"]];
         const hasTrend = trend && Array.isArray(trend.months) && trend.months.length === 3 && Array.isArray(trend.words) && Array.isArray(trend.total) && trend.total.length === 3;
-        const trendId = hasTrend ? `mr-trend-${trendIndex++}` : "";
+        const seasonChart = r["指标"] === "季节波动系数" ? data["季节Google趋势"] : null;
+        const hasSeasonChart = !!(seasonChart && Array.isArray(seasonChart.months) && seasonChart.months.length > 0 && Array.isArray(seasonChart.series) && seasonChart.series.length > 0);
+        const hasDetail = hasTrend || hasSeasonChart;
+        const trendId = hasDetail ? `mr-trend-${trendIndex++}` : "";
         const indicatorName = r["指标"] === "老品占比" ? "上架超3年链接销额占比" : r["指标"];
         const definition = `<details class="mr-evidence"><summary>查看定义</summary><div class="mr-evidence-content">${safe(r["业务定义"] || "暂无业务定义")}${r["原表备注及口径"] ? `<br>计算口径：${safe(r["原表备注及口径"])}` : ""}</div></details>`;
-        const proof = definition + (hasTrend ? `<button type="button" class="mr-trend-toggle" aria-expanded="false" aria-controls="${trendId}">查看明细</button>` : "");
+        const proof = definition + (hasDetail ? `<button type="button" class="mr-trend-toggle" aria-expanded="false" aria-controls="${trendId}">查看明细</button>` : "");
         let result = `<tr class="mr-row" data-mr-status="${safe(status)}"><td data-label="指标" class="mr-name">${safe(indicatorName)}</td><td data-label="判定"><span class="mr-badge ${klass}"><span class="mr-dot ${klass}" aria-hidden="true"></span>${safe(status)}</span></td><td data-label="实际值" class="mr-value">${actual}</td><td data-label="标准" class="mr-standard">${safe(shownStandard)}</td><td data-label="指标定义">${proof}</td></tr>`;
         if (hasTrend) {
           const headings = trend.months.map(month => `<span role="columnheader">${safe(month)}同比</span>`).join("");
@@ -2465,6 +2587,9 @@ async function loadMarketReport() {
           const coverage = String(r["证据与限制"] || "").match(/有效核心词\s*(\d+\s*\/\s*\d+)/);
           const coverageNote = coverage ? `有效核心词 ${safe(coverage[1])}；数据不完整的词不参与加总。` : "";
           result += `<tr class="mr-trend-row" id="${trendId}" hidden><td colspan="5"><div class="mr-trend-heading">${safe(r["指标"])} · 近三个月同比</div><div class="mr-trend-scroll"><div class="mr-trend-grid" role="table" aria-label="${safe(r["指标"])}明细"><div role="row"><span role="columnheader" data-first="true">核心词</span>${headings}</div>${wordRows}<div role="row"><span role="cell" data-first="true" class="mr-trend-total">各词加总</span>${total}</div></div></div><div class="mr-trend-mean"><span>汇总（3 个月均值）</span><span>${safe(trend.mean)}</span></div><p class="mr-trend-note">${coverageNote}当前标准：${safe(r["原表标准"])}。先按月合计，再计算同比和三个月均值；按未取整的均值判定。</p><details class="mr-evidence"><summary>查看完整依据</summary><div class="mr-evidence-content">${safe(r["证据与限制"])}</div></details></td></tr>`;
+        } else if (hasSeasonChart) {
+          const rangeText = `${seasonChart.start_month || seasonChart.months[0]} ~ ${seasonChart.end_month || seasonChart.months[seasonChart.months.length - 1]}`;
+          result += `<tr class="mr-trend-row" id="${trendId}" hidden><td colspan="5"><div class="mr-trend-heading">季节波动系数 · 近三年 Google 趋势（${safe(rangeText)}）</div><div class="mr-season-chart-box" data-season-chart="1"><div class="mr-season-legend" role="group" aria-label="核心词图例"></div><div class="mr-season-svg-wrap"><svg class="mr-season-svg" viewBox="0 0 960 220" preserveAspectRatio="xMidYMid meet" role="img" aria-label="近三年 Google 趋势折线图"></svg><div class="mr-season-tooltip" hidden></div></div></div><p class="mr-trend-note">${safe(seasonChart.source || "Google Trends 月度搜索热度指数（各词独立 0–100 归一化）")}；点击图例可切换显示/隐藏单条曲线，鼠标悬停可查看各月指数。当前标准：${safe(r["原表标准"])}。</p><details class="mr-evidence"><summary>查看完整依据</summary><div class="mr-evidence-content">${safe(r["证据与限制"])}</div></details></td></tr>`;
         }
         return result;
       }).join("");
@@ -2473,6 +2598,9 @@ async function loadMarketReport() {
     if (!rows.length) html += '<div class="mr-state">报告中没有可展示的指标，请重新运行步骤15。</div>';
     html += `</div>`;
     box.innerHTML = html;
+    if (data["季节Google趋势"]) {
+      box.querySelectorAll('[data-season-chart="1"]').forEach(el => renderSeasonGoogleChart(el, data["季节Google趋势"]));
+    }
     box.querySelectorAll(".mr-trend-toggle").forEach(toggle => toggle.addEventListener("click", () => {
       const detail = box.querySelector(`#${toggle.getAttribute("aria-controls")}`);
       const open = toggle.getAttribute("aria-expanded") !== "true";
@@ -2516,6 +2644,147 @@ async function loadMarketReport() {
   }
 }
 function safeReportError(error) { return esc(String(error && error.message || error)); }
+function renderSeasonGoogleChart(container, chartData) {
+  if (!container || !chartData) return;
+  const months = Array.isArray(chartData.months) ? chartData.months : [];
+  const series = Array.isArray(chartData.series) ? chartData.series : [];
+  if (!months.length || !series.length) return;
+  const palette = ["#8b84ff", "#34d399", "#fbbf24", "#f472b6", "#38bdf8", "#fb923c", "#a78bfa", "#4ade80"];
+  const legendEl = container.querySelector(".mr-season-legend");
+  const svgEl = container.querySelector(".mr-season-svg");
+  const tipEl = container.querySelector(".mr-season-tooltip");
+  if (!svgEl) return;
+
+  const hidden = new Set();
+  const W = 960, H = 220, padL = 40, padR = 18, padT = 14, padB = 34;
+  const plotW = W - padL - padR, plotH = H - padT - padB;
+  const n = months.length;
+  const xAt = i => n <= 1 ? padL + plotW / 2 : padL + (i / (n - 1)) * plotW;
+
+  const draw = () => {
+    const visible = series.map((s, idx) => ({s, idx, color: palette[idx % palette.length]})).filter(x => !hidden.has(x.idx));
+    let maxVal = 100;
+    for (const {s} of visible) {
+      for (const v of (s.values || [])) {
+        if (typeof v === "number" && Number.isFinite(v) && v > maxVal) maxVal = v;
+      }
+    }
+    const yMax = maxVal <= 100 ? 100 : Math.ceil(maxVal / 20) * 20;
+    const yAt = v => padT + plotH - (Math.max(0, v) / yMax) * plotH;
+
+    const parts = [];
+    // Horizontal grid & Y labels
+    const yTicks = [0, 0.25, 0.5, 0.75, 1].map(r => Math.round(yMax * r));
+    for (const tv of yTicks) {
+      const y = yAt(tv).toFixed(1);
+      parts.push(`<line x1="${padL}" y1="${y}" x2="${W - padR}" y2="${y}" stroke="#2a2a34" stroke-width="1"/>`);
+      parts.push(`<text x="${padL - 8}" y="${(Number(y) + 3.5).toFixed(1)}" text-anchor="end" fill="#8f8fa1" font-size="10">${tv}</text>`);
+    }
+    // Year boundary vertical dashed lines (January) & X labels
+    const labelStep = n > 24 ? 4 : n > 12 ? 3 : 1;
+    for (let i = 0; i < n; i++) {
+      const m = String(months[i] || "");
+      const x = xAt(i).toFixed(1);
+      if (m.endsWith("-01") && i > 0) {
+        parts.push(`<line x1="${x}" y1="${padT}" x2="${x}" y2="${padT + plotH}" stroke="#3a3a4a" stroke-width="1" stroke-dasharray="3 3"/>`);
+      }
+      if (i === 0 || i === n - 1 || i % labelStep === 0) {
+        const anchor = i === 0 ? "start" : (i === n - 1 ? "end" : "middle");
+        parts.push(`<text x="${x}" y="${H - 10}" text-anchor="${anchor}" fill="#9898aa" font-size="10">${esc(m)}</text>`);
+      }
+    }
+    // Series polylines (split on null)
+    for (const {s, color} of visible) {
+      const vals = s.values || [];
+      let seg = [];
+      const flush = () => {
+        if (seg.length === 1) {
+          parts.push(`<circle cx="${seg[0][0]}" cy="${seg[0][1]}" r="2.8" fill="${color}"/>`);
+        } else if (seg.length > 1) {
+          const d = seg.map((pt, idx) => `${idx === 0 ? "M" : "L"}${pt[0]},${pt[1]}`).join(" ");
+          parts.push(`<path d="${d}" fill="none" stroke="${color}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`);
+        }
+        seg = [];
+      };
+      for (let i = 0; i < n; i++) {
+        const v = vals[i];
+        if (typeof v === "number" && Number.isFinite(v)) {
+          seg.push([xAt(i).toFixed(1), yAt(v).toFixed(1)]);
+        } else {
+          flush();
+        }
+      }
+      flush();
+    }
+    // Crosshair & active dots placeholder + invisible interaction overlay
+    parts.push(`<g class="mr-season-hover" style="display:none"><line class="mr-season-cross" x1="0" y1="${padT}" x2="0" y2="${padT + plotH}" stroke="#bcb5fa" stroke-width="1" stroke-dasharray="2 2"/><g class="mr-season-dots"></g></g>`);
+    parts.push(`<rect class="mr-season-hit" x="${padL}" y="${padT}" width="${plotW}" height="${plotH}" fill="transparent" style="cursor:crosshair"/>`);
+    svgEl.innerHTML = parts.join("");
+
+    const hoverGroup = svgEl.querySelector(".mr-season-hover");
+    const crossEl = svgEl.querySelector(".mr-season-cross");
+    const dotsEl = svgEl.querySelector(".mr-season-dots");
+    const hitEl = svgEl.querySelector(".mr-season-hit");
+    if (!hitEl || !hoverGroup) return;
+
+    const showAt = evt => {
+      const plotRect = hitEl.getBoundingClientRect();
+      if (!plotRect.width) return;
+      const ratio = Math.max(0, Math.min(1, (evt.clientX - plotRect.left) / plotRect.width));
+      const idx = n <= 1 ? 0 : Math.round(ratio * (n - 1));
+      const cx = xAt(idx).toFixed(1);
+      crossEl.setAttribute("x1", cx);
+      crossEl.setAttribute("x2", cx);
+      const dotSvg = [];
+      const rowsHtml = [];
+      for (const {s, color} of visible) {
+        const v = (s.values || [])[idx];
+        const hasV = typeof v === "number" && Number.isFinite(v);
+        if (hasV) {
+          dotSvg.push(`<circle cx="${cx}" cy="${yAt(v).toFixed(1)}" r="3.5" fill="${color}" stroke="#141419" stroke-width="1.5"/>`);
+        }
+        rowsHtml.push(`<div class="mr-season-tooltip-row"><span class="mr-season-tooltip-name"><span class="mr-season-dot" style="background:${color}"></span>${esc(s.name)}</span><span>${hasV ? v.toFixed(1).replace(/\.0$/, "") : "—"}</span></div>`);
+      }
+      dotsEl.innerHTML = dotSvg.join("");
+      hoverGroup.style.display = "";
+      if (tipEl) {
+        tipEl.innerHTML = `<div class="mr-season-tooltip-head">${esc(months[idx])}</div>${rowsHtml.join("")}`;
+        tipEl.hidden = false;
+        const wrap = svgEl.parentElement;
+        const wrapRect = wrap.getBoundingClientRect();
+        const crossPx = (plotRect.left - wrapRect.left + wrap.scrollLeft) + (n <= 1 ? plotRect.width / 2 : (idx / (n - 1)) * plotRect.width);
+        const tipW = tipEl.offsetWidth || 180;
+        const maxRight = wrap.scrollLeft + wrapRect.width;
+        const left = crossPx + 14 + tipW > maxRight ? Math.max(wrap.scrollLeft + 6, crossPx - tipW - 14) : crossPx + 14;
+        tipEl.style.left = `${left}px`;
+      }
+    };
+    hitEl.addEventListener("mousemove", showAt);
+    hitEl.addEventListener("mouseleave", () => {
+      hoverGroup.style.display = "none";
+      if (tipEl) tipEl.hidden = true;
+    });
+  };
+
+  if (legendEl) {
+    legendEl.innerHTML = series.map((s, idx) => {
+      const color = palette[idx % palette.length];
+      return `<button type="button" class="mr-season-legend-btn" data-series-idx="${idx}" data-hidden="false"><span class="mr-season-dot" style="background:${color}"></span>${esc(s.name)}</button>`;
+    }).join("");
+    legendEl.querySelectorAll(".mr-season-legend-btn").forEach(btn => btn.addEventListener("click", () => {
+      const idx = Number(btn.dataset.seriesIdx);
+      if (hidden.has(idx)) {
+        hidden.delete(idx);
+        btn.dataset.hidden = "false";
+      } else if (hidden.size < series.length - 1) {
+        hidden.add(idx);
+        btn.dataset.hidden = "true";
+      }
+      draw();
+    }));
+  }
+  draw();
+}
 async function confirmMarketReport() {
   const file = marketReportFile, revision = marketReportRevision;
   if (!file || file !== selFile || !revision) return;
@@ -3291,6 +3560,9 @@ let __kwCorePrefilled = false;
 // ★ 同上，长尾词列（2026-10-12 用户口径：长尾词的自动词也**同步核心大词的显示口径** ——
 //   自动态下预填出来、能看见、一动就转人工）。
 let __kwTailPrefilled = false;
+let __kwTailTouched = false;                         // 本轮是否手动改过长尾词(改过则删改核心词绝不覆盖长尾词)
+const __kwMovedWords = { core: new Set(), longtail: new Set() };  // 顶部清单跨池移入高亮
+const __kwPoolMoved = { toCore: [], toTail: [] };                 // 下方两池之间互移的词(高亮置顶显示)
 const kwEdit = { core: [], longtail: [], inject: [], noinject: [] };   // 编辑中的人工清单(未保存)
 let __kwGateSaved = null;                            // 上次保存的门槛值(用于脏判断)
 
@@ -3371,6 +3643,11 @@ async function loadKeywordPanel(force) {
     const _tailManual = ((d.longtail || {}).manual || []).slice();
     const _tailCrawl = ((d.longtail || {}).crawl || []).slice();
     __kwTailPrefilled = !_tailManual.length && _tailCrawl.length > 0;
+    __kwTailTouched = _tailManual.length > 0;
+    __kwMovedWords.core.clear();
+    __kwMovedWords.longtail.clear();
+    __kwPoolMoved.toCore = [];
+    __kwPoolMoved.toTail = [];
     kwEdit.longtail = _tailManual.length ? _tailManual : _tailCrawl;
     kwEdit.inject = (((d.inject_only || {}).words) || []).slice();
     kwEdit.noinject = (((d.inject_only || {}).excluded) || []).slice();   // ★ [不注入]
@@ -3488,7 +3765,13 @@ function renderKeywordPanel() {
 function renderKwCandPool() {
   const box = $("kwCandChips");
   if (!box || !kwData) return;
-  const cands = kwData.candidates || [];
+  const movedOutTail = new Set(__kwPoolMoved.toTail || []);
+  const movedInCore = (__kwPoolMoved.toCore || []).slice();
+  const movedInCoreSet = new Set(movedInCore);
+  const rawCands = (kwData.candidates || []).filter(c => !movedOutTail.has(c.word));
+  const rawSet = new Set(rawCands.map(c => c.word));
+  const extraCands = movedInCore.filter(w => !rawSet.has(w)).map(w => ({ word: w, qualified: false, verdict: "未判定", volume: null, cpc: null, _movedIn: true }));
+  const cands = [...extraCands, ...rawCands.map(c => movedInCoreSet.has(c.word) ? { ...c, _movedIn: true } : c)];
   const cc = $("kwCandCount");
   if (cc) {
     const q = cands.filter(c => c.qualified).length;
@@ -3499,18 +3782,19 @@ function renderKwCandPool() {
     box.innerHTML = '<span class="tiny" style="color:var(--dim)">(暂无候选词池 — 请先跑步骤 4/5/7 生成候选与判定)</span>';
     return;
   }
-  // 分组键与长尾词池同构: 长尾按五维, 候选按判定; 达标恒排第一, 其余按判定字面
-  const ORDER = ["达标", "未达标", "数据不足", "未判定"];
+  // 移入词置顶高亮, 但「判定」列保留原始真实判定(达标/未达标/数据不足/未判定), 不与移入标签重复
+  const ORDER = ["__MOVED__", "达标", "未达标", "数据不足", "未判定"];
   const groups = new Map();
   cands.forEach(c => {
-    const g = c.qualified ? "达标" : (String(c.verdict || "").trim() || "未判定");
+    const verdict = c.qualified ? "达标" : (String(c.verdict || "").trim() || "未判定");
+    const g = c._movedIn ? "__MOVED__" : verdict;
     if (!groups.has(g)) groups.set(g, []);
-    groups.get(g).push(c);
+    groups.get(g).push({ ...c, _verdict: verdict });
   });
   const rank = g => { const i = ORDER.indexOf(g); return i < 0 ? 99 : i; };
   const keys = [...groups.keys()].sort((a, b) => rank(a) - rank(b) || a.localeCompare(b));
   const number = v => v !== null && v !== undefined && Number.isFinite(Number(v)) ? Number(v).toLocaleString() : "—";
-  const sig = JSON.stringify(keys.map(g => [g, groups.get(g).map(c => [c.word, c.volume, c.cpc])]));
+  const sig = JSON.stringify(keys.map(g => [g, groups.get(g).map(c => [c.word, c._verdict, c.volume, c.cpc, !!c._movedIn])]));
   const selectedCore = new Set(kwEdit.core || []);
   if (box.dataset.kwCandSig === sig && box.querySelector(".kw-candidate-table")) {
     box.querySelectorAll(".kw-cand-select").forEach(x => {
@@ -3520,10 +3804,15 @@ function renderKwCandPool() {
     return;
   }
   const prevScroll = box.scrollTop;
-  const rows = keys.flatMap(g => groups.get(g).map(c => `<tr><td><label><input type="checkbox" class="kw-cand-select" data-w="${esc(c.word)}" ${selectedCore.has(c.word)?"checked":""}><span>${esc(c.word)}</span></label></td><td>${esc(g)}</td><td>${number(c.volume)}</td><td>${number(c.cpc)}</td></tr>`));
+  const rows = keys.flatMap(g => groups.get(g).map(c => {
+    const movedTag = c._movedIn ? ' <span class="kw-moved-tag">长尾移入</span>' : "";
+    return `<tr class="kw-drag-item${c._movedIn ? " kw-row-moved" : ""}" draggable="true" data-w="${esc(c.word)}" title="按住可拖拽至右侧长尾词池"><td><label><span class="kw-grip" aria-hidden="true">⋮⋮</span><input type="checkbox" class="kw-cand-select" data-w="${esc(c.word)}" ${selectedCore.has(c.word)?"checked":""}><span>${esc(c.word)}</span>${movedTag}</label></td><td>${esc(c._verdict)}</td><td>${number(c.volume)}</td><td>${number(c.cpc)}</td></tr>`;
+  }));
   box.dataset.kwCandSig = sig;
   box.innerHTML = `<table class="kw-candidate-table"><thead><tr><th>关键词</th><th>判定</th><th>月搜索量</th><th>CPC</th></tr></thead><tbody>${rows.join("")}</tbody></table>`;
   box.querySelectorAll(".kw-cand-select").forEach(x => x.addEventListener("change", () => kwPickWord("core", x.dataset.w)));
+  box.querySelectorAll("tr.kw-drag-item").forEach(tr => bindKwDragSource(tr, "cand_pool", tr.dataset.w));
+  bindKwDropZone(box, "cand_pool");
   box.scrollTop = prevScroll;
 }
 
@@ -3535,24 +3824,31 @@ function renderKwTailPool() {
   const dims = tail.dimensions || {};
   const auto = tail.auto || [];
   const haveDims = Object.keys(dims).length > 0;
+  const movedOutCore = new Set(__kwPoolMoved.toCore || []);
+  const movedInTail = (__kwPoolMoved.toTail || []).filter(w => w && !movedOutCore.has(w));
+  const movedInTailSet = new Set(movedInTail);
   const groups = [];
   const seen = new Set();
+  if (movedInTail.length) {
+    groups.push(["核心池移入", movedInTail]);
+    movedInTail.forEach(w => seen.add(w));
+  }
   Object.keys(dims).forEach(d => {
-    const words = (dims[d] || []).filter(Boolean);
+    const words = (dims[d] || []).filter(w => w && !movedOutCore.has(w) && !seen.has(w));
     if (words.length) {
       groups.push([d, words]);
       words.forEach(w => seen.add(w));
     }
   });
   Object.entries(tail.verified_pool || {}).forEach(([d, words]) => {
-    const unique = (words || []).filter(w => w && !seen.has(w));
+    const unique = (words || []).filter(w => w && !movedOutCore.has(w) && !seen.has(w));
     if(unique.length) { groups.push([`${d} · 已验证`, unique]); unique.forEach(w=>seen.add(w)); }
   });
   Object.entries(tail.generated_pool || {}).forEach(([d, words]) => {
-    const unique = (words || []).filter(w => w && !seen.has(w));
+    const unique = (words || []).filter(w => w && !movedOutCore.has(w) && !seen.has(w));
     if(unique.length) { groups.push([`${d} · 实体组词（未验证）`, unique]); unique.forEach(w=>seen.add(w)); }
   });
-  const rest = auto.filter(w => !seen.has(w));
+  const rest = auto.filter(w => w && !movedOutCore.has(w) && !seen.has(w));
   if (rest.length) groups.push([haveDims ? "其它(台账外)" : "自动长尾词", rest]);
   if (!groups.length) {
     box.dataset.kwTailSig = "";
@@ -3565,10 +3861,14 @@ function renderKwTailPool() {
     box.querySelectorAll(".kw-pool").forEach(x => {
       const w = x.dataset.w;
       const on = selectedTail.has(w);
+      const movedIn = movedInTailSet.has(w);
       x.setAttribute("aria-pressed", String(on));
-      x.title = `点击${on ? "移出" : "加入"}人工长尾清单`;
-      x.style.background = on ? "rgba(52,211,153,.14)" : "rgba(140,170,255,.12)";
-      x.style.border = `1px solid ${on ? "rgba(52,211,153,.4)" : "rgba(140,170,255,.25)"}`;
+      x.classList.toggle("is-moved-in", movedIn);
+      x.title = `点击${on ? "移出" : "加入"}人工长尾清单；按住可拖拽至左侧候选词池`;
+      if (!movedIn) {
+        x.style.background = on ? "rgba(52,211,153,.14)" : "rgba(140,170,255,.12)";
+        x.style.border = `1px solid ${on ? "rgba(52,211,153,.4)" : "rgba(140,170,255,.25)"}`;
+      }
       const wantText = `${on ? "✓ " : ""}${w}`;
       if (x.textContent !== wantText) x.textContent = wantText;
     });
@@ -3577,16 +3877,25 @@ function renderKwTailPool() {
   const prevScroll = box.scrollTop;
   box.dataset.kwTailSig = sig;
   box.innerHTML = groups.map(([d, words]) => {
+    const isMovedGroup = d === "核心池移入";
     const chips = words.map(w => {
       const on = selectedTail.has(w);
+      const movedIn = movedInTailSet.has(w);
       const bg = on ? "rgba(52,211,153,.14)" : "rgba(140,170,255,.12)";
       const bd = on ? "rgba(52,211,153,.4)" : "rgba(140,170,255,.25)";
-      return `<button type="button" class="chip kw-pool" data-kind="longtail" data-w="${esc(w)}" aria-pressed="${on}" title="点击${on ? "移出" : "加入"}人工长尾清单"
-        style="display:inline-block;cursor:pointer;border-radius:20px;padding:2px 10px;margin:2px 4px;font-size:12px;background:${bg};border:1px solid ${bd}">${on ? "✓ " : ""}${esc(w)}</button>`;
+      return `<span role="button" tabindex="0" draggable="true" class="chip kw-pool kw-drag-item${movedIn ? " is-moved-in" : ""}" data-kind="longtail" data-w="${esc(w)}" aria-pressed="${on}" title="点击${on ? "移出" : "加入"}人工长尾清单；按住可拖拽至左侧候选词池"
+        style="display:inline-block;border-radius:20px;padding:2px 10px;margin:2px 4px;font-size:12px;background:${bg};border:1px solid ${bd}">${on ? "✓ " : ""}${esc(w)}</span>`;
     }).join("");
-    return `<div style="margin-bottom:5px"><span class="tiny" style="color:var(--txt-2)">${esc(d)}(${words.length}):</span> ${chips}</div>`;
+    const grpLabel = isMovedGroup
+      ? `<span class="kw-moved-tag" style="margin-right:4px">★ ${esc(d)}(${words.length})</span>`
+      : `<span class="tiny" style="color:var(--txt-2)">${esc(d)}(${words.length}):</span>`;
+    return `<div style="margin-bottom:5px">${grpLabel} ${chips}</div>`;
   }).join("");
-  box.querySelectorAll(".kw-pool").forEach(x => x.onclick = () => kwPickWord(x.dataset.kind, x.dataset.w));
+  box.querySelectorAll(".kw-pool").forEach(x => {
+    x.onclick = () => kwPickWord(x.dataset.kind, x.dataset.w);
+    bindKwDragSource(x, "tail_pool", x.dataset.w);
+  });
+  bindKwDropZone(box, "tail_pool");
   box.scrollTop = prevScroll;
 }
 
@@ -3644,11 +3953,25 @@ function renderKwChips(kind) {
   if (!box) return;
   if (kind === "inject") { renderInjectChips(box); return; }
   const words = kwEdit[kind] || [];
-  const empty = '<span class="tiny" style="color:var(--dim)">(当前没有词)</span>';
+  const empty = '<span class="tiny" style="color:var(--dim)">(当前没有词 — 可从下方词池选择或拖拽词条至此)</span>';
+  const movedTagTxt = kind === "core" ? "长尾移入" : "核心移入";
+  box.classList.add("kw-drop-zone");
+  box.style.minHeight = "30px";
+  box.style.borderRadius = "8px";
+  box.style.padding = "2px";
   box.innerHTML = words.length
-    ? words.map(w => `<span class="chip" style="display:inline-block;background:rgba(52,211,153,.12);border:1px solid rgba(52,211,153,.4);border-radius:20px;padding:2px 10px;margin:2px 4px;font-size:12px">${esc(w)} <a href="javascript:void 0" class="kw-x" data-kind="${kind}" data-w="${esc(w)}" style="color:#fb7185">✕</a></span>`).join("")
+    ? words.map(w => {
+        const isMoved = __kwMovedWords[kind] && __kwMovedWords[kind].has(w);
+        return `<span draggable="true" class="chip kw-chip-item kw-drag-item${isMoved ? " kw-moved" : ""}" data-w="${esc(w)}" title="按住可拖拽至另一侧清单或词池">`
+          + `<span>${esc(w)}</span>`
+          + (isMoved ? `<span class="kw-moved-tag">${movedTagTxt}</span>` : "")
+          + `<a href="javascript:void 0" class="kw-x" data-kind="${kind}" data-w="${esc(w)}" style="color:#fb7185;text-decoration:none;font-weight:700" title="移除">✕</a>`
+          + `</span>`;
+      }).join("")
     : empty;
   box.querySelectorAll(".kw-x").forEach(x => x.onclick = () => toggleKwWord(x.dataset.kind, x.dataset.w));
+  box.querySelectorAll(".kw-chip-item").forEach(el => bindKwDragSource(el, kind === "core" ? "core_list" : "tail_list", el.dataset.w));
+  bindKwDropZone(box, kind === "core" ? "core_list" : "tail_list");
 }
 
 /* ★★ 注入块 = **合并后的实际注入词**（2026-10-12 用户口径 A）。
@@ -3739,7 +4062,12 @@ function syncLongtailWithCoreChange() {
         kwData.longtail.verified_pool = d.longtail.verified_pool || {};
         kwData.longtail.generated_pool = d.longtail.generated_pool || {};
       }
-      kwEdit.longtail = ((d.longtail || {}).crawl || []).slice();
+      // ★ 2026-11-25 修复：如果用户本轮已经动过长尾词，或已有保存的人工长尾清单，
+      //   删改核心大词时只刷新下方长尾词候选池，绝不覆盖用户正在编辑的 kwEdit.longtail！
+      const hasManualTail = ((kwData.longtail || {}).manual || []).length > 0;
+      if (!__kwTailTouched && !hasManualTail) {
+        kwEdit.longtail = ((d.longtail || {}).crawl || []).slice();
+      }
       const tc = $("kwTailCount");
       if (tc) tc.textContent = `(自动 ${((kwData.longtail || {}).auto || []).length} 个 / 人工 ${kwEdit.longtail.length} 个)`;
       renderKwChips("longtail");
@@ -3747,6 +4075,131 @@ function syncLongtailWithCoreChange() {
       updateKwSaveButton();
     } catch (e) { /* ignore preview error */ }
   }, 180);
+}
+
+let __kwDragging = null;
+function bindKwDragSource(el, sourceZone, word) {
+  if (!el || !word) return;
+  el.addEventListener("dragstart", e => {
+    __kwDragging = { source: sourceZone, word };
+    el.classList.add("is-dragging");
+    try {
+      e.dataTransfer.effectAllowed = "move";
+      e.dataTransfer.setData("text/plain", JSON.stringify(__kwDragging));
+    } catch (_) {}
+  });
+  el.addEventListener("dragend", () => {
+    el.classList.remove("is-dragging");
+    __kwDragging = null;
+    document.querySelectorAll(".kw-drop-zone.kw-drop-over").forEach(z => z.classList.remove("kw-drop-over"));
+  });
+}
+function bindKwDropZone(el, targetZone) {
+  if (!el || el.dataset.kwDropBound === targetZone) return;
+  el.dataset.kwDropBound = targetZone;
+  const acceptDrag = e => {
+    if (!__kwDragging) return false;
+    const src = __kwDragging.source;
+    const srcSide = (src === "cand_pool" || src === "core_list") ? "core" : "longtail";
+    const dstSide = (targetZone === "cand_pool" || targetZone === "core_list") ? "core" : "longtail";
+    if (srcSide === dstSide) return false;
+    e.preventDefault();
+    try { e.dataTransfer.dropEffect = "move"; } catch (_) {}
+    el.classList.add("kw-drop-over");
+    return true;
+  };
+  el.addEventListener("dragenter", acceptDrag);
+  el.addEventListener("dragover", acceptDrag);
+  el.addEventListener("dragleave", e => {
+    if (!el.contains(e.relatedTarget)) el.classList.remove("kw-drop-over");
+  });
+  el.addEventListener("drop", e => {
+    el.classList.remove("kw-drop-over");
+    let payload = __kwDragging;
+    if (!payload) {
+      try { payload = JSON.parse(e.dataTransfer.getData("text/plain") || ""); } catch (_) {}
+    }
+    if (!payload || !payload.word) return;
+    const srcSide = (payload.source === "cand_pool" || payload.source === "core_list") ? "core" : "longtail";
+    const dstSide = (targetZone === "cand_pool" || targetZone === "core_list") ? "core" : "longtail";
+    if (srcSide === dstSide) return;
+    e.preventDefault();
+    const w = payload.word;
+    __kwDragging = null;
+    // 延迟到本轮原生 drop/dragend 结束后再重绘 DOM，避免 Chromium 拖拽状态机卡住导致第二次拖拽失效
+    setTimeout(() => {
+      if (targetZone === "cand_pool" || targetZone === "tail_pool") {
+        movePoolWord(srcSide, dstSide, w);
+      } else {
+        moveKwWord(srcSide, dstSide, w);
+      }
+    }, 0);
+  });
+}
+
+function movePoolWord(fromPool, toPool, word) {
+  if (!word || fromPool === toPool) return;
+  // 下方两池之间互移：只把词移到目标候选池顶部高亮展示，不直接塞进顶部生效清单
+  if (toPool === "longtail") {
+    __kwPoolMoved.toCore = __kwPoolMoved.toCore.filter(w => w !== word);
+    if (!__kwPoolMoved.toTail.includes(word)) __kwPoolMoved.toTail.unshift(word);
+    // 若该词原本在顶部核心大词中被选中，从核心大词移出以保持一致
+    const ci = (kwEdit.core || []).indexOf(word);
+    if (ci >= 0) {
+      kwEdit.core.splice(ci, 1);
+      __kwMovedWords.core.delete(word);
+      markKwDirty("core");
+    }
+    __kwTailTouched = true;
+    renderKeywordPanel();
+    const tb = $("kwTailPool");
+    if (tb) tb.scrollTop = 0;
+    toast(`已将「${word}」移入右侧「长尾词池」顶部（高亮显示，点击即可选入长尾清单）`, "ok");
+  } else {
+    __kwPoolMoved.toTail = __kwPoolMoved.toTail.filter(w => w !== word);
+    if (!__kwPoolMoved.toCore.includes(word)) __kwPoolMoved.toCore.unshift(word);
+    const ti = (kwEdit.longtail || []).indexOf(word);
+    if (ti >= 0) {
+      kwEdit.longtail.splice(ti, 1);
+      __kwMovedWords.longtail.delete(word);
+      __kwTailTouched = true;
+      markKwDirty("longtail");
+    }
+    renderKeywordPanel();
+    const cb = $("kwCandChips");
+    if (cb) cb.scrollTop = 0;
+    toast(`已将「${word}」移入左侧「候选词池」顶部（高亮显示，勾选即可加入核心大词）`, "ok");
+  }
+}
+
+function moveKwWord(fromKind, toKind, word) {
+  if (!word || fromKind === toKind) return;
+  const wasManual = currentKwMode() === "manual";
+  if (!wasManual) {
+    const r = kwModeRadio("manual");
+    if (r) r.checked = true;
+  }
+  const src = kwEdit[fromKind] || (kwEdit[fromKind] = []);
+  const dst = kwEdit[toKind] || (kwEdit[toKind] = []);
+  const idx = src.indexOf(word);
+  if (idx >= 0) src.splice(idx, 1);
+  if (!dst.includes(word)) dst.push(word);
+  __kwTailTouched = true;
+  if (__kwMovedWords[fromKind]) __kwMovedWords[fromKind].delete(word);
+  if (__kwMovedWords[toKind]) __kwMovedWords[toKind].add(word);
+  if (toKind === "longtail") {
+    __kwPoolMoved.toCore = __kwPoolMoved.toCore.filter(w => w !== word);
+    if (!__kwPoolMoved.toTail.includes(word)) __kwPoolMoved.toTail.unshift(word);
+  } else {
+    __kwPoolMoved.toTail = __kwPoolMoved.toTail.filter(w => w !== word);
+    if (!__kwPoolMoved.toCore.includes(word)) __kwPoolMoved.toCore.unshift(word);
+  }
+  markKwDirty("core");
+  markKwDirty("longtail");
+  renderKeywordPanel();
+  syncLongtailWithCoreChange();
+  const labelMap = { core: "核心大词", longtail: "长尾词" };
+  toast(`已将「${word}」移至${labelMap[toKind] || toKind}并高亮标记（记得点击「保存并应用」）`, "ok");
 }
 
 function kwPickWord(kind, word) {
@@ -3757,7 +4210,13 @@ function kwPickWord(kind, word) {
   }
   const arr = kwEdit[kind] || (kwEdit[kind] = []);
   const i = arr.indexOf(word);
-  if (i >= 0) arr.splice(i, 1); else arr.push(word);
+  if (i >= 0) {
+    arr.splice(i, 1);
+    if (__kwMovedWords[kind]) __kwMovedWords[kind].delete(word);
+  } else {
+    arr.push(word);
+  }
+  if (kind === "longtail") __kwTailTouched = true;
   markKwDirty(kind);
   renderKeywordPanel();
   if (kind === "core") syncLongtailWithCoreChange();
@@ -3769,7 +4228,13 @@ function kwPickWord(kind, word) {
 function toggleKwWord(kind, word) {
   if (!kwEdit[kind]) kwEdit[kind] = [];
   const i = kwEdit[kind].indexOf(word);
-  if (i >= 0) kwEdit[kind].splice(i, 1); else kwEdit[kind].push(word);
+  if (i >= 0) {
+    kwEdit[kind].splice(i, 1);
+    if (__kwMovedWords[kind]) __kwMovedWords[kind].delete(word);
+  } else {
+    kwEdit[kind].push(word);
+  }
+  if (kind === "longtail") __kwTailTouched = true;
   markKwDirty(kind);
   renderKeywordPanel();
   if (kind === "core") syncLongtailWithCoreChange();
@@ -3794,6 +4259,7 @@ function addKwWords(kind) {
   }
   if (!kwEdit[kind]) kwEdit[kind] = [];
   add.forEach(w => { if (!kwEdit[kind].includes(w)) kwEdit[kind].push(w); });
+  if (kind === "longtail") __kwTailTouched = true;
   el.value = "";
   markKwDirty(kind);
   renderKeywordPanel();
@@ -3810,6 +4276,7 @@ function seedKwFromEffective(kind) {
   const src = kind === "core" ? ((kwData.core || {}).effective || []) : ((kwData.longtail || {}).effective || []);
   if (!src.length) { toast("没有可用的自动词(请先跑步骤 4/5/7)", "err"); return; }
   kwEdit[kind] = src.slice();
+  if (kind === "longtail") __kwTailTouched = true;
   markKwDirty(kind);
   renderKeywordPanel();
   if (kind === "core") syncLongtailWithCoreChange();
@@ -3817,6 +4284,8 @@ function seedKwFromEffective(kind) {
 }
 function clearKwEdit(kind) {
   kwEdit[kind] = [];
+  if (kind === "longtail") __kwTailTouched = true;
+  if (__kwMovedWords[kind]) __kwMovedWords[kind].clear();
   // ★ 注入块是"加 + 减"一体：点「清空」应**整体复位**（连"不注入"一起清），
   //   否则会留下一个看不见的减法，让你以为"全恢复默认了"其实没有。
   if (kind === "inject") kwEdit.noinject = [];

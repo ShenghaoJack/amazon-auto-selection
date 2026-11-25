@@ -111,9 +111,84 @@ class StepContext:
         """编排器在某步结束时调用: 落盘 + 打一行用量日志。返回该行文本。"""
         return self.usage().finish_step(number, status)
 
+    def amz_slot(self) -> dict | None:
+        """为当前类目动态绑定亚马逊静态住宅代理+账号槽位（未配置槽位池时返回 None）。
+
+        多类目并发(类目数 > 槽位数，如 5 类目抢 2 槽位)时：
+        - 处于 `with AmzCrawlSlot:` 内部时，严格按物理并发槽位号(槽1/槽2/...) 1:1 动态映射，
+          确保同一时刻每个 IP 和账号最多只被 1 个类目占用，且浏览器 Profile 按 槽位+类目 隔离；
+        - 处于并发槽位外(如登录预检)时，回退到按类目解析首选可用槽位。
+        """
+        if self.config.dry_run:
+            return None
+        try:
+            from core import amazon_pool
+            from core.amz_crawl_lock import current_slot_index
+
+            cur_idx = current_slot_index()
+            if cur_idx is not None:
+                slot = amazon_pool.slot_for_crawl_index(
+                    self.paths.profile_root, self.config.market, cur_idx
+                )
+                if slot:
+                    slot["profile_dir"] = str(
+                        amazon_pool.cat_slot_profile_dir(
+                            self.paths.profile_root, slot["slot_id"], self.config.cat
+                        )
+                    )
+                    log_sig = (cur_idx, slot.get("slot_id"))
+                    if getattr(self, "_last_logged_amz_slot", None) != log_sig:
+                        self._last_logged_amz_slot = log_sig
+                        self.log.info(
+                            "物理槽%d 绑定亚马逊代理槽位 [%s(%s)] | 代理=%s",
+                            cur_idx,
+                            slot.get("name") or slot.get("slot_id"),
+                            slot.get("slot_id"),
+                            slot.get("proxy_masked") or "(当前服务器本地)",
+                        )
+                    return slot
+                return None
+
+            if not hasattr(self, "_amz_slot_resolved"):
+                self._amz_slot_resolved = True
+                self._amz_slot = None
+                slot = amazon_pool.acquire_slot_for_category(
+                    self.paths.profile_root,
+                    self.config.market,
+                    self.config.cat,
+                    preferred_slot_id=str(self.config.get("AMZ_SLOT_ID", "") or ""),
+                )
+                if slot:
+                    slot["profile_dir"] = str(
+                        amazon_pool.cat_slot_profile_dir(
+                            self.paths.profile_root, slot["slot_id"], self.config.cat
+                        )
+                    )
+                    self._amz_slot = slot
+                    if slot.get("lock_path"):
+                        import atexit
+                        atexit.register(amazon_pool.release_slot_lock, slot["lock_path"])
+                    self.log.info(
+                        "已绑定亚马逊代理槽位 [%s(%s)] | 代理=%s",
+                        slot.get("name") or slot.get("slot_id"),
+                        slot.get("slot_id"),
+                        slot.get("proxy_masked") or "(当前服务器本地)",
+                    )
+            return self._amz_slot
+        except Exception as exc:  # noqa: BLE001
+            self.log.warning("解析亚马逊代理槽位失败，回退默认模式: %s: %s", type(exc).__name__, exc)
+            return None
+
     def http(self, cookie: str | None = None) -> HttpFetcher:
         if self._http is None:
-            self._http = HttpFetcher(self.config, cookie=cookie)
+            slot = self.amz_slot()
+            self._http = HttpFetcher(
+                self.config,
+                cookie=cookie,
+                proxy_url=(slot or {}).get("proxy_url") or None,
+                slot_id=(slot or {}).get("slot_id") or "",
+                slot_resolver=self.amz_slot,
+            )
         return self._http
 
     def mcp(self) -> MCPClient:
@@ -128,6 +203,7 @@ class StepContext:
         downloads_path: str | None = None,
         profile_dir: str | None = None,
         use_cdp: bool | None = None,
+        block_media: bool = False,
     ) -> BrowserAutomation:
         """站点: amazon -> AMZ_PROFILE, sellersprite -> SS_PROFILE。
 
@@ -191,13 +267,18 @@ class StepContext:
             return SsBrowserLease(browser, wait_seconds=wait, label=label,
                                   log=self.log.info, warn=self.log.warning,
                                   resource=res, account=primary_account(self.config))
-        profile = profile_dir or self.paths.profile_amz()
+        slot = self.amz_slot()
+        profile = profile_dir or ((slot or {}).get("profile_dir") or self.paths.profile_amz())
         return BrowserAutomation(
             self.config,
             profile_dir=profile,
             headed=headed,
             dry_run=self.config.dry_run,
             downloads_path=downloads_path,
+            amazon_share_root=self.paths.profile_root,
+            proxy_url=(slot or {}).get("proxy_url") or str(self.config.get("AMZ_PROXY_URL", "") or "").strip() or None,
+            amazon_slot_id=(slot or {}).get("slot_id") or "",
+            block_media=bool(block_media),
         )
 
     def resolve_artifact(self, name: str) -> str:

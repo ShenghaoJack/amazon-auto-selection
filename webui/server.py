@@ -725,7 +725,10 @@ OP_ACTIONS = {
     "/api/std-vocab/prompts": "查看词表提示词",
     "/api/std-vocab/rollback": "词表回滚",
     "/api/admin/amazon-login/start": "管理员启动亚马逊共享登录",
+    "/api/admin/amazon-login/check": "管理员检测亚马逊共享登录态有效性",
     "/api/admin/amazon-login/cancel": "管理员取消亚马逊登录等待",
+    "/api/admin/amazon-login/slots/save": "管理员保存亚马逊代理槽位",
+    "/api/admin/amazon-login/slots/delete": "管理员删除亚马逊代理槽位",
     "/api/step15-review/confirm": "步骤15 确认继续深挖",
     "/api/step15-review/reject": "步骤15 否决（不推荐进入）",
     "/api/step15-settings/save": "保存步骤15选品标准",
@@ -3961,9 +3964,37 @@ class Handler(BaseHTTPRequestHandler):
                         wait_seconds=body.get("wait_seconds"),
                         actor=actor,
                         cookie=str(body.get("cookie") or ""),
+                        slot_id=str(body.get("slot_id") or ""),
                     )
                 except RuntimeError as exc:
                     raise UserFacingError(str(exc)) from exc
+                self._json(res)
+            elif path == "/api/admin/amazon-login/check":
+                body = self._read_body()
+                actor = str((getattr(self, "_user", None) or {}).get("name") or "admin")
+                try:
+                    res = _amz_login_manager().check_login(
+                        market=str(body.get("market") or "amazon.com"),
+                        actor=actor,
+                        slot_id=str(body.get("slot_id") or ""),
+                    )
+                except RuntimeError as exc:
+                    raise UserFacingError(str(exc)) from exc
+                self._json(res)
+            elif path == "/api/admin/amazon-login/slots/save":
+                body = self._read_body()
+                proxy_val = body.get("proxy_url") if "proxy_url" in body else None
+                res = _amz_login_manager().save_slot(
+                    slot_id=str(body.get("slot_id") or ""),
+                    name=str(body.get("name") or ""),
+                    market=str(body.get("market") or "amazon.com"),
+                    proxy_url=proxy_val,
+                    enabled=bool(body.get("enabled", True)),
+                )
+                self._json(res)
+            elif path == "/api/admin/amazon-login/slots/delete":
+                body = self._read_body()
+                res = _amz_login_manager().delete_slot(slot_id=str(body.get("slot_id") or ""))
                 self._json(res)
             elif path == "/api/admin/amazon-login/cancel":
                 self._json(_amz_login_manager().cancel_login())

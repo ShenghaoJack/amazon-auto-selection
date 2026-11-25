@@ -35,6 +35,78 @@ def _actual(row):
     return str(value)
 
 
+def _render_season_google_svg(chart):
+    months = chart.get("months") or []
+    series = chart.get("series") or []
+    if not months or not series:
+        return ""
+    palette = ["#4f46e5", "#059669", "#d97706", "#db2777", "#0284c7", "#ea580c", "#7c3aed", "#16a34a"]
+    w, h = 680.0, 200.0
+    pad_l, pad_r, pad_t, pad_b = 34.0, 14.0, 12.0, 30.0
+    plot_w, plot_h = w - pad_l - pad_r, h - pad_t - pad_b
+    n = len(months)
+
+    def x_at(i):
+        return pad_l + plot_w / 2 if n <= 1 else pad_l + (i / (n - 1)) * plot_w
+
+    max_val = 100.0
+    for s in series:
+        for v in (s.get("values") or []):
+            if isinstance(v, (int, float)) and not isinstance(v, bool) and v > max_val:
+                max_val = float(v)
+    y_max = 100.0 if max_val <= 100.0 else float(int((max_val + 19.9999) // 20) * 20)
+
+    def y_at(v):
+        return pad_t + plot_h - (max(0.0, float(v)) / y_max) * plot_h
+
+    svg = [f"<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 {int(w)} {int(h)}' style='width:100%;height:auto;display:block;border:1px solid #e2e8f0;border-radius:4px;background:#fafbfd'>"]
+    for ratio in (0.0, 0.25, 0.5, 0.75, 1.0):
+        tv = int(round(y_max * ratio))
+        y = y_at(tv)
+        svg.append(f"<line x1='{pad_l:.1f}' y1='{y:.1f}' x2='{w - pad_r:.1f}' y2='{y:.1f}' stroke='#e2e8f0' stroke-width='1'/>")
+        svg.append(f"<text x='{pad_l - 6:.1f}' y='{y + 3.2:.1f}' text-anchor='end' fill='#64748b' font-size='8.5'>{tv}</text>")
+
+    step = 4 if n > 24 else (3 if n > 12 else 1)
+    for i, m in enumerate(months):
+        ms = str(m or "")
+        x = x_at(i)
+        if ms.endswith("-01") and i > 0:
+            svg.append(f"<line x1='{x:.1f}' y1='{pad_t:.1f}' x2='{x:.1f}' y2='{pad_t + plot_h:.1f}' stroke='#cbd5e1' stroke-width='1' stroke-dasharray='3 3'/>")
+        if i == 0 or i == n - 1 or i % step == 0:
+            anchor = "start" if i == 0 else ("end" if i == n - 1 else "middle")
+            svg.append(f"<text x='{x:.1f}' y='{h - 9:.1f}' text-anchor='{anchor}' fill='#64748b' font-size='8.5'>{_text(ms)}</text>")
+
+    legend = []
+    for idx, s in enumerate(series):
+        color = palette[idx % len(palette)]
+        legend.append(
+            f"<span style='display:inline-flex;align-items:center;gap:4px;margin-right:10px;font-size:8pt;color:#334155'>"
+            f"<span style='display:inline-block;width:7px;height:7px;border-radius:50%;background:{color}'></span>"
+            f"{_text(s.get('name'))}</span>"
+        )
+        seg = []
+        vals = s.get("values") or []
+
+        def flush():
+            if len(seg) == 1:
+                svg.append(f"<circle cx='{seg[0][0]:.1f}' cy='{seg[0][1]:.1f}' r='2.5' fill='{color}'/>")
+            elif len(seg) > 1:
+                d = " ".join(f"{'M' if k == 0 else 'L'}{px:.1f},{py:.1f}" for k, (px, py) in enumerate(seg))
+                svg.append(f"<path d='{d}' fill='none' stroke='{color}' stroke-width='1.8' stroke-linejoin='round' stroke-linecap='round'/>")
+            seg.clear()
+
+        for i in range(n):
+            v = vals[i] if i < len(vals) else None
+            if isinstance(v, (int, float)) and not isinstance(v, bool):
+                seg.append((x_at(i), y_at(v)))
+            else:
+                flush()
+        flush()
+
+    svg.append("</svg>")
+    return f"<div style='margin:2mm 0 1.5mm;line-height:1.6'>{''.join(legend)}</div>" + "".join(svg)
+
+
 def render_html(cat, data):
     from tools.step15_indicator_assessment import BUSINESS_MEANINGS
     rows = data.get("指标") or []
@@ -93,6 +165,17 @@ def render_html(cat, data):
         parts.append(f"<p>汇总（3个月均值）：{_text(detail['mean'])}</p>")
         trend_row = next((r for r in rows if r.get("指标") == name), {})
         parts.append(f"<p class='note'>{_text(trend_row.get('证据与限制'))}</p>")
+    season_chart = data.get("季节Google趋势")
+    if isinstance(season_chart, dict) and season_chart.get("months") and season_chart.get("series"):
+        start_m = season_chart.get("start_month") or season_chart["months"][0]
+        end_m = season_chart.get("end_month") or season_chart["months"][-1]
+        season_row = next((r for r in rows if r.get("指标") == "季节波动系数"), {})
+        parts.append("<div style='break-inside:avoid;margin-top:3mm'>")
+        parts.append(f"<h3>季节波动系数 · 近三年 Google 趋势（{_text(start_m)} ~ {_text(end_m)}）</h3>")
+        parts.append(_render_season_google_svg(season_chart))
+        src = season_chart.get("source") or "Google Trends 月度搜索热度指数（各词独立 0–100 归一化）"
+        parts.append(f"<p class='note'>{_text(src)}。{_text(season_row.get('证据与限制') or '')}</p>")
+        parts.append("</div>")
     parts.append("<h2>附录｜指标业务解释</h2>")
     for section in ("市场需求", "竞争格局"):
         subset = [r for r in rows if r.get("板块") == section]

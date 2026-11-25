@@ -488,8 +488,12 @@ class Step00Bestsellers(BaseStep):
 
             if todo:
                 remaining = list(todo)
+                headed_rounds = max(0, int(ctx.config.get("BROWSER_HEADED_ROUNDS", 1) or 0))
+                fallback_on = str(ctx.config.get("FALLBACK", "auto") or "auto").strip().lower() != "off"
+                allow_headed_fallback = fallback_on and headed_rounds > 0 and not ctx.dry_run
                 while remaining:
                     blocked = None
+                    block_reason = ""
                     with ctx.browser("amazon") as browser:
                         while remaining:
                             url, kind = remaining[0]
@@ -497,17 +501,48 @@ class Step00Bestsellers(BaseStep):
                                 asins = self._scrape_list(ctx, browser, url, kind=kind)
                             except ListVerificationRequired:
                                 blocked = (url, kind)
+                                block_reason = "verification"
+                                break
+                            except Exception as exc:
+                                if allow_headed_fallback:
+                                    self.log(
+                                        ctx,
+                                        f"[{kind}] 无头榜单抓取异常({type(exc).__name__}: {str(exc)[:120]})，"
+                                        f"转有头浏览器兜底补抓：{url}",
+                                    )
+                                    blocked = (url, kind)
+                                    block_reason = f"error:{type(exc).__name__}"
+                                    break
+                                raise
+                            if asins is not None and len(asins) == 0 and allow_headed_fallback:
+                                self.log(
+                                    ctx,
+                                    f"[{kind}] 无头榜单抓取解析为 0 个 ASIN(疑似风控/限流/渲染不全)，"
+                                    f"转有头浏览器兜底补抓：{url}",
+                                )
+                                blocked = (url, kind)
+                                block_reason = "empty"
                                 break
                             self._record_list_result(ctx, json_path, txt_path, bs_set, nr_set, processed, url, kind, asins)
                             remaining.pop(0)
                     if blocked:
                         url, kind = blocked
                         reuse_ss = bool(str(ctx.config.get("SS_CDP_URL", "") or "").strip())
-                        if reuse_ss:
-                            self.log(ctx, f"[{kind}] 遇到亚马逊人机验证，正在卖家精灵浏览器新建标签，请手动完成验证：{url}")
+                        if block_reason == "verification":
+                            if reuse_ss:
+                                self.log(ctx, f"[{kind}] 遇到亚马逊人机验证，正在卖家精灵浏览器新建标签，请手动完成验证：{url}")
+                            else:
+                                self.log(ctx, f"[{kind}] 遇到亚马逊人机验证，正在打开有头浏览器，请手动完成验证：{url}")
                         else:
-                            self.log(ctx, f"[{kind}] 遇到亚马逊人机验证，正在打开有头浏览器，请手动完成验证：{url}")
+                            if reuse_ss:
+                                self.log(ctx, f"[{kind}] 有头浏览器兜底补抓(复用卖家精灵窗口，原因={block_reason})：{url}")
+                            else:
+                                self.log(ctx, f"[{kind}] 有头浏览器兜底补抓(打开有头亚马逊浏览器，原因={block_reason})：{url}")
                         with ctx.browser("sellersprite" if reuse_ss else "amazon", headed=True) as browser:
+                            if reuse_ss:
+                                sync_fn = getattr(browser, "sync_shared_amazon_login", None)
+                                if callable(sync_fn):
+                                    sync_fn(ctx.paths.profile_root)
                             asins = self._scrape_list(ctx, browser, url, kind=kind, manual_challenge=True)
                         self._record_list_result(ctx, json_path, txt_path, bs_set, nr_set, processed, url, kind, asins)
                         remaining.pop(0)
@@ -693,6 +728,24 @@ class Step00Bestsellers(BaseStep):
         return not os.environ.get('PIPELINE_WORKBENCH_USER') or os.environ.get('PIPELINE_WORKBENCH_ROLE', '').strip().lower() == 'admin'
 
     def _check_amazon(self, ctx: StepContext, publish: bool = False) -> bool:
+        for attempt in range(1, 3):
+            try:
+                return self._check_amazon_once(ctx, publish=publish)
+            except Exception as exc:
+                msg = f"{type(exc).__name__}: {exc}".lower()
+                transient = (
+                    "targetclosederror" in msg
+                    or "connection closed" in msg
+                    or "has been closed" in msg
+                )
+                if attempt < 2 and transient:
+                    self.log(ctx, f"亚马逊登录态预检查浏览器连接意外断开({type(exc).__name__})，冷却 2s 后重试(1/1)...")
+                    time.sleep(2.0)
+                    continue
+                raise
+        return False
+
+    def _check_amazon_once(self, ctx: StepContext, publish: bool = False) -> bool:
         allow_cap = bool(getattr(self, "_allow_captcha_passthrough", False))
         with ctx.browser("amazon") as browser:
             page = browser.new_page()

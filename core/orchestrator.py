@@ -688,9 +688,11 @@ class PipelineRunner:
             self._log_step_usage(num, "WAITING")
             return 3
         except Exception as exc:
-            self.state.mark_failed(num, str(exc)[:300])
-            msg = f"步骤 {num:02d} {step.title} 失败: {exc}(耗时 {self._step_duration_text(num)})"
+            detail = str(exc).strip() or f"{type(exc).__name__}(异常无错误文本)"
+            self.state.mark_failed(num, detail[:300])
+            msg = f"步骤 {num:02d} {step.title} 失败: {detail}(耗时 {self._step_duration_text(num)})"
             self.log.error(msg)
+            self._dump_step_traceback(num, step.title, exc)
             self._log_step_usage(num, "FAILED")
             notify.append_alert(self.paths.monitor_file("monitor-alerts.txt"), notify.CRIT, msg)
             notify.push_wecom(self.config.get("WECOM_WEBHOOK", ""), notify.with_context(msg, self.config))
@@ -800,6 +802,23 @@ class PipelineRunner:
         else:
             self.log.warning("企业微信人工确认提醒未发送成功：网络异常或企业微信返回错误")
         return sent
+
+    def _dump_step_traceback(self, num: int, title: str, exc: Exception) -> None:
+        """步骤未捕获异常时落盘完整堆栈到日志与 20_备份与监控/last-error.log，避免空错误文本无法定位。"""
+        import traceback
+        tb_text = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__)).strip()
+        if not tb_text:
+            return
+        self.log.error("步骤 %02d %s 异常堆栈:\n%s", num, title, tb_text)
+        try:
+            err_file = Path(self.paths.monitor_file("last-error.log"))
+            err_file.parent.mkdir(parents=True, exist_ok=True)
+            ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            header = f"\n=== [{ts}] 步骤 {num:02d} {title} | {type(exc).__name__}: {exc} ===\n"
+            with open(err_file, "a", encoding="utf-8") as fh:
+                fh.write(header + tb_text + "\n")
+        except Exception:
+            pass
 
     def _precheck_step_login(self, num: int) -> bool:
         """检查单步依赖；失败时保留步骤状态并将原因写入持久日志。"""

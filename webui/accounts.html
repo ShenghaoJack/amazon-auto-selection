@@ -1,58 +1,1018 @@
-<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>账号设置 · 选品工作台</title><style>
-:root{color-scheme:dark;font-family:Inter,"Microsoft YaHei",system-ui,sans-serif;background:#070a12;color:#eef2fa}*{box-sizing:border-box}body{margin:0}header{display:flex;gap:16px;align-items:center;padding:18px 5%;border-bottom:1px solid #25324a}header a{color:#a9bcff;text-decoration:none}header strong{flex:1}main{max-width:1050px;margin:45px auto;padding:0 24px}h1{font-size:28px;margin:0 0 5px}h2{font-size:19px;margin:0 0 15px}.muted{color:#a7b3c9}.panel{margin-top:25px;padding:24px;background:#101828;border:1px solid #29364e;border-radius:14px}form{display:flex;gap:12px;align-items:end;flex-wrap:wrap}label{display:grid;gap:6px;font-size:13px;color:#c6d1e3}input,select,button{font:inherit;border-radius:7px;padding:10px;border:1px solid #40516c;background:#0b1322;color:#fff}button{cursor:pointer;background:#86a7ff;color:#081222;border-color:#86a7ff;font-weight:700}button.secondary{background:transparent;color:#dce5f5;border-color:#40516c}button:focus-visible,input:focus-visible,select:focus-visible,a:focus-visible{outline:3px solid #7aa2ff;outline-offset:2px}button:disabled{opacity:.5}.msg{min-height:1.5em;color:#ffd19a}table{width:100%;border-collapse:collapse;margin-top:18px}td,th{text-align:left;border-bottom:1px solid #29364e;padding:10px 6px}th{color:#a7b3c9;font-size:13px}td input{width:100%;min-width:130px}.table-wrap{overflow:auto}small{display:block;color:#a7b3c9;line-height:1.7;margin-top:12px}@media(max-width:650px){main{margin-top:25px}form label{width:100%}input,select{max-width:100%}}
-</style></head><body><header><a href="/">← 返回工作台</a><strong>账号设置</strong><span id="identity"></span><button class="secondary" id="logout">退出登录</button></header><main><h1>账号与权限</h1><p class="muted">管理密码和工作台访问权限。</p><section class="panel"><h2>修改我的密码</h2><form id="passwordForm"><label>当前密码<input name="current" type="password" autocomplete="current-password" required></label><label>新密码<input name="password" type="password" minlength="6" maxlength="256" autocomplete="new-password" required></label><button>更新密码</button></form><small>密码至少 6 位。更新后需要重新登录。</small></section><section class="panel" id="amzLoginPanel" hidden><h2>亚马逊共享登录态管理（管理员）</h2><p class="muted">统一维护各亚马逊站点的共享 Profile 与加密登录态，发布后所有操作员（operator）可直接复用。</p><div class="muted" style="font-size:12.5px;margin-bottom:14px">共享种子 Profile：<code id="amzProfilePath">—</code></div><form id="amzLoginForm"><label>目标站点<select id="amzMarket" name="market"><option value="amazon.com">美国站 (amazon.com)</option><option value="amazon.co.uk">英国站 (amazon.co.uk)</option><option value="amazon.de">德国站 (amazon.de)</option><option value="amazon.fr">法国站 (amazon.fr)</option><option value="amazon.co.jp">日本站 (amazon.co.jp)</option><option value="amazon.ca">加拿大站 (amazon.ca)</option><option value="amazon.it">意大利站 (amazon.it)</option><option value="amazon.es">西班牙站 (amazon.es)</option></select></label><label>等待时间（秒，30–1800）<input id="amzWaitSec" name="wait_seconds" type="number" min="30" max="1800" step="30" value="300" style="width:150px" required></label><label style="flex:1;min-width:220px">可选：导入 Cookie（留空则弹窗手动登录）<input id="amzCookie" name="cookie" type="password" autocomplete="off" placeholder="留空直接打开 Chrome 手动登录"></label><button id="amzStartBtn" type="submit">打开浏览器登录</button><button id="amzCancelBtn" type="button" class="secondary" disabled>取消等待</button><button id="amzRefreshBtn" type="button" class="secondary">刷新状态</button></form><div id="amzTaskBox" style="margin-top:14px;padding:12px 14px;border-radius:10px;background:#0b1322;border:1px solid #29364e;font-size:13.5px;line-height:1.6">当前状态：空闲</div><small>点击「打开浏览器登录」后，系统将在服务器/本机弹出 Chrome 窗口进入对应站点登录页，并在设定的等待时间内自动轮询确认；登录完成（含二次验证）后自动加密发布共享态并关闭窗口。</small><div class="table-wrap"><table><thead><tr><th>站点</th><th>域名</th><th>加密共享态</th><th>最近发布时间</th><th>快捷操作</th></tr></thead><tbody id="amzMarkets"></tbody></table></div></section><section class="panel" id="admin" hidden><h2>创建账号</h2><form id="create"><label>账号<input name="username" required minlength="3" maxlength="64" autocomplete="off"></label><label>初始密码<input name="password" type="password" required minlength="6" maxlength="256" autocomplete="new-password"></label><label style="flex-direction:row;gap:6px;align-items:center;font-size:13px;color:#c6d1e3"><input type="checkbox" id="showCreatePwd" style="width:auto"> 显示密码</label><label>角色<select name="role"><option value="viewer">只读</option><option value="operator">操作员</option><option value="admin">管理员</option></select></label><label>可见类目<select name="categories" multiple size="4"></select></label><button>创建账号</button></form><small>管理员可管理账号并看到全部类目；操作员/只读账号只能看到自己被勾选的类目。按住 Ctrl 可多选，「全部类目」= 不限制。</small><h2 style="margin-top:32px">已有账号</h2><label>确认管理员密码<input id="adminPassword" type="password" autocomplete="current-password" placeholder="创建或修改账号前填写"></label><div class="table-wrap"><table><thead><tr><th>账号</th><th>角色</th><th>状态</th><th>重置密码（可留空）</th><th>可见类目</th><th>创建时间</th><th></th></tr></thead><tbody id="users"></tbody></table></div></section><section class="panel" id="auditPanel" hidden><h2>最近操作（谁在操作） <a href="/oplog" style="font-size:14px;font-weight:400;color:#a9bcff">完整日志 →</a></h2><p class="muted">最近 200 条记录，覆盖所有账号的登录与各类操作请求。</p><div class="table-wrap"><table><thead><tr><th>时间</th><th>账号</th><th>动作</th><th>目标 / 接口</th></tr></thead><tbody id="audit"></tbody></table></div><small>「操作」= 各接口请求（启动/中断/预览/应用/保存配置等）。可按 F5 刷新本页查看最新记录。</small></section><p class="msg" id="message" role="status"></p></main><script>
-let me;const $=s=>document.querySelector(s),message=s=>$('#message').textContent=s;
-$('#admin').insertBefore($('#adminPassword').parentElement,$('#create'));
-async function api(path,method='GET',body){const r=await fetch(path,{method,headers:{'Content-Type':'application/json',...(method==='POST'?{'X-CSRF-Token':me.csrf}:{})},...(body?{body:JSON.stringify(body)}:{})});const d=await r.json();if(r.status===401){location.href='/login';throw Error('登录已过期');}if(!r.ok)throw Error(d.error||'操作失败');return d;}
-function select(opts,value){const el=document.createElement('select');for(const [v,t] of opts){const o=document.createElement('option');o.value=v;o.textContent=t;el.append(o);}el.value=value;return el;}
-let CATS=[];
-async function loadCats(){try{const d=await api('/api/configs');const set=new Set((d.configs||[]).filter(c=>String(c.name||'').startsWith('data/')).map(c=>String(c.cat||'').trim()).filter(Boolean));CATS=[...set].sort();}catch(e){CATS=[];}const sel=document.querySelector('#create select[name=categories]');if(sel){sel.replaceChildren();const o=document.createElement('option');o.value='*';o.textContent='全部类目';sel.append(o);for(const c of CATS){const x=document.createElement('option');x.value=c;x.textContent=c;sel.append(x);}if(sel.options[0])sel.options[0].selected=true;}}
-function catSelect(current){const box=document.createElement('div');box.className='catpick';box.style.cssText='display:flex;flex-direction:column;gap:2px;max-height:96px;overflow:auto;min-width:170px';const chosen=new Set((current&&current.length)?current:['*']);const add=(v,t)=>{const l=document.createElement('label');l.style.cssText='display:flex;gap:6px;align-items:center;font-size:12.5px';const cb=document.createElement('input');cb.type='checkbox';cb.value=v;cb.checked=chosen.has(v);cb.style.width='auto';cb.onchange=()=>{if(v==='*'&&cb.checked){box.querySelectorAll('input[value!=\'*\']').forEach(o=>o.checked=false);}else if(v!=='*'&&cb.checked){const a=box.querySelector('input[value=\'*\']');if(a)a.checked=false;}};l.append(cb,document.createTextNode(t));box.append(l);};add('*','全部类目');for(const c of CATS)add(c,c);return box;}
-function catPicked(sel){let v=[...sel.querySelectorAll('input:checked')].map(o=>o.value);if(!v.length||v.includes('*'))return ['*'];return v;}
-async function loadUsers(){const data=await api('/api/auth/users');const target=$('#users');target.replaceChildren();for(const u of data.users){const tr=document.createElement('tr'),name=document.createElement('td');name.textContent=u.name;tr.append(name);const role=select([['viewer','只读'],['operator','操作员'],['admin','管理员']],u.role),enabled=select([['1','启用'],['0','停用']],String(u.enabled)),pwd=document.createElement('input');pwd.type='password';pwd.placeholder='保持原密码';pwd.autocomplete='new-password';const eye=document.createElement('button');eye.type='button';eye.textContent='\u{1F441}';eye.className='secondary';eye.title='\u663E\u793A/\u9690\u85CF\u5BC6\u7801';eye.style.padding='4px 8px';eye.style.marginLeft='4px';eye.onclick=()=>{pwd.type=pwd.type==='password'?'text':'password';};const pwdWrap=document.createElement('span');pwdWrap.style.display='flex';pwdWrap.append(pwd,eye);for(const el of [role,enabled,pwdWrap]){const td=document.createElement('td');td.append(el);tr.append(td);}const cats=catSelect(u.categories),catTd=document.createElement('td');catTd.append(cats);tr.append(catTd);const cTd=document.createElement('td');cTd.className='tiny';cTd.textContent=u.created_at?new Date(u.created_at*1000).toLocaleString('zh-CN',{hour12:false}):'—';tr.append(cTd);const td=document.createElement('td'),btn=document.createElement('button');btn.textContent='保存';btn.className='secondary';btn.onclick=async()=>{if(!((document.querySelector('#adminPassword')||{}).value||'').trim()){alert('请先在页面上方「确认管理员密码」里填写管理员密码，再点保存');const ap=document.querySelector('#adminPassword');if(ap)ap.focus();return;}try{btn.disabled=true;await api('/api/auth/users/update','POST',{username:u.name,role:role.value,enabled:enabled.value==='1',categories:catPicked(cats),...(pwd.value?{password:pwd.value}:{}),admin_password:$('#adminPassword').value});pwd.value='';message('账号已更新。被修改账号的现有会话已失效。');await loadUsers();}catch(e){message(e.message)}finally{$('#adminPassword').value='';btn.disabled=false;}};td.append(btn);tr.append(td);target.append(tr);}}
-async function loadAudit(){try{const d=await api('/api/auth/audit?limit=200');const tb=$('#audit');tb.replaceChildren();const labels={login_success:'登录',login_failed:'登录失败',login_throttled:'登录被限流',logout:'退出',create_user:'创建账号',update_user:'修改账号',request:'操作'};for(const it of d.items){const tr=document.createElement('tr');const t=new Date(((it.at||0))*1000).toLocaleString('zh-CN',{hour12:false});for(const v of [t,it.actor,labels[it.action]||it.action,it.target]){const td=document.createElement('td');td.textContent=v||'';tr.append(td);}tb.append(tr);}if(!d.items.length){const tr=document.createElement('tr'),td=document.createElement('td');td.colSpan=4;td.textContent='暂无记录';tr.append(td);tb.append(tr);}}catch(e){message(e.message)}}
-let amzPollTimer=null;
-function renderAmzStatus(d){
-  if($('#amzProfilePath'))$('#amzProfilePath').textContent=d.profile_dir||'—';
-  const task=d.task||{};
-  const running=task.state==='running';
-  if($('#amzStartBtn'))$('#amzStartBtn').disabled=running;
-  if($('#amzCancelBtn'))$('#amzCancelBtn').disabled=!running;
-  const stMap={idle:'空闲',running:'等待登录中',succeeded:'已发布成功',failed:'未完成/失败',cancelled:'已取消'};
-  const box=$('#amzTaskBox');
-  if(box){
-    const rem=running?` · 剩余 ${task.remaining_seconds||0} 秒（总等待 ${task.wait_seconds||300} 秒）`:'';
-    const mk=task.market?` [${task.market}]`:'';
-    box.textContent=`当前状态：${stMap[task.state]||task.state||'空闲'}${mk}${rem}`+(task.message?` — ${task.message}`:'');
-    box.style.borderColor=running?'#7aa2ff':(task.state==='succeeded'?'#2ea043':(task.state==='failed'?'#d29922':'#29364e'));
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>账号设置 · Pipeline Console</title>
+<style>
+  :root{
+    color-scheme:dark;
+    --bg:#070a12;
+    --bg2:#0a0f1c;
+    --glass:rgba(255,255,255,.035);
+    --glass-2:rgba(255,255,255,.06);
+    --line:rgba(255,255,255,.075);
+    --line-2:rgba(255,255,255,.14);
+    --txt:#eef2fa;
+    --txt-2:#a7b3c9;
+    --dim:#6b7a96;
+    --acc:#7aa2ff;
+    --acc-2:#5eead4;
+    --grad:linear-gradient(135deg,#6ea8ff 0%,#8b7bff 55%,#5eead4 130%);
+    --ok:#34d399;
+    --warn:#fbbf24;
+    --bad:#fb7185;
+    --mono:"JetBrains Mono","Cascadia Code",Consolas,ui-monospace,monospace;
+    --sans:"Inter","SF Pro Text",-apple-system,"Segoe UI","Microsoft YaHei",system-ui,sans-serif;
+    --r:16px;
+    --shadow:0 12px 30px -18px rgba(0,0,0,.72);
+    --ease:cubic-bezier(.22,.9,.28,1);
   }
-  const tb=$('#amzMarkets');
-  if(tb){
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{
+    background:var(--bg);color:var(--txt);
+    font:13.5px/1.6 var(--sans);min-height:100vh;overflow-x:hidden;
+    -webkit-font-smoothing:antialiased;
+  }
+  .gridline{
+    position:fixed;inset:0;z-index:-1;pointer-events:none;opacity:.3;
+    background-image:linear-gradient(rgba(255,255,255,.022) 1px,transparent 1px),
+                     linear-gradient(90deg,rgba(255,255,255,.022) 1px,transparent 1px);
+    background-size:56px 56px;
+  }
+  [hidden]{display:none !important}
+  ::-webkit-scrollbar{width:8px;height:8px}
+  ::-webkit-scrollbar-thumb{background:rgba(255,255,255,.10);border-radius:8px}
+  ::-webkit-scrollbar-thumb:hover{background:rgba(255,255,255,.18)}
+
+  /* ---------- 统一顶栏 ---------- */
+  header.topbar{
+    position:sticky;top:0;z-index:80;padding:12px 26px;
+    display:flex;align-items:center;gap:14px;flex-wrap:wrap;
+    background:rgba(7,10,18,.92);border-bottom:1px solid var(--line);
+  }
+  .brand{display:inline-flex;align-items:center;gap:11px;text-decoration:none;color:var(--txt)}
+  .logo{
+    width:32px;height:32px;border-radius:10px;position:relative;flex:none;
+    background:var(--grad);display:grid;place-items:center;
+    box-shadow:0 6px 20px -6px rgba(122,162,255,.72);
+  }
+  .logo::after{content:"";position:absolute;inset:0;border-radius:10px;border:1px solid rgba(255,255,255,.32)}
+  .logo svg{width:17px;height:17px;color:#fff}
+  .brand .t1{font-size:14.5px;font-weight:700;letter-spacing:.2px;line-height:1.15}
+  .brand .t2{font-size:9.5px;letter-spacing:.24em;text-transform:uppercase;color:var(--dim)}
+  .spacer{flex:1}
+
+  .hdr-actions{display:inline-flex;align-items:center;gap:8px;flex-wrap:wrap}
+  .hdr-sep{width:1px;height:16px;background:var(--line-2);margin:0 2px;opacity:.75}
+  .hdr-btn{
+    display:inline-flex;align-items:center;justify-content:center;gap:6px;
+    height:32px;padding:0 12px;border-radius:10px;
+    font-family:inherit;font-size:12px;font-weight:600;letter-spacing:.01em;line-height:1;
+    color:var(--txt-2);text-decoration:none;white-space:nowrap;cursor:pointer;
+    background:rgba(255,255,255,.04);border:1px solid var(--line);
+    transition:transform .18s var(--ease),background .22s,border-color .22s,color .22s,box-shadow .22s;
+  }
+  .hdr-btn:visited{color:var(--txt-2)}
+  .hdr-btn svg{width:14px;height:14px;flex:none;opacity:.82}
+  .hdr-btn:hover{
+    color:var(--txt);background:rgba(255,255,255,.085);border-color:var(--line-2);
+    transform:translateY(-1px);
+  }
+  .hdr-btn.is-active{
+    color:#fff;background:linear-gradient(135deg,rgba(110,168,255,.22),rgba(139,123,255,.16));
+    border-color:rgba(122,162,255,.55);box-shadow:0 6px 18px -8px rgba(110,168,255,.55);
+  }
+  .hdr-btn.is-active:visited{color:#fff}
+  .hdr-btn .dot-user{width:6px;height:6px;border-radius:50%;background:var(--ok);box-shadow:0 0 6px rgba(52,211,153,.75);flex:none}
+  .hdr-btn.hdr-logout:hover{
+    color:#fda4af;background:rgba(251,113,133,.13);border-color:rgba(251,113,133,.45);
+  }
+
+  /* ---------- 主容器 & 页头 ---------- */
+  main.wrap{max-width:1240px;margin:0 auto;padding:28px 24px 80px}
+  .page-hero{
+    display:flex;align-items:flex-end;justify-content:space-between;gap:18px;flex-wrap:wrap;
+    margin-bottom:22px;padding-bottom:18px;border-bottom:1px solid var(--line);
+  }
+  .overline{font-size:10px;font-weight:700;letter-spacing:.28em;text-transform:uppercase;color:var(--acc);opacity:.9}
+  .page-hero h1{font-size:24px;font-weight:750;letter-spacing:-.01em;margin-top:4px;line-height:1.25}
+  .page-hero .sub{font-size:13px;color:var(--txt-2);margin-top:4px}
+  .hero-pills{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+  .stat-pill{
+    display:inline-flex;align-items:center;gap:7px;padding:6px 12px;border-radius:999px;
+    background:var(--glass);border:1px solid var(--line);font-size:12px;color:var(--txt-2);
+  }
+  .stat-pill b{color:var(--txt);font-weight:700;font-variant-numeric:tabular-nums}
+
+  /* ---------- 玻璃卡片 ---------- */
+  .card{
+    background:var(--glass);border:1px solid var(--line);border-radius:var(--r);
+    box-shadow:var(--shadow);margin-top:18px;position:relative;overflow:hidden;
+    scroll-margin-top:96px;
+  }
+  .card::before{
+    content:"";position:absolute;inset:0 0 auto 0;height:1px;
+    background:linear-gradient(90deg,transparent,rgba(255,255,255,.22),transparent);opacity:.55;
+  }
+  .card-head{
+    display:flex;align-items:flex-end;justify-content:space-between;gap:14px;flex-wrap:wrap;
+    padding:18px 22px 12px;
+  }
+  .card-head h2{font-size:15.5px;font-weight:650;margin-top:2px}
+  .card-head .sub{font-size:12px;color:var(--dim);margin-top:2px}
+  .card-body{padding:4px 22px 20px}
+  .sub-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:14px;margin-top:14px}
+  .sub-card{
+    padding:16px 18px;border-radius:13px;background:rgba(7,10,18,.55);
+    border:1px solid var(--line);transition:border-color .2s;
+  }
+  .sub-card:hover{border-color:var(--line-2)}
+  .sub-card-title{font-weight:650;font-size:13.5px;margin-bottom:10px;display:flex;align-items:center;gap:8px}
+
+  /* ---------- 表单与按钮 ---------- */
+  form.frow{display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap}
+  label.fld{display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--txt-2);font-weight:500}
+  label.fld-inline{display:inline-flex;align-items:center;gap:6px;font-size:12.5px;color:var(--txt-2);cursor:pointer;padding-bottom:8px}
+  input,select{
+    font-family:inherit;color:var(--txt);font-size:13px;height:36px;
+    background:rgba(7,10,18,.68);border:1px solid var(--line-2);border-radius:10px;
+    padding:0 11px;outline:none;transition:border-color .2s,box-shadow .2s,background .2s;
+  }
+  input:focus,select:focus{
+    border-color:rgba(122,162,255,.7);box-shadow:0 0 0 3px rgba(122,162,255,.16);background:rgba(7,10,18,.9);
+  }
+  select{
+    appearance:none;-webkit-appearance:none;padding-right:30px;cursor:pointer;
+    background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6'><path d='M1 1l4 4 4-4' stroke='%238b9bc0' fill='none' stroke-width='1.6' stroke-linecap='round'/></svg>");
+    background-repeat:no-repeat;background-position:right 10px center;
+  }
+  select[multiple]{height:auto;padding:6px 8px;background-image:none}
+  input[type=checkbox]{width:15px;height:15px;accent-color:var(--acc);cursor:pointer}
+
+  button.btn{
+    font-family:inherit;cursor:pointer;outline:none;height:36px;padding:0 15px;border-radius:10px;
+    display:inline-flex;align-items:center;justify-content:center;gap:6px;white-space:nowrap;
+    font-size:12.5px;font-weight:650;letter-spacing:.01em;
+    color:#fff;background:linear-gradient(120deg,#4f8dff,#7b6cff 60%,#39d4c4 135%);
+    border:0;box-shadow:0 8px 22px -10px rgba(105,120,255,.75);
+    transition:transform .16s var(--ease),filter .2s,opacity .2s,background .2s,border-color .2s;
+  }
+  button.btn:hover{filter:brightness(1.08);transform:translateY(-1px)}
+  button.btn:active{transform:translateY(0) scale(.98)}
+  button.btn:disabled{opacity:.38;cursor:not-allowed;transform:none;filter:none}
+  button.btn-ghost{
+    background:rgba(255,255,255,.045);color:var(--txt);border:1px solid var(--line-2);box-shadow:none;
+  }
+  button.btn-ghost:hover{background:rgba(255,255,255,.095);border-color:rgba(255,255,255,.22)}
+  button.btn-danger{
+    background:rgba(251,113,133,.12);color:#fda4af;border:1px solid rgba(251,113,133,.36);box-shadow:none;
+  }
+  button.btn-danger:hover{background:rgba(251,113,133,.22);border-color:rgba(251,113,133,.65);color:#fff}
+  button.btn-xs{height:28px;padding:0 10px;font-size:11.5px;border-radius:8px}
+
+  /* ---------- 状态横幅 & 徽章 ---------- */
+  .status-banner{
+    margin-top:12px;padding:12px 15px;border-radius:12px;
+    background:rgba(7,10,18,.65);border:1px solid var(--line-2);
+    font-size:13px;line-height:1.55;display:flex;align-items:center;gap:10px;
+    transition:border-color .25s,background .25s;
+  }
+  .status-dot{width:8px;height:8px;border-radius:50%;background:var(--dim);flex:none}
+  .status-banner.is-run{border-color:rgba(122,162,255,.55);background:rgba(122,162,255,.08)}
+  .status-banner.is-run .status-dot{background:var(--acc);box-shadow:0 0 8px var(--acc);animation:pulse 1.3s infinite}
+  .status-banner.is-ok{border-color:rgba(52,211,153,.45);background:rgba(52,211,153,.07)}
+  .status-banner.is-ok .status-dot{background:var(--ok);box-shadow:0 0 8px var(--ok)}
+  .status-banner.is-err{border-color:rgba(251,113,133,.5);background:rgba(251,113,133,.08);color:#fecdd3}
+  .status-banner.is-err .status-dot{background:var(--bad)}
+  @keyframes pulse{50%{opacity:.35}}
+
+  .badge{
+    display:inline-flex;align-items:center;gap:5px;padding:2px 9px;border-radius:999px;
+    font-size:11.5px;font-weight:600;white-space:nowrap;border:1px solid transparent;
+  }
+  .badge-ok{background:rgba(52,211,153,.13);color:#6ee7b7;border-color:rgba(52,211,153,.32)}
+  .badge-warn{background:rgba(251,191,36,.13);color:#fde68a;border-color:rgba(251,191,36,.35)}
+  .badge-bad{background:rgba(251,113,133,.13);color:#fda4af;border-color:rgba(251,113,133,.35)}
+  .badge-info{background:rgba(122,162,255,.14);color:#bfd6ff;border-color:rgba(122,162,255,.32)}
+  .badge-purple{background:rgba(167,139,250,.14);color:#ddd6fe;border-color:rgba(167,139,250,.32)}
+  .badge-dim{background:rgba(255,255,255,.05);color:var(--txt-2);border-color:var(--line)}
+
+  /* ---------- 表格 ---------- */
+  .tbl-wrap{
+    overflow:auto;margin-top:14px;border:1px solid var(--line);border-radius:12px;
+    background:rgba(7,10,18,.42);
+  }
+  table.tbl{width:100%;border-collapse:collapse}
+  table.tbl th{
+    position:sticky;top:0;z-index:2;text-align:left;padding:10px 12px;
+    font-size:11.5px;font-weight:650;letter-spacing:.03em;color:var(--txt-2);
+    background:rgba(10,15,28,.96);border-bottom:1px solid var(--line-2);white-space:nowrap;
+  }
+  table.tbl td{
+    padding:10px 12px;border-bottom:1px solid var(--line);font-size:13px;vertical-align:middle;
+  }
+  table.tbl tbody tr:last-child td{border-bottom:0}
+  table.tbl tbody tr:hover{background:rgba(255,255,255,.028)}
+  table.tbl td input,table.tbl td select{height:32px;font-size:12.5px}
+  .mono{font-family:var(--mono);font-size:12px;color:#b8c7e0}
+  .hint{font-size:12px;color:var(--dim);margin-top:10px;line-height:1.6}
+  .actions-cell{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+
+  /* 折叠兼容区 */
+  details.legacy-box{
+    margin-top:18px;border:1px dashed var(--line-2);border-radius:12px;
+    background:rgba(7,10,18,.42);padding:12px 16px;
+  }
+  details.legacy-box summary{cursor:pointer;color:var(--txt-2);font-size:12.5px;font-weight:500}
+  details.legacy-box[open] summary{color:var(--txt);margin-bottom:12px}
+
+  /* 管理员确认条 */
+  .admin-confirm-bar{
+    display:flex;align-items:center;gap:10px;flex-wrap:wrap;
+    padding:10px 14px;border-radius:11px;margin-bottom:14px;
+    background:rgba(251,191,36,.07);border:1px solid rgba(251,191,36,.28);
+  }
+  .admin-confirm-bar .lbl{font-size:12.5px;color:#fde68a;font-weight:600;white-space:nowrap}
+  .admin-confirm-bar input{width:230px;height:32px}
+
+  /* Toast 提示 */
+  .toast-wrap{position:fixed;right:22px;bottom:22px;z-index:200;display:flex;flex-direction:column;gap:8px;max-width:420px}
+  .toast{
+    padding:11px 15px;border-radius:12px;font-size:13px;line-height:1.5;
+    background:rgba(13,20,36,.96);border:1px solid var(--line-2);color:var(--txt);
+    box-shadow:0 14px 36px -12px rgba(0,0,0,.8);animation:tIn .22s var(--ease);
+  }
+  .toast.ok{border-color:rgba(52,211,153,.5);color:#d1fae5}
+  .toast.err{border-color:rgba(251,113,133,.55);color:#fecdd3}
+  @keyframes tIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+  .msg-inline{min-height:1.4em;margin-top:12px;font-size:12.5px;color:#fde68a}
+
+  @media(max-width:720px){
+    header.topbar{padding:10px 14px}
+    main.wrap{padding:18px 14px 60px}
+    .sub-grid{grid-template-columns:1fr}
+    label.fld{width:100%}
+  }
+</style>
+</head>
+<body>
+<div class="gridline" aria-hidden="true"></div>
+
+<header class="topbar">
+  <a href="/" class="brand" title="返回选品流水线工作台">
+    <div class="logo">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 4.5 13.5H11L9.5 22 19 9.5h-6.5L13 2z"/></svg>
+    </div>
+    <div>
+      <div class="t1">Pipeline Console</div>
+      <div class="t2">Amazon 选品流水线</div>
+    </div>
+  </a>
+  <a href="/" class="hdr-btn" title="返回主工作台">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+    <span>返回工作台</span>
+  </a>
+  <div class="spacer"></div>
+  <nav class="hdr-actions" aria-label="系统导航">
+    <a href="/account" class="hdr-btn" id="navAccount">
+      <span class="dot-user" aria-hidden="true"></span>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 20c1.8-3.6 5-5 8-5s6.2 1.4 8 5"/></svg>
+      <span id="identity">账号设置</span>
+    </a>
+    <a href="/accounts#amzLoginPanel" class="hdr-btn" id="navAmz" hidden>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M3.6 9h16.8M3.6 15h16.8M12 3a13 13 0 0 1 0 18M12 3a13 13 0 0 0 0 18"/></svg>
+      <span>亚马逊登录</span>
+    </a>
+    <a href="/oplog" class="hdr-btn" id="navOplog" hidden>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M8 13h8M8 17h5"/></svg>
+      <span>操作日志</span>
+    </a>
+    <span class="hdr-sep" aria-hidden="true"></span>
+    <button type="button" class="hdr-btn hdr-logout" id="logout">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="M16 17l5-5-5-5M21 12H9"/></svg>
+      <span>退出登录</span>
+    </button>
+  </nav>
+</header>
+
+<main class="wrap">
+  <div class="page-hero">
+    <div>
+      <div class="overline" id="heroOverline">ACCOUNT &amp; ACCESS</div>
+      <h1 id="mainTitle">账号与权限</h1>
+      <p class="sub" id="mainSub">管理个人登录密码与工作台成员访问权限。</p>
+    </div>
+    <div class="hero-pills" id="heroPills"></div>
+  </div>
+
+  <!-- ① 修改我的密码（仅账号设置视图显示） -->
+  <section class="card" id="passwordPanel">
+    <div class="card-head">
+      <div>
+        <div class="overline">SECURITY</div>
+        <h2>修改我的密码</h2>
+        <div class="sub">密码至少 6 位，更新后当前会话将自动失效并需重新登录。</div>
+      </div>
+    </div>
+    <div class="card-body">
+      <form id="passwordForm" class="frow">
+        <label class="fld">当前密码
+          <input name="current" type="password" autocomplete="current-password" placeholder="输入当前密码" required style="width:220px">
+        </label>
+        <label class="fld">新密码
+          <input name="password" type="password" minlength="6" maxlength="256" autocomplete="new-password" placeholder="至少 6 位新密码" required style="width:220px">
+        </label>
+        <button type="submit" class="btn">更新密码</button>
+      </form>
+    </div>
+  </section>
+
+  <!-- ② 亚马逊账号与出口槽位管理（仅亚马逊登录视图显示） -->
+  <section class="card" id="amzLoginPanel" hidden>
+    <div class="card-head">
+      <div>
+        <div class="overline">MULTI-SLOT EXIT POOL</div>
+        <h2>亚马逊账号与出口槽位管理</h2>
+        <div class="sub">1 个槽位 = 1 个独立出口 IP + 1 个独立亚马逊买家号。启用多个槽位后，步骤 00/01/09/10 自动按槽位数真并行并隔离 IP 与账号。</div>
+      </div>
+      <div class="frow" style="gap:8px;flex-wrap:nowrap;flex:none">
+        <label class="fld" style="gap:3px">
+          <span style="font-size:11px;color:var(--dim)">登录等待(秒)</span>
+          <input id="amzWaitSec" type="number" min="30" max="1800" step="30" value="300" style="width:92px;height:32px" required>
+        </label>
+        <button id="amzCancelBtn" type="button" class="btn btn-danger btn-xs" style="height:32px" disabled>取消等待</button>
+        <button id="amzRefreshBtn" type="button" class="btn btn-ghost btn-xs" style="height:32px">↻ 刷新状态</button>
+      </div>
+    </div>
+    <div class="card-body">
+      <div id="amzTaskBox" class="status-banner">
+        <span class="status-dot" aria-hidden="true"></span>
+        <span id="amzTaskText">当前状态：空闲</span>
+      </div>
+
+      <div class="sub-grid">
+        <div class="sub-card">
+          <div class="sub-card-title" style="color:#93c5fd">① 当前服务器本地出口（无需填 IP）</div>
+          <form id="amzLocalSlotForm" class="frow">
+            <label class="fld">槽位名称
+              <input id="amzLocalSlotName" value="服务器本地" required style="width:140px">
+            </label>
+            <label class="fld">站点
+              <select id="amzLocalSlotMarket">
+                <option value="amazon.com">美国站 (amazon.com)</option>
+                <option value="amazon.co.uk">英国站 (amazon.co.uk)</option>
+                <option value="amazon.de">德国站 (amazon.de)</option>
+                <option value="amazon.fr">法国站 (amazon.fr)</option>
+                <option value="amazon.co.jp">日本站 (amazon.co.jp)</option>
+                <option value="amazon.ca">加拿大站 (amazon.ca)</option>
+                <option value="amazon.it">意大利站 (amazon.it)</option>
+                <option value="amazon.es">西班牙站 (amazon.es)</option>
+              </select>
+            </label>
+            <button type="submit" class="btn">添加本地槽位</button>
+          </form>
+          <div class="hint">直接使用当前服务器本机网络直连，不需要也不应填写服务器 IP。</div>
+        </div>
+
+        <div class="sub-card">
+          <div class="sub-card-title" style="color:#c4b5fd">② 外部静态住宅代理槽位（独享住宅 IP）</div>
+          <form id="amzSlotForm" class="frow">
+            <label class="fld">槽位名称
+              <input id="amzSlotName" placeholder="如：美区住宅1" required style="width:130px">
+            </label>
+            <label class="fld">站点
+              <select id="amzSlotMarket">
+                <option value="amazon.com">美国站 (amazon.com)</option>
+                <option value="amazon.co.uk">英国站 (amazon.co.uk)</option>
+                <option value="amazon.de">德国站 (amazon.de)</option>
+                <option value="amazon.fr">法国站 (amazon.fr)</option>
+                <option value="amazon.co.jp">日本站 (amazon.co.jp)</option>
+                <option value="amazon.ca">加拿大站 (amazon.ca)</option>
+                <option value="amazon.it">意大利站 (amazon.it)</option>
+                <option value="amazon.es">西班牙站 (amazon.es)</option>
+              </select>
+            </label>
+            <label class="fld" style="flex:1;min-width:210px">代理地址（必填）
+              <input id="amzSlotProxy" type="password" autocomplete="off" required placeholder="http://ip:port:user:pass 或 socks5://ip:port:user:pass">
+            </label>
+            <button type="submit" class="btn">添加代理槽位</button>
+          </form>
+          <div class="hint">支持 HTTP（推荐）与带账密 SOCKS5，保存时自动 DPAPI 加密。</div>
+        </div>
+      </div>
+
+      <div class="tbl-wrap">
+        <table class="tbl">
+          <thead>
+            <tr>
+              <th>槽位</th>
+              <th>出口类型</th>
+              <th>站点</th>
+              <th>代理地址（脱敏）</th>
+              <th>登录态 / 有效性</th>
+              <th>状态</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody id="amzSlots"></tbody>
+        </table>
+      </div>
+
+      <details class="legacy-box">
+        <summary>兼容旧版：未配置槽位时的默认单站点共享态（仅在站点未启用任何槽位时兜底使用，点击展开）</summary>
+        <div class="hint" style="margin:0 0 12px">默认共享种子 Profile：<code class="mono" id="amzProfilePath">—</code></div>
+        <form id="amzLoginForm" class="frow">
+          <label class="fld">目标站点
+            <select id="amzMarket" name="market">
+              <option value="amazon.com">美国站 (amazon.com)</option>
+              <option value="amazon.co.uk">英国站 (amazon.co.uk)</option>
+              <option value="amazon.de">德国站 (amazon.de)</option>
+              <option value="amazon.fr">法国站 (amazon.fr)</option>
+              <option value="amazon.co.jp">日本站 (amazon.co.jp)</option>
+              <option value="amazon.ca">加拿大站 (amazon.ca)</option>
+              <option value="amazon.it">意大利站 (amazon.it)</option>
+              <option value="amazon.es">西班牙站 (amazon.es)</option>
+            </select>
+          </label>
+          <label class="fld" style="flex:1;min-width:220px">可选：导入 Cookie（留空则弹窗手动登录）
+            <input id="amzCookie" name="cookie" type="password" autocomplete="off" placeholder="留空直接打开 Chrome 手动登录">
+          </label>
+          <button id="amzStartBtn" type="submit" class="btn">打开浏览器登录</button>
+          <button id="amzCheckBtn" type="button" class="btn btn-ghost">检测有效性</button>
+        </form>
+        <div class="tbl-wrap">
+          <table class="tbl">
+            <thead>
+              <tr><th>站点</th><th>域名</th><th>加密共享态</th><th>最近发布时间</th><th>快捷操作</th></tr>
+            </thead>
+            <tbody id="amzMarkets"></tbody>
+          </table>
+        </div>
+      </details>
+    </div>
+  </section>
+
+  <!-- ③ 管理员账号管理（仅账号设置视图 + admin 显示） -->
+  <section class="card" id="admin" hidden>
+    <div class="card-head">
+      <div>
+        <div class="overline">TEAM MANAGEMENT</div>
+        <h2>工作台成员与权限（管理员）</h2>
+        <div class="sub">管理员可管理全部账号并查看所有类目；操作员/只读账号仅可见被授权类目。</div>
+      </div>
+    </div>
+    <div class="card-body">
+      <div class="admin-confirm-bar">
+        <span class="lbl">🔑 管理员密码确认</span>
+        <input id="adminPassword" type="password" autocomplete="current-password" placeholder="创建或修改成员账号前填写">
+        <span style="font-size:12px;color:var(--txt-2)">用于二次校验管理员身份，操作完成后自动清空。</span>
+      </div>
+
+      <div class="sub-card" style="margin-bottom:16px">
+        <div class="sub-card-title">创建新成员账号</div>
+        <form id="create" class="frow">
+          <label class="fld">账号
+            <input name="username" required minlength="3" maxlength="64" autocomplete="off" placeholder="3–64 位用户名" style="width:160px">
+          </label>
+          <label class="fld">初始密码
+            <input name="password" type="password" required minlength="6" maxlength="256" autocomplete="new-password" placeholder="至少 6 位" style="width:160px">
+          </label>
+          <label class="fld-inline"><input type="checkbox" id="showCreatePwd"> 显示密码</label>
+          <label class="fld">角色
+            <select name="role">
+              <option value="viewer">只读</option>
+              <option value="operator">操作员</option>
+              <option value="admin">管理员</option>
+            </select>
+          </label>
+          <label class="fld" style="min-width:190px">可见类目（Ctrl 多选）
+            <select name="categories" multiple size="3"></select>
+          </label>
+          <button type="submit" class="btn">＋ 创建账号</button>
+        </form>
+      </div>
+
+      <div style="font-size:14px;font-weight:650;margin-top:6px">已有成员列表</div>
+      <div class="tbl-wrap">
+        <table class="tbl">
+          <thead>
+            <tr>
+              <th>账号</th>
+              <th>角色</th>
+              <th>状态</th>
+              <th>重置密码（可留空）</th>
+              <th>可见类目</th>
+              <th>创建时间</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody id="users"></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <p class="msg-inline" id="message" role="status"></p>
+</main>
+
+<div class="toast-wrap" id="toastWrap"></div>
+
+<script>
+let me;
+const $ = s => document.querySelector(s);
+function toast(text, type = '') {
+  if (!text) return;
+  const w = $('#toastWrap');
+  if (!w) return;
+  const el = document.createElement('div');
+  el.className = 'toast' + (type ? ' ' + type : '');
+  el.textContent = text;
+  w.append(el);
+  setTimeout(() => { el.style.opacity = '0'; el.style.transition = 'opacity .25s'; setTimeout(() => el.remove(), 260); }, 3600);
+}
+const message = (s, isErr = false) => {
+  const m = $('#message');
+  if (m) { m.textContent = s || ''; m.style.color = isErr ? '#fda4af' : '#fde68a'; }
+  if (s) toast(s, isErr ? 'err' : 'ok');
+};
+
+async function api(path, method = 'GET', body) {
+  const r = await fetch(path, {
+    method,
+    headers: { 'Content-Type': 'application/json', ...(method === 'POST' ? { 'X-CSRF-Token': me.csrf } : {}) },
+    ...(body ? { body: JSON.stringify(body) } : {})
+  });
+  const d = await r.json();
+  if (r.status === 401) { location.href = '/login'; throw Error('登录已过期'); }
+  if (!r.ok) throw Error(d.error || '操作失败');
+  return d;
+}
+
+function select(opts, value) {
+  const el = document.createElement('select');
+  for (const [v, t] of opts) {
+    const o = document.createElement('option');
+    o.value = v; o.textContent = t; el.append(o);
+  }
+  el.value = value;
+  return el;
+}
+
+function isAmazonView() {
+  return location.hash === '#amzLoginPanel' || new URLSearchParams(location.search).get('view') === 'amazon';
+}
+
+function applyViewChrome() {
+  const amz = isAmazonView();
+  $('#navAccount').classList.toggle('is-active', !amz);
+  $('#navAmz').classList.toggle('is-active', amz);
+  if (amz) {
+    document.title = '亚马逊登录 · Pipeline Console';
+    $('#heroOverline').textContent = 'AMAZON EXIT POOL';
+    $('#mainTitle').textContent = '亚马逊账号与出口槽位';
+    $('#mainSub').textContent = '管理亚马逊买家号共享登录态、静态住宅代理与并发出口槽位。';
+    $('#passwordPanel').hidden = true;
+    $('#admin').hidden = true;
+    requestAnimationFrame(() => window.scrollTo(0, 0));
+  } else {
+    document.title = '账号设置 · Pipeline Console';
+    $('#heroOverline').textContent = 'ACCOUNT & ACCESS';
+    $('#mainTitle').textContent = '账号与权限';
+    $('#mainSub').textContent = '管理个人登录密码与工作台成员访问权限。';
+    $('#passwordPanel').hidden = false;
+    $('#amzLoginPanel').hidden = true;
+  }
+}
+
+function setHeroPills(items) {
+  const box = $('#heroPills');
+  if (!box) return;
+  box.replaceChildren();
+  for (const it of items) {
+    const s = document.createElement('span');
+    s.className = 'stat-pill';
+    s.innerHTML = `${it.label} <b>${it.value}</b>`;
+    box.append(s);
+  }
+}
+
+let CATS = [];
+async function loadCats() {
+  try {
+    const d = await api('/api/configs');
+    const set = new Set((d.configs || []).filter(c => String(c.name || '').startsWith('data/')).map(c => String(c.cat || '').trim()).filter(Boolean));
+    CATS = [...set].sort();
+  } catch (e) { CATS = []; }
+  const sel = document.querySelector('#create select[name=categories]');
+  if (sel) {
+    sel.replaceChildren();
+    const o = document.createElement('option'); o.value = '*'; o.textContent = '全部类目'; sel.append(o);
+    for (const c of CATS) { const x = document.createElement('option'); x.value = c; x.textContent = c; sel.append(x); }
+    if (sel.options[0]) sel.options[0].selected = true;
+  }
+}
+
+function catSelect(current) {
+  const box = document.createElement('div');
+  box.className = 'catpick';
+  box.style.cssText = 'display:flex;flex-direction:column;gap:3px;max-height:92px;overflow:auto;min-width:170px;padding:4px 6px;border-radius:8px;background:rgba(7,10,18,.5);border:1px solid var(--line)';
+  const chosen = new Set((current && current.length) ? current : ['*']);
+  const add = (v, t) => {
+    const l = document.createElement('label');
+    l.style.cssText = 'display:flex;gap:6px;align-items:center;font-size:12px;color:var(--txt-2);cursor:pointer';
+    const cb = document.createElement('input');
+    cb.type = 'checkbox'; cb.value = v; cb.checked = chosen.has(v);
+    cb.onchange = () => {
+      if (v === '*' && cb.checked) box.querySelectorAll('input[value!="*"]').forEach(o => o.checked = false);
+      else if (v !== '*' && cb.checked) { const a = box.querySelector('input[value="*"]'); if (a) a.checked = false; }
+    };
+    l.append(cb, document.createTextNode(t));
+    box.append(l);
+  };
+  add('*', '全部类目');
+  for (const c of CATS) add(c, c);
+  return box;
+}
+function catPicked(sel) {
+  let v = [...sel.querySelectorAll('input:checked')].map(o => o.value);
+  if (!v.length || v.includes('*')) return ['*'];
+  return v;
+}
+
+async function loadUsers() {
+  const data = await api('/api/auth/users');
+  const users = data.users || [];
+  const enabledCount = users.filter(u => u.enabled).length;
+  setHeroPills([
+    { label: '成员总数', value: users.length },
+    { label: '启用中', value: enabledCount }
+  ]);
+  const target = $('#users');
+  target.replaceChildren();
+  for (const u of users) {
+    const tr = document.createElement('tr');
+    const name = document.createElement('td');
+    name.innerHTML = `<strong>${u.name}</strong>`;
+    tr.append(name);
+
+    const role = select([['viewer', '只读'], ['operator', '操作员'], ['admin', '管理员']], u.role);
+    const enabled = select([['1', '启用'], ['0', '停用']], String(u.enabled));
+    const pwd = document.createElement('input');
+    pwd.type = 'password'; pwd.placeholder = '保持原密码'; pwd.autocomplete = 'new-password'; pwd.style.width = '140px';
+    const eye = document.createElement('button');
+    eye.type = 'button'; eye.textContent = '👁'; eye.className = 'btn btn-ghost btn-xs';
+    eye.title = '显示/隐藏密码';
+    eye.onclick = () => { pwd.type = pwd.type === 'password' ? 'text' : 'password'; };
+    const pwdWrap = document.createElement('span');
+    pwdWrap.style.cssText = 'display:inline-flex;gap:4px;align-items:center';
+    pwdWrap.append(pwd, eye);
+
+    for (const el of [role, enabled, pwdWrap]) {
+      const td = document.createElement('td'); td.append(el); tr.append(td);
+    }
+    const cats = catSelect(u.categories), catTd = document.createElement('td');
+    catTd.append(cats); tr.append(catTd);
+    const cTd = document.createElement('td');
+    cTd.className = 'mono';
+    cTd.textContent = u.created_at ? new Date(u.created_at * 1000).toLocaleString('zh-CN', { hour12: false }) : '—';
+    tr.append(cTd);
+
+    const td = document.createElement('td'), btn = document.createElement('button');
+    btn.type = 'button'; btn.textContent = '保存'; btn.className = 'btn btn-ghost btn-xs';
+    btn.onclick = async () => {
+      if (!((document.querySelector('#adminPassword') || {}).value || '').trim()) {
+        message('请先在上方「管理员密码确认」框里填写管理员密码，再点保存', true);
+        const ap = document.querySelector('#adminPassword'); if (ap) ap.focus();
+        return;
+      }
+      try {
+        btn.disabled = true;
+        await api('/api/auth/users/update', 'POST', {
+          username: u.name, role: role.value, enabled: enabled.value === '1',
+          categories: catPicked(cats), ...(pwd.value ? { password: pwd.value } : {}),
+          admin_password: $('#adminPassword').value
+        });
+        pwd.value = '';
+        message(`成员「${u.name}」已更新，其现有会话已失效。`);
+        await loadUsers();
+      } catch (e) { message(e.message, true); }
+      finally { $('#adminPassword').value = ''; btn.disabled = false; }
+    };
+    td.append(btn); tr.append(td); target.append(tr);
+  }
+}
+
+let amzPollTimer = null;
+function renderAmzStatus(d) {
+  if ($('#amzProfilePath')) $('#amzProfilePath').textContent = d.profile_dir || '—';
+  const task = d.task || {};
+  const running = task.state === 'running';
+  if ($('#amzStartBtn')) $('#amzStartBtn').disabled = running;
+  if ($('#amzCheckBtn')) $('#amzCheckBtn').disabled = running;
+  if ($('#amzCancelBtn')) $('#amzCancelBtn').disabled = !running;
+
+  const stMap = { idle: '空闲', running: '进行中', succeeded: '成功', failed: '未通过/失败', cancelled: '已取消' };
+  const box = $('#amzTaskBox');
+  const txt = $('#amzTaskText');
+  if (box && txt) {
+    const rem = running ? ` · 剩余 ${task.remaining_seconds || 0} 秒（总等待 ${task.wait_seconds || 300} 秒）` : '';
+    const mk = task.market ? ` [${task.market}]` : '';
+    txt.textContent = `当前状态：${stMap[task.state] || task.state || '空闲'}${mk}${rem}` + (task.message ? ` — ${task.message}` : '');
+    box.className = 'status-banner' + (running ? ' is-run' : (task.state === 'succeeded' ? ' is-ok' : (task.state === 'failed' ? ' is-err' : '')));
+  }
+
+  const slots = d.slots || [];
+  const enabledSlots = slots.filter(s => s.enabled).length;
+  const loggedSlots = slots.filter(s => s.shared).length;
+  if (isAmazonView()) {
+    setHeroPills([
+      { label: '槽位总数', value: slots.length },
+      { label: '启用并发槽', value: enabledSlots },
+      { label: '已登录槽位', value: loggedSlots }
+    ]);
+  }
+
+  const chkBadge = {
+    valid: ['已发布 · 有效', 'badge-ok'],
+    invalid: ['已发布 · 已失效', 'badge-bad'],
+    captcha: ['已发布 · 命中验证码', 'badge-warn'],
+    missing: ['未发布', 'badge-dim'],
+    error: ['检测异常', 'badge-bad']
+  };
+
+  const tb = $('#amzMarkets');
+  if (tb) {
     tb.replaceChildren();
-    for(const m of (d.markets||[])){
-      const tr=document.createElement('tr');
-      const td1=document.createElement('td');td1.textContent=m.label||m.market;
-      const td2=document.createElement('td');td2.textContent=m.market;
-      const td3=document.createElement('td');td3.textContent=m.shared?'已发布':'未发布';td3.style.color=m.shared?'#5eead4':'#a7b3c9';
-      const td4=document.createElement('td');td4.textContent=m.updated_at||'—';
-      const td5=document.createElement('td');
-      const b=document.createElement('button');b.type='button';b.className='secondary';b.textContent=m.shared?'重新登录/刷新':'登录此站点';b.disabled=running;
-      b.onclick=()=>{if($('#amzMarket'))$('#amzMarket').value=m.market;$('#amzLoginForm').requestSubmit();};
+    for (const m of (d.markets || [])) {
+      const tr = document.createElement('tr');
+      const td1 = document.createElement('td'); td1.textContent = m.label || m.market;
+      const td2 = document.createElement('td'); td2.className = 'mono'; td2.textContent = m.market;
+      const td3 = document.createElement('td');
+      const sp = document.createElement('span');
+      if (m.shared && chkBadge[m.check_status]) {
+        sp.className = 'badge ' + chkBadge[m.check_status][1];
+        sp.textContent = chkBadge[m.check_status][0];
+        sp.title = (m.checked_at ? `[${m.checked_at}] ` : '') + (m.check_message || '');
+      } else {
+        sp.className = 'badge ' + (m.shared ? 'badge-ok' : 'badge-dim');
+        sp.textContent = m.shared ? '已发布' : '未发布';
+      }
+      td3.append(sp);
+      const td4 = document.createElement('td'); td4.className = 'mono'; td4.textContent = m.updated_at || '—';
+      const td5 = document.createElement('td'); td5.className = 'actions-cell';
+      if (m.shared) {
+        const cb = document.createElement('button'); cb.type = 'button'; cb.className = 'btn btn-ghost btn-xs'; cb.textContent = '检测有效性'; cb.disabled = running;
+        cb.onclick = () => checkAmzMarket(m.market);
+        td5.append(cb);
+      }
+      const b = document.createElement('button'); b.type = 'button'; b.className = 'btn btn-ghost btn-xs'; b.textContent = m.shared ? '重新登录' : '登录此站点'; b.disabled = running;
+      b.onclick = () => { if ($('#amzMarket')) $('#amzMarket').value = m.market; $('#amzLoginForm').requestSubmit(); };
       td5.append(b);
-      tr.append(td1,td2,td3,td4,td5);
+      tr.append(td1, td2, td3, td4, td5);
       tb.append(tr);
     }
   }
-  if(running&&!amzPollTimer){amzPollTimer=setInterval(()=>loadAmzLogin().catch(()=>{}),2000);}
-  else if(!running&&amzPollTimer){clearInterval(amzPollTimer);amzPollTimer=null;}
+
+  const stb = $('#amzSlots');
+  if (stb) {
+    stb.replaceChildren();
+    if (!slots.length) {
+      const tr = document.createElement('tr'), td = document.createElement('td');
+      td.colSpan = 7; td.style.cssText = 'color:var(--dim);text-align:center;padding:24px 12px';
+      td.textContent = '尚未配置槽位（当前使用默认单共享登录态 + 服务器直连）。可在上方添加「当前服务器本地」或「外部静态住宅代理」槽位。';
+      tr.append(td); stb.append(tr);
+    } else {
+      for (const s of slots) {
+        const tr = document.createElement('tr');
+        const td1 = document.createElement('td');
+        td1.innerHTML = `<strong>${s.name}</strong> <span class="mono" style="color:var(--dim)">(${s.slot_id})</span>`;
+        const isLocal = s.mode === 'local' || !s.has_proxy;
+        const tdMode = document.createElement('td');
+        const mb = document.createElement('span');
+        mb.className = 'badge ' + (isLocal ? 'badge-info' : 'badge-purple');
+        mb.textContent = s.mode_label || (isLocal ? '当前服务器本地' : '静态住宅代理');
+        tdMode.append(mb);
+
+        const td2 = document.createElement('td'); td2.className = 'mono'; td2.textContent = s.market;
+        const td3 = document.createElement('td'); td3.className = 'mono';
+        td3.textContent = s.proxy_masked || (isLocal ? '本机直连出口（无需IP）' : '—');
+
+        const td4 = document.createElement('td');
+        const lb = document.createElement('span');
+        if (s.shared && chkBadge[s.check_status]) {
+          lb.className = 'badge ' + chkBadge[s.check_status][1];
+          lb.textContent = chkBadge[s.check_status][0];
+          lb.title = (s.checked_at ? `[${s.checked_at}] ` : '') + (s.check_message || '');
+        } else {
+          lb.className = 'badge ' + (s.shared ? 'badge-ok' : 'badge-dim');
+          lb.textContent = s.shared ? `已发布${s.login_updated_at ? ' · ' + s.login_updated_at : ''}` : '未登录';
+        }
+        td4.append(lb);
+
+        const td5 = document.createElement('td');
+        const eb = document.createElement('span');
+        eb.className = 'badge ' + (s.enabled ? 'badge-ok' : 'badge-bad');
+        eb.textContent = s.enabled ? '启用' : '停用';
+        td5.append(eb);
+
+        const td6 = document.createElement('td'); td6.className = 'actions-cell';
+        const bLogin = document.createElement('button'); bLogin.type = 'button'; bLogin.className = 'btn btn-ghost btn-xs';
+        bLogin.textContent = s.shared ? '重登' : '登录'; bLogin.disabled = running;
+        bLogin.onclick = () => startAmzSlotLogin(s);
+        td6.append(bLogin);
+        if (s.shared) {
+          const bChk = document.createElement('button'); bChk.type = 'button'; bChk.className = 'btn btn-ghost btn-xs';
+          bChk.textContent = '检测'; bChk.disabled = running;
+          bChk.onclick = () => checkAmzMarket(s.market, s.slot_id);
+          td6.append(bChk);
+        }
+        const bTog = document.createElement('button'); bTog.type = 'button'; bTog.className = 'btn btn-ghost btn-xs';
+        bTog.textContent = s.enabled ? '停用' : '启用';
+        bTog.onclick = () => toggleAmzSlot(s);
+        const bDel = document.createElement('button'); bDel.type = 'button'; bDel.className = 'btn btn-danger btn-xs';
+        bDel.textContent = '删除';
+        bDel.onclick = () => deleteAmzSlot(s);
+        td6.append(bTog, bDel);
+
+        tr.append(td1, tdMode, td2, td3, td4, td5, td6);
+        stb.append(tr);
+      }
+    }
+  }
+  if (running && !amzPollTimer) { amzPollTimer = setInterval(() => loadAmzLogin().catch(() => {}), 2000); }
+  else if (!running && amzPollTimer) { clearInterval(amzPollTimer); amzPollTimer = null; }
 }
-async function loadAmzLogin(){const d=await api('/api/admin/amazon-login');renderAmzStatus(d);}
-if($('#amzLoginForm')){$('#amzLoginForm').onsubmit=async e=>{e.preventDefault();try{const waitSec=Number($('#amzWaitSec').value||300);const market=$('#amzMarket').value||'amazon.com';const cookie=$('#amzCookie').value||'';await api('/api/admin/amazon-login/start','POST',{market,wait_seconds:waitSec,cookie});$('#amzCookie').value='';message(`已启动 ${market} 登录窗口，最多等待 ${waitSec} 秒…`);await loadAmzLogin();}catch(ex){message(ex.message);}};}
-if($('#amzCancelBtn')){$('#amzCancelBtn').onclick=async()=>{try{await api('/api/admin/amazon-login/cancel','POST',{});message('已请求取消登录等待。');await loadAmzLogin();}catch(ex){message(ex.message);}};}
-if($('#amzRefreshBtn')){$('#amzRefreshBtn').onclick=()=>{loadAmzLogin().catch(ex=>message(ex.message));};}
-(async()=>{try{me=await api('/api/auth/me');$('#identity').textContent=me.name;if(me.role==='admin'){$('#amzLoginPanel').hidden=false;$('#admin').hidden=false;$('#auditPanel').hidden=false;await loadAmzLogin();await loadCats();await loadUsers();await loadAudit();}}catch(e){message(e.message)}})();
-document.querySelector('#showCreatePwd').onchange=e=>{const p=document.querySelector('#create input[name=password]');if(p)p.type=e.target.checked?'text':'password';};
-$('#create').onsubmit=async e=>{e.preventDefault();const form=e.currentTarget,f=form.elements;try{await api('/api/auth/users/create','POST',{username:f.namedItem('username').value,password:f.namedItem('password').value,role:f.namedItem('role').value,categories:catPicked(f.namedItem('categories')),admin_password:$('#adminPassword').value});form.reset();await loadCats();message('账号已创建。');await loadUsers();}catch(ex){message(ex.message)}finally{$('#adminPassword').value='';}};
-$('#passwordForm').onsubmit=async e=>{e.preventDefault();const f=e.currentTarget.elements;try{await api('/api/auth/password','POST',{current_password:f.namedItem('current').value,password:f.namedItem('password').value});location.href='/login';}catch(ex){message(ex.message)}};
-$('#logout').onclick=async()=>{try{await api('/api/auth/logout','POST',{});location.href='/login';}catch(e){message(e.message)}};
-</script></body></html>
+
+async function loadAmzLogin() { const d = await api('/api/admin/amazon-login'); renderAmzStatus(d); }
+function amzFeedback(text, isErr = false) {
+  message(text, isErr);
+  const box = $('#amzTaskBox'), txt = $('#amzTaskText');
+  if (box && txt) {
+    txt.textContent = (isErr ? '操作失败：' : '') + text;
+    box.className = 'status-banner ' + (isErr ? 'is-err' : 'is-ok');
+  }
+}
+
+async function checkAmzMarket(market, slotId = '') {
+  try {
+    if ($('#amzMarket')) $('#amzMarket').value = market;
+    await api('/api/admin/amazon-login/check', 'POST', { market, slot_id: slotId });
+    amzFeedback(`正在后台检测 ${slotId ? slotId + ' (' + market + ')' : market} 共享登录态有效性…`);
+    await loadAmzLogin();
+  } catch (ex) { amzFeedback(ex.message, true); }
+}
+async function startAmzSlotLogin(slot) {
+  try {
+    const waitSec = Number(($('#amzWaitSec') && $('#amzWaitSec').value) || 300);
+    await api('/api/admin/amazon-login/start', 'POST', { market: slot.market, wait_seconds: waitSec, slot_id: slot.slot_id });
+    amzFeedback(`已按槽位 ${slot.name}(${slot.slot_id}) 启动 ${slot.market} 登录窗口…`);
+    await loadAmzLogin();
+  } catch (ex) { amzFeedback(ex.message, true); }
+}
+async function toggleAmzSlot(slot) {
+  try {
+    await api('/api/admin/amazon-login/slots/save', 'POST', { slot_id: slot.slot_id, name: slot.name, market: slot.market, enabled: !slot.enabled });
+    await loadAmzLogin();
+    amzFeedback(`槽位 ${slot.name} 已${slot.enabled ? '停用' : '启用'}。`);
+  } catch (ex) { amzFeedback(ex.message, true); }
+}
+async function deleteAmzSlot(slot) {
+  if (!confirm(`确定删除槽位 ${slot.name} (${slot.slot_id}) 及其共享登录态？`)) return;
+  try {
+    await api('/api/admin/amazon-login/slots/delete', 'POST', { slot_id: slot.slot_id });
+    await loadAmzLogin();
+    amzFeedback(`槽位 ${slot.name} 已删除。`);
+  } catch (ex) { amzFeedback(ex.message, true); }
+}
+
+$('#amzLocalSlotForm').onsubmit = async e => {
+  e.preventDefault();
+  const btn = e.currentTarget.querySelector('button[type=submit]');
+  if (btn) btn.disabled = true;
+  try {
+    const name = ($('#amzLocalSlotName').value || '').trim() || '服务器本地';
+    const market = $('#amzLocalSlotMarket').value || 'amazon.com';
+    await api('/api/admin/amazon-login/slots/save', 'POST', { name, market, proxy_url: '', enabled: true });
+    await loadAmzLogin();
+    amzFeedback(`当前服务器本地槽位「${name}」已添加，请点击下方「登录」完成首次登录。`);
+  } catch (ex) {
+    const hint = /未知接口|404/.test(ex.message) ? '（WebUI 后台尚未重启加载新接口，请先重启服务）' : '';
+    amzFeedback(ex.message + hint, true);
+  } finally { if (btn) btn.disabled = false; }
+};
+
+$('#amzSlotForm').onsubmit = async e => {
+  e.preventDefault();
+  const btn = e.currentTarget.querySelector('button[type=submit]');
+  if (btn) btn.disabled = true;
+  try {
+    const name = ($('#amzSlotName').value || '').trim();
+    const market = $('#amzSlotMarket').value || 'amazon.com';
+    const proxy_url = ($('#amzSlotProxy').value || '').trim();
+    if (!proxy_url) { amzFeedback('请填写静态住宅代理地址；如需本地直连请使用左侧表单。', true); return; }
+    await api('/api/admin/amazon-login/slots/save', 'POST', { name, market, proxy_url, enabled: true });
+    $('#amzSlotName').value = ''; $('#amzSlotProxy').value = '';
+    await loadAmzLogin();
+    amzFeedback(`静态住宅代理槽位「${name}」已加密保存，请点击下方「登录」完成首次登录。`);
+  } catch (ex) {
+    const hint = /未知接口|404/.test(ex.message) ? '（WebUI 后台尚未重启加载新接口，请先重启服务）' : '';
+    amzFeedback(ex.message + hint, true);
+  } finally { if (btn) btn.disabled = false; }
+};
+
+$('#amzLoginForm').onsubmit = async e => {
+  e.preventDefault();
+  try {
+    const waitSec = Number($('#amzWaitSec').value || 300);
+    const market = $('#amzMarket').value || 'amazon.com';
+    const cookie = $('#amzCookie').value || '';
+    await api('/api/admin/amazon-login/start', 'POST', { market, wait_seconds: waitSec, cookie });
+    $('#amzCookie').value = '';
+    amzFeedback(`已启动 ${market} 登录窗口，最多等待 ${waitSec} 秒…`);
+    await loadAmzLogin();
+  } catch (ex) { amzFeedback(ex.message, true); }
+};
+$('#amzCheckBtn').onclick = () => checkAmzMarket(($('#amzMarket') && $('#amzMarket').value) || 'amazon.com');
+$('#amzCancelBtn').onclick = async () => {
+  try { await api('/api/admin/amazon-login/cancel', 'POST', {}); amzFeedback('已请求取消登录等待。'); await loadAmzLogin(); }
+  catch (ex) { amzFeedback(ex.message, true); }
+};
+$('#amzRefreshBtn').onclick = () => loadAmzLogin().catch(ex => amzFeedback(ex.message, true));
+
+async function initPage() {
+  applyViewChrome();
+  try {
+    me = await api('/api/auth/me');
+    $('#identity').textContent = `${me.name} · 账号设置`;
+    if (me.role === 'admin') {
+      $('#navAmz').hidden = false;
+      $('#navOplog').hidden = false;
+    }
+    if (isAmazonView()) {
+      if (me.role === 'admin') {
+        $('#amzLoginPanel').hidden = false;
+        await loadAmzLogin();
+      } else {
+        message('仅管理员可管理亚马逊登录与代理槽位。', true);
+      }
+    } else {
+      if (me.role === 'admin') {
+        $('#admin').hidden = false;
+        await loadCats();
+        await loadUsers();
+      } else {
+        setHeroPills([{ label: '当前角色', value: me.role }]);
+      }
+    }
+  } catch (e) { message(e.message, true); }
+}
+
+window.addEventListener('hashchange', () => { initPage(); });
+initPage();
+
+$('#showCreatePwd').onchange = e => {
+  const p = document.querySelector('#create input[name=password]');
+  if (p) p.type = e.target.checked ? 'text' : 'password';
+};
+$('#create').onsubmit = async e => {
+  e.preventDefault();
+  const form = e.currentTarget, f = form.elements;
+  if (!($('#adminPassword').value || '').trim()) {
+    message('请先填写上方「管理员密码确认」再创建账号', true);
+    $('#adminPassword').focus();
+    return;
+  }
+  try {
+    await api('/api/auth/users/create', 'POST', {
+      username: f.namedItem('username').value,
+      password: f.namedItem('password').value,
+      role: f.namedItem('role').value,
+      categories: catPicked(f.namedItem('categories')),
+      admin_password: $('#adminPassword').value
+    });
+    form.reset();
+    await loadCats();
+    message('新成员账号已创建。');
+    await loadUsers();
+  } catch (ex) { message(ex.message, true); }
+  finally { $('#adminPassword').value = ''; }
+};
+$('#passwordForm').onsubmit = async e => {
+  e.preventDefault();
+  const f = e.currentTarget.elements;
+  try {
+    await api('/api/auth/password', 'POST', {
+      current_password: f.namedItem('current').value,
+      password: f.namedItem('password').value
+    });
+    location.href = '/login';
+  } catch (ex) { message(ex.message, true); }
+};
+$('#logout').onclick = async () => {
+  try { await api('/api/auth/logout', 'POST', {}); location.href = '/login'; }
+  catch (e) { message(e.message, true); }
+};
+</script>
+</body>
+</html>

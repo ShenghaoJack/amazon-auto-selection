@@ -781,6 +781,7 @@ def test_step09_multi_category_parallel_slot_retry_and_zero_asin_resume(tmp_path
             tmp_path / sub_name,
             CAT=cat_name,
             DRY_RUN=False,
+            PROFILE_DIR=str(tmp_path / "isolated_profiles"),
             CORE_SEARCH_PAGES=2,
             LONGTAIL_SEARCH_PAGES=1,
             STEP09_SLICE_WORDS=2,

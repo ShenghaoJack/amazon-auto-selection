@@ -116,6 +116,26 @@ class Step04Keywords(BaseStep):
                                   candidate_limit=int(cfg.get("CANDIDATE_LIMIT", 20)),
                                   per_dim=int(cfg.get("LONGTAIL_PER_DIM", 5)),
                                   product_policy=policy, brands=brands, registered_roots=registered)
+        except Exception as exc:
+            try:
+                partial = {
+                    "error_type": type(exc).__name__,
+                    "error": str(exc),
+                    "llm_events": list(getattr(llm_cache, "events", []) or []),
+                    "mcp_events": list(getattr(miner_cache, "events", []) or []),
+                }
+                for attr in ("last_audit", "audit", "_audit"):
+                    val = getattr(pipeline, attr, None)
+                    if val is not None:
+                        partial["pipeline_audit"] = val
+                        break
+                atomic_write_text(
+                    ctx.resolve_artifact(f"{cat}-kwgen-partial-audit.json"),
+                    _json.dumps(partial, ensure_ascii=False, indent=2, default=str) + "\n",
+                )
+            except Exception:
+                pass
+            raise
         finally:
             mcp.close()
 

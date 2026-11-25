@@ -355,6 +355,10 @@ class BrowserAutomation:
         dry_run: bool = False,
         downloads_path: str | None = None,
         cdp_url: str | None = None,
+        amazon_share_root: str | None = None,
+        proxy_url: str | None = None,
+        amazon_slot_id: str = "",
+        block_media: bool = False,
     ):
         self.config = config
         self.profile_dir = profile_dir
@@ -362,6 +366,16 @@ class BrowserAutomation:
         self.dry_run = dry_run
         self.downloads_path = downloads_path
         self.cdp_url = cdp_url
+        self.amazon_share_root = amazon_share_root
+        self.proxy_url = str(proxy_url or "").strip() or None
+        self.amazon_slot_id = str(amazon_slot_id or "").strip()
+        self.block_media = bool(block_media)
+        self._media_blocking_active = False
+        self._proxy_bridge = None
+        self._last_activity = time.monotonic()
+        self._watchdog_stop = None
+        self._watchdog_thread = None
+        self._watchdog_tripped = False
         self._pw = None
         self._context = None
         self._browser = None
@@ -383,15 +397,170 @@ class BrowserAutomation:
         try:
             return self._enter_browser()
         except BaseException:
+            self._stop_watchdog()
             if self._pw is not None:
                 try:
                     self._pw.stop()
                 except Exception:  # noqa: BLE001
                     pass
                 self._pw = None
+            self._stop_proxy_bridge()
             self._context = None
             self._browser = None
             raise
+
+    def touch_watchdog(self) -> None:
+        """刷新浏览器活跃时间戳，防止正常执行被看门狗误判卡死。"""
+        self._last_activity = time.monotonic()
+
+    def _resolve_hang_timeout(self) -> float:
+        raw = self.config.get("BROWSER_HANG_TIMEOUT", 360) if self.config is not None else 360
+        try:
+            sec = float(raw)
+        except (TypeError, ValueError):
+            sec = 360.0
+        if sec <= 0:
+            return 0.0
+        # 有头窗口可能用于人工点人机验证(最多 300s)，放宽到至少 600s 避免误杀
+        if self.headed:
+            return max(sec, 600.0)
+        return max(sec, 60.0)
+
+    def _start_watchdog(self) -> None:
+        """启动后台无响应看门狗（覆盖步骤 00/01/09/10，CDP 模式不启用）。"""
+        if self.dry_run or self.is_cdp or not self.profile_dir:
+            return
+        timeout_sec = self._resolve_hang_timeout()
+        if timeout_sec <= 0:
+            return
+        import threading
+        self._watchdog_tripped = False
+        self._last_activity = time.monotonic()
+        stop_ev = threading.Event()
+        self._watchdog_stop = stop_ev
+
+        def _loop() -> None:
+            poll = min(10.0, max(1.0, timeout_sec / 6.0))
+            while not stop_ev.wait(timeout=poll):
+                idle = time.monotonic() - self._last_activity
+                if idle >= timeout_sec:
+                    self._watchdog_tripped = True
+                    try:
+                        import logging
+                        logging.getLogger("pipeline").warning(
+                            "[BrowserWatchdog] 浏览器已连续 %.0f 秒无活动(上限 %.0fs，疑似渲染/IPC假死)，"
+                            "强制终止隔离 Chrome 以释放抓取槽位: profile=%s",
+                            idle, timeout_sec, self.profile_dir,
+                        )
+                    except Exception:  # noqa: BLE001
+                        pass
+                    self._force_kill_profile_chrome()
+                    return
+
+        t = threading.Thread(target=_loop, daemon=True, name="browser-hang-watchdog")
+        self._watchdog_thread = t
+        t.start()
+
+    def _stop_watchdog(self) -> None:
+        ev = getattr(self, "_watchdog_stop", None)
+        self._watchdog_stop = None
+        if ev is not None:
+            try:
+                ev.set()
+            except Exception:  # noqa: BLE001
+                pass
+        self._watchdog_thread = None
+
+    def _driver_pid(self) -> int:
+        """获取当前 BrowserAutomation 实例专属的 Playwright driver 子进程 PID。"""
+        try:
+            transport = self._pw._impl_obj._connection._transport  # type: ignore[union-attr]
+            proc = getattr(transport, "_proc", None)
+            return int(getattr(proc, "pid", 0) or 0)
+        except Exception:  # noqa: BLE001
+            return 0
+
+    def _force_kill_profile_chrome(self) -> None:
+        """定向强杀当前实例的 Playwright driver + 隔离 Chrome 进程树，绝不误杀其他类目或卖家精灵。"""
+        driver_pid = self._driver_pid()
+        if driver_pid > 0:
+            if os.name == "nt":
+                try:
+                    subprocess.run(
+                        ["taskkill", "/F", "/T", "/PID", str(driver_pid)],
+                        timeout=10,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                    )
+                    return
+                except Exception:  # noqa: BLE001
+                    pass
+            try:
+                proc = self._pw._impl_obj._connection._transport._proc  # type: ignore[union-attr]
+                if proc is not None:
+                    proc.kill()
+                    return
+            except Exception:  # noqa: BLE001
+                pass
+
+        target = os.path.normcase(os.path.abspath(self.profile_dir))
+        if not target:
+            return
+        if os.name == "nt":
+            try:
+                escaped = target.replace("'", "''")
+                ps_cmd = (
+                    "$t = '" + escaped + "'.ToLower(); "
+                    "Get-CimInstance Win32_Process -Filter \"Name='chrome.exe' OR Name='chromium.exe' OR Name='chrome-headless-shell.exe'\" "
+                    "| Where-Object { $_.CommandLine -and $_.CommandLine.ToLower().Contains($t) } "
+                    "| ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"
+                )
+                subprocess.run(
+                    ["powershell", "-NoProfile", "-Command", ps_cmd],
+                    timeout=15,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+            except Exception:  # noqa: BLE001
+                pass
+        else:
+            try:
+                subprocess.run(
+                    ["pkill", "-9", "-f", target],
+                    timeout=10,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+            except Exception:  # noqa: BLE001
+                pass
+
+    def _prepare_playwright_proxy(self) -> dict | None:
+        if not self.proxy_url:
+            return None
+        from core.proxy_utils import LocalSocks5HttpBridge, parse_proxy_url
+        spec = parse_proxy_url(self.proxy_url)
+        if spec is None:
+            return None
+        if spec.needs_bridge_for_chromium:
+            bridge = LocalSocks5HttpBridge(spec)
+            local_url = bridge.start()
+            self._proxy_bridge = bridge
+            return {"server": local_url}
+        out: dict[str, str] = {"server": f"{spec.scheme}://{spec.host}:{spec.port}"}
+        if spec.username:
+            out["username"] = spec.username
+        if spec.password:
+            out["password"] = spec.password
+        return out
+
+    def _stop_proxy_bridge(self) -> None:
+        bridge = getattr(self, "_proxy_bridge", None)
+        self._proxy_bridge = None
+        if bridge is not None:
+            try:
+                bridge.stop()
+            except Exception:  # noqa: BLE001
+                pass
 
     def _enter_browser(self) -> "BrowserAutomation":
         if self.is_cdp:
@@ -428,6 +597,7 @@ class BrowserAutomation:
             if self.config is not None
             else "new"
         )
+        pw_proxy = self._prepare_playwright_proxy()
         if not self.headed and headless_mode != "legacy":
             locale, timezone_id = _market_fingerprint(
                 getattr(self.config, "market", "") if self.config is not None else ""
@@ -442,8 +612,11 @@ class BrowserAutomation:
                 "timezone_id": timezone_id,
                 "accept_downloads": True,
                 "downloads_path": self.downloads_path,
+                "timeout": 60000,
                 "args": ["--headless=new", *base_args],
             }
+            if pw_proxy is not None:
+                launch_kw["proxy"] = pw_proxy
             if clean_ua:
                 launch_kw["user_agent"] = clean_ua
             try:
@@ -457,23 +630,116 @@ class BrowserAutomation:
                     "timezone_id": timezone_id,
                     "accept_downloads": True,
                     "downloads_path": self.downloads_path,
+                    "timeout": 60000,
                     "args": base_args,
                 }
+                if pw_proxy is not None:
+                    fallback_kw["proxy"] = pw_proxy
                 if clean_ua:
                     fallback_kw["user_agent"] = clean_ua
                 self._browser = self._pw.chromium.launch_persistent_context(**fallback_kw)
         else:
-            self._browser = self._pw.chromium.launch_persistent_context(
-                user_data_dir=self.profile_dir,
-                headless=not self.headed,
-                accept_downloads=True,
-                downloads_path=self.downloads_path,
-                args=base_args,
-            )
+            headed_kw: dict = {
+                "user_data_dir": self.profile_dir,
+                "headless": not self.headed,
+                "accept_downloads": True,
+                "downloads_path": self.downloads_path,
+                "timeout": 60000,
+                "args": base_args,
+            }
+            if pw_proxy is not None:
+                headed_kw["proxy"] = pw_proxy
+            self._browser = self._pw.chromium.launch_persistent_context(**headed_kw)
         self._context = self._browser
+        try:
+            self._context.set_default_timeout(45000)
+            self._context.set_default_navigation_timeout(60000)
+        except Exception:  # noqa: BLE001
+            pass
+        self._install_media_blocker()
+        if self.amazon_share_root:
+            self.sync_shared_amazon_login(self.amazon_share_root)
+        self._start_watchdog()
         return self
 
+    _BLOCKED_RESOURCE_TYPES = frozenset({"image", "media", "font", "stylesheet"})
+    _BLOCKED_TELEMETRY_HOSTS = (
+        "amazon-adsystem.com",
+        "fls-na.amazon.com",
+        "fls-eu.amazon.com",
+        "fls-fe.amazon.com",
+        "unagi.amazon.com",
+        "aax-us-iad.amazon.com",
+        "aax-fe.amazon.com",
+        "doubleclick.net",
+        "googlesyndication.com",
+        "google-analytics.com",
+    )
+
+    def _should_block_media(self) -> bool:
+        """仅无头非 CDP 抓取且调用方显式开启 block_media 时拦截图片/媒体/字体/CSS/广告埋点。"""
+        if self.dry_run or self.headed or self.is_cdp or not self.block_media:
+            return False
+        raw = self.config.get("BROWSER_BLOCK_MEDIA", "true") if self.config is not None else "true"
+        return str(raw if raw is not None else "true").strip().lower() not in ("0", "false", "no", "off")
+
+    @classmethod
+    def _is_blocked_request(cls, resource_type: str, url: str) -> bool:
+        if str(resource_type or "").lower() in cls._BLOCKED_RESOURCE_TYPES:
+            return True
+        if url:
+            try:
+                from urllib.parse import urlparse
+                host = (urlparse(url).hostname or "").lower()
+                if host and any(host == h or host.endswith("." + h) for h in cls._BLOCKED_TELEMETRY_HOSTS):
+                    return True
+            except Exception:  # noqa: BLE001
+                pass
+        return False
+
+    def _install_media_blocker(self) -> bool:
+        """在无头抓取上下文安装资源拦截器：加速商品页加载并显著降低 Chromium 内存与假死风险。"""
+        self._media_blocking_active = False
+        if not self._should_block_media() or self._context is None:
+            return False
+        try:
+            def _route_handler(route) -> None:
+                try:
+                    req = route.request
+                    if self._is_blocked_request(req.resource_type, req.url):
+                        route.abort()
+                    else:
+                        route.continue_()
+                except Exception:  # noqa: BLE001 — 页面/上下文正在关闭时静默忽略
+                    pass
+
+            self._context.route("**/*", _route_handler)
+            self._media_blocking_active = True
+            return True
+        except Exception:  # noqa: BLE001
+            return False
+
+    def sync_shared_amazon_login(self, profile_root: str | None = None, *, slot_id: str | None = None) -> bool:
+        """将管理员维护的共享亚马逊登录态 Cookie 同步到当前浏览器上下文(静默兜底，不阻断启动)。"""
+        root = profile_root or self.amazon_share_root
+        if self.dry_run or not root or self._context is None:
+            return False
+        market = str(getattr(self.config, "market", "") or "").strip().lower()
+        if not market:
+            return False
+        sid = self.amazon_slot_id if slot_id is None else str(slot_id or "").strip()
+        try:
+            from core import amazon_login_share
+            if sid:
+                if amazon_login_share.restore(self._context, root, market, slot_id=sid):
+                    return True
+                return False
+            return bool(amazon_login_share.restore(self._context, root, market))
+        except Exception:  # noqa: BLE001
+            return False
+
     def __exit__(self, exc_type, exc, tb):
+        self._stop_watchdog()
         try:
             if self.is_cdp:
                 # CDP 模式: 只关闭自己创建的标签页, **不关闭用户的 Chrome**
@@ -483,14 +749,22 @@ class BrowserAutomation:
                     except Exception:
                         pass
             elif self._context is not None:
-                self._context.close()
+                try:
+                    self._context.close()
+                except Exception:
+                    pass
         finally:
             if self._pw is not None:
-                self._pw.stop()
+                try:
+                    self._pw.stop()
+                except Exception:
+                    pass
+            self._stop_proxy_bridge()
         self._context = None
         self._pw = None
 
     def new_page(self):
+        self.touch_watchdog()
         if self.dry_run:
             return MockPage(self)
         if self._context is None:
@@ -501,6 +775,7 @@ class BrowserAutomation:
         return page
 
     def goto(self, page, url: str, timeout: int = 60000):
+        self.touch_watchdog()
         if self.dry_run:
             # dry-run 也要记住 URL: MockPage.content() 据此判断"这是商品页还是榜单页"
             # (2026-09-15: 让步骤1 浏览器兜底/步骤10 补抓在 dry-run 下可被冒烟覆盖)。
@@ -523,6 +798,7 @@ class BrowserAutomation:
 
         返回实际滚动次数(便于调用方记录/排查); dry-run 返回 0。
         """
+        self.touch_watchdog()
         if self.dry_run:
             return 0
         min_times = max(1, int(times))
@@ -678,6 +954,7 @@ class BrowserAutomation:
 
         navigate=False 时不导航页面(用于手动登录等待, 避免打断用户输入)。
         """
+        self.touch_watchdog()
         if self.dry_run:
             return True
         if navigate:
@@ -697,6 +974,14 @@ class BrowserAutomation:
                 raise last_exc
             time.sleep(2)
         try:
+            from urllib.parse import urlparse as _urlparse
+            cur_url = str(getattr(page, "url", "") or "").lower()
+            cur_path = _urlparse(cur_url).path or ""
+            # 只检查 URL path，避免误杀登录成功跳回首页时的 query 参数(如 ?ref_=nav_ya_signin)
+            if any(tok in cur_path for tok in (
+                "/ap/", "/ax/claim", "validatecaptcha", "/cvf/", "/mfa", "challenge", "approval", "/signin",
+            )):
+                return False
             link = page.wait_for_selector("#nav-link-accountList", timeout=8000)
             href = str(link.get_attribute('href') or '').lower()
             if not href and hasattr(link, 'query_selector'):

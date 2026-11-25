@@ -33,17 +33,28 @@ def _crypt(data: bytes, *, decrypt: bool = False) -> bytes:
         ctypes.windll.kernel32.LocalFree(ctypes.cast(result.pbData, ctypes.c_void_p))
 
 
-def _path(profile_root, market):
+def _normalize_slot_id(slot_id: str | None) -> str:
+    s = str(slot_id or "").strip().lower()
+    if not s:
+        return ""
+    if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,47}", s):
+        raise ValueError("无效的亚马逊槽位 ID")
+    return s
+
+
+def _path(profile_root, market, slot_id: str = ""):
     market = str(market or '').strip().lower()
     if not re.fullmatch(r'amazon\.[a-z.]+', market):
         raise ValueError('无效的亚马逊站点')
-    return Path(profile_root) / 'amazon-login-share' / (market + '.bin')
+    sid = _normalize_slot_id(slot_id)
+    filename = f"{market}__{sid}.bin" if sid else (market + '.bin')
+    return Path(profile_root) / 'amazon-login-share' / filename
 
 
-def save(context, profile_root, market, *, replace=True):
+def save(context, profile_root, market, *, replace=True, slot_id: str = ""):
     """Called only after a positive login check; never stores other sites."""
     market = str(market or '').strip().lower()
-    path = _path(profile_root, market)
+    path = _path(profile_root, market, slot_id=slot_id)
     if not replace and path.exists():
         return False
     cookies = [c for c in context.cookies() if str(c.get('domain', '')).lstrip('.').lower() == market
@@ -70,9 +81,9 @@ def save(context, profile_root, market, *, replace=True):
             os.unlink(temp)
 
 
-def restore(context, profile_root, market):
+def restore(context, profile_root, market, *, slot_id: str = ""):
     market = str(market or '').strip().lower()
-    path = _path(profile_root, market)
+    path = _path(profile_root, market, slot_id=slot_id)
     if not path.is_file():
         return False
     cookies = json.loads(_crypt(path.read_bytes(), decrypt=True).decode('utf-8'))
@@ -88,14 +99,14 @@ def restore(context, profile_root, market):
     return True
 
 
-def cookie_header(profile_root, market) -> str:
+def cookie_header(profile_root, market, *, slot_id: str = "") -> str:
     """从管理员发布的加密共享登录态拼出 HTTP 直连用的 `Cookie` 请求头（失败或缺失返回空串）。"""
     import time as _time
     market = str(market or '').strip().lower()
     if not market:
         return ''
     try:
-        path = _path(profile_root, market)
+        path = _path(profile_root, market, slot_id=slot_id)
         if not path.is_file():
             return ''
         cookies = json.loads(_crypt(path.read_bytes(), decrypt=True).decode('utf-8'))
@@ -127,7 +138,7 @@ def cookie_header(profile_root, market) -> str:
     return "; ".join(pairs)
 
 
-def resolve_cookie_header(config) -> str:
+def resolve_cookie_header(config, *, slot_id: str = "") -> str:
     """解析当前运行生效的亚马逊 HTTP Cookie：显式配置 `COOKIE` 优先，留空时自动复用管理员加密共享态。"""
     if config is None:
         return ''
@@ -144,4 +155,9 @@ def resolve_cookie_header(config) -> str:
         profile_root = Path(config.resolve_path(pdir)) if hasattr(config, "resolve_path") else Path(pdir)
     except Exception:
         profile_root = Path("data/profiles")
+    sid = str(slot_id or config.get("AMZ_SLOT_ID", "") or "").strip()
+    if sid:
+        hdr = cookie_header(profile_root, market, slot_id=sid)
+        if hdr:
+            return hdr
     return cookie_header(profile_root, market)

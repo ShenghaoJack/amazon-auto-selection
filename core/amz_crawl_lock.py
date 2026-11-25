@@ -21,6 +21,7 @@ from __future__ import annotations
 import itertools
 import json
 import os
+import threading
 import time
 import uuid
 from datetime import datetime
@@ -46,6 +47,33 @@ PRIORITY_SHORT = 0
 PRIORITY_NORMAL = 10
 
 _TICKET_SEQ = itertools.count(1)
+_ACTIVE_SLOT_TLS = threading.local()
+
+
+def current_slot_index() -> int | None:
+    """返回当前线程正在持有的亚马逊物理并发槽位号(1-based)，未持有时返回 None。"""
+    stack = getattr(_ACTIVE_SLOT_TLS, "stack", None)
+    if stack:
+        return int(stack[-1])
+    return None
+
+
+def _push_active_slot(idx: int) -> None:
+    stack = getattr(_ACTIVE_SLOT_TLS, "stack", None)
+    if stack is None:
+        stack = []
+        _ACTIVE_SLOT_TLS.stack = stack
+    stack.append(int(idx))
+
+
+def _pop_active_slot(idx: int) -> None:
+    stack = getattr(_ACTIVE_SLOT_TLS, "stack", None)
+    if not stack:
+        return
+    for i in range(len(stack) - 1, -1, -1):
+        if stack[i] == int(idx):
+            stack.pop(i)
+            return
 
 
 def lock_dir() -> Path:
@@ -153,20 +181,33 @@ def _pid_alive(pid: int) -> bool:
 
 
 def resolve_max_concurrent(config) -> int:
-    """解析跨类目亚马逊抓取并发上限（0 表示不限流；默认 1）。"""
+    """解析跨类目亚马逊抓取并发上限（0 表示不限流；默认 1，配置了多代理槽位池时自动按启用槽位数并发）。"""
     env = str(os.environ.get("PIPELINE_AMZ_CRAWL_MAX_CONCURRENT") or "").strip()
     if env:
         try:
             return max(0, int(env))
         except ValueError:
             pass
-    raw = config.get("AMZ_CRAWL_MAX_CONCURRENT", DEFAULT_MAX_CONCURRENT) if config is not None else DEFAULT_MAX_CONCURRENT
-    if raw is None or str(raw).strip() == "":
-        return DEFAULT_MAX_CONCURRENT
-    try:
-        return max(0, int(raw))
-    except (TypeError, ValueError):
-        return DEFAULT_MAX_CONCURRENT
+    raw = config.get("AMZ_CRAWL_MAX_CONCURRENT") if config is not None else None
+    if raw is not None and str(raw).strip() != "":
+        try:
+            return max(0, int(raw))
+        except (TypeError, ValueError):
+            return DEFAULT_MAX_CONCURRENT
+    # 未显式指定并发数时，若当前站点配置了多个启用的静态住宅代理槽位，自动按槽位数并发
+    if config is not None and not getattr(config, "dry_run", False):
+        try:
+            from core import amazon_pool
+            pdir = getattr(config, "profile_dir", "") or config.get("PROFILE_DIR", "") or "data/profiles"
+            root = Path(config.resolve_path(pdir)) if hasattr(config, "resolve_path") else Path(pdir)
+            market = str(getattr(config, "market", "") or config.get("MARKET", "") or "").strip()
+            if market:
+                n_slots = len(amazon_pool.enabled_slots_for_market(root, market))
+                if n_slots >= 2:
+                    return n_slots
+        except Exception:
+            pass
+    return DEFAULT_MAX_CONCURRENT
 
 
 def resolve_slice_size(config) -> int:
@@ -440,6 +481,8 @@ class AmzCrawlSlot:
                 if cd_rem <= 0 and ahead < self.max_concurrent and self._try_acquire_any():
                     self.waited = time.monotonic() - start
                     self._remove_ticket()
+                    if self.slot_index is not None:
+                        _push_active_slot(self.slot_index)
                     if announced and self.log:
                         self.log(
                             f"已获得亚马逊抓取并发槽位({self.slot_index}/{self.max_concurrent}, "
@@ -482,6 +525,8 @@ class AmzCrawlSlot:
     def release(self) -> None:
         self._remove_ticket()
         idx = self.slot_index
+        if idx is not None:
+            _pop_active_slot(idx)
         if idx is not None and self._fh is not None:
             try:
                 self._slot_meta_path(idx).unlink(missing_ok=True)

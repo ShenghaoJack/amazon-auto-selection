@@ -107,8 +107,9 @@ class Step01Details(BaseStep):
             priority=PRIORITY_SHORT if (short_thresh > 0 and len(pending) <= short_thresh) else PRIORITY_NORMAL,
             remaining=len(pending),
         )
-        self._begin_shared_browser()
+        self._begin_shared_browser(headed=False)
         self._run_crawl_slot = run_slot
+        failed_for_headed: list[str] = []
         with run_slot:
             try:
                 for i, asin in enumerate(pending, 1):
@@ -150,6 +151,8 @@ class Step01Details(BaseStep):
                         }
                     if rec["ok"]:
                         ok_total += 1
+                    elif str(rec.get("status") or "") not in ("not_found", "skipped_page_not_found"):
+                        failed_for_headed.append(asin)
                     batch.append(rec)
                     # 每 10 条落盘一次并打印进度(**保持原口径不变**: 用户 2026-09-15 明确要求
                     # 与原有日志提示一致 —— 不额外插入逐条日志, 也不改批次大小)。
@@ -167,13 +170,58 @@ class Step01Details(BaseStep):
                         self.log(ctx, f"进度: {i}/{len(pending)} 本次追加{appended}条(跳过{skipped}条) 累计成功{ok_total}")
                         self.log(ctx, "  本批结果: " + ", ".join(
                             f"{k}×{v}" for k, v in sorted(_dist.items(), key=lambda x: -x[1])))
+                if batch:
+                    appended, skipped = append_jsonl(jsonl_path, batch, dedup_key="request_asin")
+                    appended_total += appended
+                    batch = []
+                    self.log(ctx, f"末批追加{appended}条(跳过{skipped}条)")
+
+                # 有头浏览器兜底补抓(对齐步骤 9/10): 无头阶段仍失败的非 404 ASIN 自动转有头浏览器补抓
+                headed_rounds = max(0, int(ctx.config.get("BROWSER_HEADED_ROUNDS", 1) or 0))
+                if failed_for_headed and fallback_mode != "off" and headed_rounds > 0 and not ctx.dry_run:
+                    self._close_shared_browser()
+                    for hr in range(1, headed_rounds + 1):
+                        if not failed_for_headed:
+                            break
+                        self.log(
+                            ctx,
+                            f"步骤1 有头浏览器兜底补抓(第 {hr}/{headed_rounds} 轮): "
+                            f"共 {len(failed_for_headed)} 个失败 ASIN",
+                        )
+                        self._prune_retried(jsonl_path, set(failed_for_headed))
+                        self._begin_shared_browser(headed=True)
+                        headed_batch = []
+                        still_failed: list[str] = []
+                        recovered = 0
+                        try:
+                            for asin in failed_for_headed:
+                                rec = self._browser_fetch_one(ctx, asin)
+                                if rec is None:
+                                    rec = {
+                                        "request_asin": asin, "ok": False, "status": "browser_unavailable",
+                                        "source": "browser_headed",
+                                        "fetched_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                        "title": "", "bullets": [],
+                                    }
+                                if rec["ok"]:
+                                    recovered += 1
+                                    ok_total += 1
+                                elif str(rec.get("status") or "") not in ("not_found", "skipped_page_not_found"):
+                                    still_failed.append(asin)
+                                headed_batch.append(rec)
+                        finally:
+                            self._close_shared_browser()
+                        if headed_batch:
+                            append_jsonl(jsonl_path, headed_batch, dedup_key="request_asin")
+                        self.log(
+                            ctx,
+                            f"步骤1 有头兜底第 {hr} 轮完成: 补回 {recovered}/{len(failed_for_headed)} 条, "
+                            f"仍失败 {len(still_failed)} 条, 累计成功 {ok_total}",
+                        )
+                        failed_for_headed = still_failed
             finally:
                 self._run_crawl_slot = None
                 self._close_shared_browser()
-        if batch:
-            appended, skipped = append_jsonl(jsonl_path, batch, dedup_key="request_asin")
-            appended_total += appended
-            self.log(ctx, f"末批追加{appended}条(跳过{skipped}条)")
         self.log(ctx, f"榜单详情抓取完成: 处理{len(pending)}条 追加{appended_total}条")
 
     def _read_union(self) -> list[str]:
@@ -193,8 +241,9 @@ class Step01Details(BaseStep):
     _DIRECT_BREAKER_MIN_RATE_DEFAULT = 0.30
     _BROWSER_CHECKPOINT_WAIT_DEFAULT = 295.0
 
-    def _begin_shared_browser(self) -> None:
+    def _begin_shared_browser(self, *, headed: bool = False) -> None:
         self._shared_browser_active = True
+        self._shared_headed = bool(headed)
         self._shared_cm = None
         self._shared_browser = None
         self._shared_page = None
@@ -217,7 +266,8 @@ class Step01Details(BaseStep):
                 )
                 slot.acquire()
             try:
-                cm = ctx.browser("amazon")
+                _headed = bool(getattr(self, "_shared_headed", False))
+                cm = ctx.browser("amazon", headed=_headed, block_media=not _headed)
                 browser = cm.__enter__()
                 self._shared_crawl_slot = slot
                 self._shared_cm = cm
@@ -240,6 +290,7 @@ class Step01Details(BaseStep):
         self._shared_cm = None
         self._shared_crawl_slot = None
         self._shared_browser_active = False
+        self._shared_headed = False
         self._shared_hits = 0
         self._shared_captcha_streak = 0
         if page is not None:
@@ -436,7 +487,7 @@ class Step01Details(BaseStep):
             return rec
 
         try:
-            with ctx.browser("amazon") as browser:
+            with ctx.browser("amazon", block_media=True) as browser:
                 page = browser.new_page()
                 try:
                     return self._browser_fetch_with_page(ctx, browser, page, asin, now)

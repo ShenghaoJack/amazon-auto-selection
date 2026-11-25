@@ -48,12 +48,43 @@ class ProductPage:
 class HttpFetcher:
     """带重试/限流/状态分类的 HTTP 客户端。"""
 
-    def __init__(self, config: Config, cookie: str | None = None):
+    def __init__(
+        self,
+        config: Config,
+        cookie: str | None = None,
+        proxy_url: str | None = None,
+        slot_id: str = "",
+        slot_resolver=None,
+    ):
         self.config = config
         self.cookie = cookie
+        self.proxy_url = str(proxy_url or "").strip() or None
+        self.slot_id = str(slot_id or "").strip()
+        self._slot_resolver = slot_resolver
         self._last_request_at = 0.0
         self._mock = MockHttp() if config.dry_run else None
         self._session = None
+
+    def _current_slot(self) -> tuple[str | None, str]:
+        if callable(self._slot_resolver):
+            try:
+                slot = self._slot_resolver()
+                if isinstance(slot, dict):
+                    return (slot.get("proxy_url") or None), str(slot.get("slot_id") or "")
+            except Exception:  # noqa: BLE001
+                pass
+        return self.proxy_url, self.slot_id
+
+    def _proxies(self) -> dict | None:
+        dyn_proxy, _ = self._current_slot()
+        raw = dyn_proxy or str(self.config.get("AMZ_PROXY_URL", "") or "").strip()
+        if not raw:
+            return None
+        from core.proxy_utils import to_curl_proxy
+        curl_p = to_curl_proxy(raw)
+        if not curl_p:
+            return None
+        return {"http": curl_p, "https": curl_p}
 
     def _get_session(self):
         if self._session is None:
@@ -89,7 +120,8 @@ class HttpFetcher:
             cookie = self.cookie
         else:
             from core.amazon_login_share import resolve_cookie_header
-            cookie = resolve_cookie_header(self.config)
+            _, dyn_sid = self._current_slot()
+            cookie = resolve_cookie_header(self.config, slot_id=dyn_sid)
         if cookie:
             headers["Cookie"] = cookie
         return headers
@@ -114,16 +146,19 @@ class HttpFetcher:
         retries = retries if retries is not None else int(self.config.get("REQUEST_RETRY", 2))
         backoffs = [8, 20, 40, 70]
         last: HttpResponse | None = None
+        proxies = self._proxies()
         for attempt in range(retries):
             self._throttle()
             try:
                 client = self._get_session()
-                resp = client.get(
-                    url,
-                    headers=self._headers(),
-                    timeout=float(self.config.get("HTTP_TIMEOUT", 30)),
-                    allow_redirects=True,
-                )
+                req_kw: dict = {
+                    "headers": self._headers(),
+                    "timeout": float(self.config.get("HTTP_TIMEOUT", 30)),
+                    "allow_redirects": True,
+                }
+                if proxies:
+                    req_kw["proxies"] = proxies
+                resp = client.get(url, **req_kw)
                 last = HttpResponse(resp.status_code, resp.text, str(resp.url))
                 last.status_class = classify_failure(resp.status_code, resp.text)
                 if last.status_class == "ok":
