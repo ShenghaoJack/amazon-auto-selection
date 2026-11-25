@@ -148,7 +148,7 @@ def _try_pending(resource, log=None):
         return
     if not launch.exists():
         pending.unlink(missing_ok=True)
-        if log: log('步骤13后保留卖家精灵窗口：没有系统自动启动记录')
+        if log: log('卖家精灵步骤后保留窗口：没有系统自动启动记录')
         return
     # The resource lock protects against legacy clients that do not register leases.
     try:
@@ -162,12 +162,12 @@ def _try_pending(resource, log=None):
         if _close_verified(resource, record):
             pending.unlink(missing_ok=True)
             launch.unlink(missing_ok=True)
-            if log: log('步骤13后已关闭系统自动启动的卖家精灵 Chrome')
+            if log: log('卖家精灵步骤后已关闭系统自动启动的卖家精灵 Chrome')
         else:
             pending.unlink(missing_ok=True)
-            if log: log('步骤13后保留窗口：无法确认该 Chrome 是系统启动的目标进程')
+            if log: log('卖家精灵步骤后保留窗口：无法确认该 Chrome 是系统启动的目标进程')
     except Exception as exc:
-        if log: log('步骤13后保留窗口：浏览器身份或关闭状态无法核验 (%s)' % type(exc).__name__)
+        if log: log('卖家精灵步骤后保留窗口：浏览器身份或关闭状态无法核验 (%s)' % type(exc).__name__)
     finally:
         lock.release()
 

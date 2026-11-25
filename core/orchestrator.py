@@ -505,7 +505,13 @@ class PipelineRunner:
                     self._log_run_summary(f"步骤 {num:02d} 执行前登录检查失败")
                     return 2
                 code = self._run_one(step)
-                if num == 13 and code == 0:
+                if num in (11, 12, 13):
+                    if not self.config.dry_run:
+                        try:
+                            from core.ss_auto_close import request_close
+                            request_close(str(self.config.get('SS_CDP_URL', '') or ''), self.log.info)
+                        except Exception as exc:
+                            self.log.warning('步骤%02d结束，关闭浏览器时发生异常（不影响产物）: %s', num, type(exc).__name__)
                     self._release_ss_workflow()
                 if code == 3:
                     # ★ 等待人工确认（方案 A 的两个停点）：不是失败，正常"暂停"。
@@ -717,12 +723,12 @@ class PipelineRunner:
         self.state.mark_done(num)
         dur_text = self._step_duration_text(num)
         self.log.info(f"步骤 {num:02d} 完成(DONE)(耗时 {dur_text})")
-        if num == 13 and not self.config.dry_run:
+        if num in (11, 12, 13) and not self.config.dry_run:
             try:
                 from core.ss_auto_close import request_close
                 request_close(str(self.config.get('SS_CDP_URL', '') or ''), self.log.info)
             except Exception as exc:
-                self.log.warning('步骤13完成，关闭浏览器时发生异常（不影响产物）: %s', type(exc).__name__)
+                self.log.warning('步骤%02d完成，关闭浏览器时发生异常（不影响产物）: %s', num, type(exc).__name__)
         self._log_step_usage(num, "DONE")
         self._sync_after_step(step)
         if num == 8 and not getattr(self, "_refreshing_keywords", False):
@@ -972,6 +978,12 @@ class PipelineRunner:
         try:
             return self._run_single_impl(num)
         finally:
+            if not self.config.dry_run:
+                try:
+                    from core.ss_auto_close import request_close
+                    request_close(str(self.config.get('SS_CDP_URL', '') or ''), self.log.info)
+                except Exception as exc:
+                    self.log.warning('步骤%02d结束，关闭浏览器时发生异常（不影响产物）: %s', num, type(exc).__name__)
             self._release_ss_workflow()
 
     def _run_single_impl(self, num: int) -> int:
