@@ -505,7 +505,7 @@ class PipelineRunner:
                     self._log_run_summary(f"步骤 {num:02d} 执行前登录检查失败")
                     return 2
                 code = self._run_one(step)
-                if num in (11, 12, 13):
+                if num in (0, 11, 12, 13):
                     if not self.config.dry_run:
                         try:
                             from core.ss_auto_close import request_close
@@ -723,7 +723,7 @@ class PipelineRunner:
         self.state.mark_done(num)
         dur_text = self._step_duration_text(num)
         self.log.info(f"步骤 {num:02d} 完成(DONE)(耗时 {dur_text})")
-        if num in (11, 12, 13) and not self.config.dry_run:
+        if num in (0, 11, 12, 13) and not self.config.dry_run:
             try:
                 from core.ss_auto_close import request_close
                 request_close(str(self.config.get('SS_CDP_URL', '') or ''), self.log.info)
@@ -972,9 +972,10 @@ class PipelineRunner:
         self._sync_monitor_to_snapshot()
 
     def run_single(self, num: int) -> int:
-        if num not in (11, 12, 13):
+        if num not in (0, 11, 12, 13):
             return self._run_single_impl(num)
-        self._hold_ss_workflow()
+        if num in (11, 12, 13):
+            self._hold_ss_workflow()
         try:
             return self._run_single_impl(num)
         finally:
