@@ -505,7 +505,7 @@ class PipelineRunner:
                     self._log_run_summary(f"步骤 {num:02d} 执行前登录检查失败")
                     return 2
                 code = self._run_one(step)
-                if num in (0, 11, 12, 13):
+                if num in (0, 13):
                     if not self.config.dry_run:
                         try:
                             from core.ss_auto_close import request_close
@@ -528,6 +528,12 @@ class PipelineRunner:
             self._log_run_summary("被中断(Ctrl+C), 中断步骤已标记 INTERRUPTED")
             raise
         finally:
+            if getattr(self, '_ss_workflow_usage', None) is not None and not self.config.dry_run:
+                try:
+                    from core.ss_auto_close import request_close
+                    request_close(str(self.config.get('SS_CDP_URL', '') or ''), self.log.info)
+                except Exception as exc:
+                    self.log.warning('流程结束，关闭卖家精灵浏览器时发生异常（不影响产物）: %s', type(exc).__name__)
             self._release_ss_workflow()
         self._log_run_summary("全部步骤完成")
         # 耗时口径(2026-09-15 统一为"累计执行时长") : 必须与 webui 看板一致, 否则
@@ -723,7 +729,7 @@ class PipelineRunner:
         self.state.mark_done(num)
         dur_text = self._step_duration_text(num)
         self.log.info(f"步骤 {num:02d} 完成(DONE)(耗时 {dur_text})")
-        if num in (0, 11, 12, 13) and not self.config.dry_run:
+        if num in (0, 13) and not self.config.dry_run:
             try:
                 from core.ss_auto_close import request_close
                 request_close(str(self.config.get('SS_CDP_URL', '') or ''), self.log.info)
