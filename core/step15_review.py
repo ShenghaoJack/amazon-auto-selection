@@ -94,7 +94,7 @@ def decision_meta(root):
 def view(root):
     from core.step15_display import format_indicator_text, format_text
     from core.step15_trend_detail import season_google_trend_detail, trend_detail
-    from tools.step15_indicator_assessment import BUSINESS_MEANINGS
+    from tools.step15_indicator_assessment import BUSINESS_MEANINGS, summarize_four_dimensions
     path = report_path(root)
     before = revision(path)
     wb = load_workbook(path, read_only=True, data_only=True)
@@ -114,6 +114,7 @@ def view(root):
     result["趋势明细"] = {r["指标"]: detail for r in result["指标"]
                           if r.get("指标") in ("趋势方向（站内）", "趋势方向（Google）")
                           if (detail := trend_detail(r)) is not None}
+    result["四维度拆解"] = summarize_four_dimensions(result["指标"])
     season_google = season_google_trend_detail(root, result["指标"])
     if season_google is not None:
         result["季节Google趋势"] = season_google

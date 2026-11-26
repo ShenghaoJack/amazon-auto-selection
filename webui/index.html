@@ -2527,8 +2527,19 @@ async function loadMarketReport() {
       if (current) chunks.push(current);
       return chunks.length ? chunks.map(s => `<p>${safe(s)}</p>`).join("") : "<p>暂无 AI 建议。</p>";
     };
+    const fourDimSection = () => {
+      const fd = data["四维度拆解"];
+      const items = fd && Array.isArray(fd["维度明细"]) ? fd["维度明细"] : [];
+      if (!items.length) return "";
+      const refTier = String(fd["参考档位"] || "").trim();
+      const refReasons = (Array.isArray(fd["触发依据"]) ? fd["触发依据"] : []).map(x => String(x || "").trim()).filter(Boolean).join("；");
+      const note = refTier ? `<p class="mr-ai-empty" style="margin-top:6px">规则判定参考：${safe(currencyText(refTier))}${refReasons ? `（${safe(currencyText(refReasons))}）` : ""}</p>` : "";
+      const rowsHtml = items.map(it => `<tr><td>${safe(it["维度"] || "")}</td><td>${safe(it["评级"] || "")}</td><td>${safe(currencyText(it["核心证据"] || ""))}</td></tr>`).join("");
+      return `<section class="mr-ai-section"><h4>四维度判定拆解</h4><div class="mr-table-wrap"><table class="mr-table"><colgroup><col style="width:24%"><col style="width:18%"><col style="width:58%"></colgroup><thead><tr><th scope="col">评估维度</th><th scope="col">评级</th><th scope="col">核心证据</th></tr></thead><tbody>${rowsHtml}</tbody></table></div>${note}</section>`;
+    };
     const aiSections = () => {
       let content = `<section class="mr-ai-section"><h4>能否进入</h4>${paragraphs(ai && ai["内容"])}</section>`;
+      content += fourDimSection();
       for (const label of ["主要依据", "主要风险", "待验证"]) {
         const items = details.filter(x => x["项目"] === label && String(x["内容"] || "").trim());
         const heading = label === "主要依据" ? "主要依据：市场需求与竞争格局" : label === "待验证" ? "下一步怎么办（待验证）" : label;

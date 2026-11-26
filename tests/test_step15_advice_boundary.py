@@ -9,6 +9,7 @@ from tools.step15_indicator_assessment import (
     _summarize_assessment,
     advice,
     build_advice_prompt,
+    summarize_four_dimensions,
 )
 
 
@@ -218,3 +219,37 @@ def test_prompt_json_structure_and_bare_label_rejection():
     ai_row = next(r for r in out if r["项目"] == "AI建议")
     assert ai_row["内容"].startswith("暂不建议进入：")
     assert len(ai_row["内容"]) > 40
+
+
+def test_pdf_renders_four_dimension_breakdown_table():
+    from core.step15_pdf import render_html
+
+    rows = _ice_cream_rows()
+    four_dim = summarize_four_dimensions(rows)
+    assert four_dim["参考档位"] == "暂不建议进入"
+    assert [d["维度"] for d in four_dim["维度明细"]] == [
+        "A. 需求底盘",
+        "B. 垄断与自营控盘",
+        "C. 评价与冷启动壁垒",
+        "D. 新品窗口与本土身份",
+    ]
+    assert four_dim["维度明细"][1]["评级"] == "重度（极端）"
+
+    html = render_html("Ice_Cream_Machines-US-202610", {
+        "指标": rows,
+        "建议": [{"项目": "AI建议", "内容": "暂不建议进入：B与C双维重度封锁。"}],
+        "趋势明细": {},
+    })
+    assert "四维度判定拆解" in html
+    assert "A. 需求底盘" in html
+    assert "B. 垄断与自营控盘" in html
+    assert "C. 评价与冷启动壁垒" in html
+    assert "D. 新品窗口与本土身份" in html
+    assert "重度（极端）" in html
+    assert "规则判定参考：暂不建议进入" in html
+
+    from pathlib import Path
+    webui_html = Path("webui/index.html").read_text(encoding="utf-8")
+    assert 'data["四维度拆解"]' in webui_html
+    assert "四维度判定拆解" in webui_html
+    assert "规则判定参考：" in webui_html

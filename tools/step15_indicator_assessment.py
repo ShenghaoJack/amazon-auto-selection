@@ -598,9 +598,13 @@ def _summarize_assessment(rows: list[dict]) -> dict:
 
     dimensions = {
         "A_需求底盘": {"评级": demand_level, "达标数": f"{d['达标']}/{d_decided}", "不达标项": d["不达标项"]},
-        "B_垄断与自营控盘": {"评级": monopoly_level, "说明": monopoly_notes},
-        "C_评价与冷启动壁垒": {"评级": barrier_level, "说明": barrier_notes},
-        "D_新品窗口与本土身份": {"新品窗口": window_level, "本土身份提醒": local_note or "本土卖家占比达标或未触发提醒"},
+        "B_垄断与自营控盘": {"评级": monopoly_level, "是否极端": extreme_monopoly, "说明": monopoly_notes},
+        "C_评价与冷启动壁垒": {"评级": barrier_level, "是否极端": extreme_review_barrier, "说明": barrier_notes},
+        "D_新品窗口与本土身份": {
+            "新品窗口": window_level,
+            "新品信号": str(win_row.get("实际值") or "").strip(),
+            "本土身份提醒": local_note or "本土卖家占比达标或未触发提醒",
+        },
     }
 
     return {
@@ -608,6 +612,51 @@ def _summarize_assessment(rows: list[dict]) -> dict:
         "四维度评估": dimensions,
         "突出不达标项": severe_fails,
         "判定边界参考": {"参考档位": tier, "触发依据": reasons},
+    }
+
+
+def summarize_four_dimensions(rows) -> dict:
+    """生成可直接用于步骤15报告/PDF展示的确定性四维度判定拆解。"""
+    summary = _summarize_assessment(rows)
+    dims = summary["四维度评估"]
+    ref = summary["判定边界参考"]
+
+    a = dims["A_需求底盘"]
+    a_grade = f"{a['评级']}（{a['达标数']}）" if a.get("达标数") and a["评级"] != "数据不足" else a["评级"]
+    if a["不达标项"]:
+        a_ev = f"不达标项：{'、'.join(a['不达标项'])}"
+    elif a["评级"] == "数据不足":
+        a_ev = "需求端有效判定指标不足"
+    else:
+        a_ev = "核心词、客单价、需求量、GMV 与趋势指标均达标"
+
+    b = dims["B_垄断与自营控盘"]
+    b_grade = f"{b['评级']}（极端）" if b.get("是否极端") else b["评级"]
+    b_ev = "；".join(b["说明"]) if b.get("说明") else "头部链接/品牌/卖家集中度与 VC/AMZ 占比均可控"
+
+    c = dims["C_评价与冷启动壁垒"]
+    c_grade = f"{c['评级']}（极端）" if c.get("是否极端") else c["评级"]
+    c_ev = "；".join(c["说明"]) if c.get("说明") else "评论壁垒、大卖占比、老品占比与评分均可控"
+
+    d = dims["D_新品窗口与本土身份"]
+    d_parts = []
+    if d.get("新品信号"):
+        d_parts.append(d["新品信号"])
+    elif d["新品窗口"] == "未知":
+        d_parts.append("新品窗口数据待确认")
+    if d.get("本土身份提醒"):
+        d_parts.append(d["本土身份提醒"])
+    d_ev = "；".join(d_parts) if d_parts else "新品切入窗口可控"
+
+    return {
+        "参考档位": ref["参考档位"],
+        "触发依据": ref["触发依据"],
+        "维度明细": [
+            {"维度": "A. 需求底盘", "评级": a_grade, "核心证据": a_ev},
+            {"维度": "B. 垄断与自营控盘", "评级": b_grade, "核心证据": b_ev},
+            {"维度": "C. 评价与冷启动壁垒", "评级": c_grade, "核心证据": c_ev},
+            {"维度": "D. 新品窗口与本土身份", "评级": d["新品窗口"], "核心证据": d_ev},
+        ],
     }
 
 
@@ -657,7 +706,7 @@ def build_advice_prompt(ctx, rows):
               "原则上遵循数据中‘判定边界参考’给出的参考档位；若因指标间存在压倒性抵消确需调整一档，必须在建议中明确给出定量理由。"
               "【输出格式与稳定篇幅硬性要求】："
               "建议：必须严格以‘可进入：’‘低风险条件进入：’‘高风险条件进入：’‘暂不建议进入：’或‘数据不足无法判断：’之一开头，紧跟一段80-140字完整判断，"
-              "依次包含：①分板块达标概览（需求端X/Y达标、竞争端A/B达标）；②决定该档位的2-4个最关键指标及实际值；③明确行动边界"
+              "依次包含：①按四维度串联判定原因（A需求底盘/B垄断控盘/C评价壁垒/D新品窗口定级）及分板块达标概览（需求端X/Y达标、竞争端A/B达标）；②决定该档位的2-4个最关键指标及实际值；③明确行动边界"
               "（可进入→首选切入方向；低风险条件进入→必须同时满足的1-2个常规差异化/供应链前提；高风险条件进入→核心高风险压制点及必须先人工核实的关键前提，如排除大牌/自营造成的伪新品窗口；暂不建议进入→核心阻断因素及仅在何种极高门槛下才值得复评；数据不足→缺失关键项）。"
               "严禁只输出孤立的结论标签（如仅写‘低风险条件进入’或‘高风险条件进入’），严禁超过180字。"
               "主要依据：严格输出2条，第1条以‘市场需求：’开头、第2条以‘竞争格局：’开头，每条90-160字；先交代本板块达标数，再综合核心达标项与不达标项的证据与矛盾点；"

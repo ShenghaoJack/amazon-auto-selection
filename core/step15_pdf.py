@@ -108,7 +108,7 @@ def _render_season_google_svg(chart):
 
 
 def render_html(cat, data):
-    from tools.step15_indicator_assessment import BUSINESS_MEANINGS
+    from tools.step15_indicator_assessment import BUSINESS_MEANINGS, summarize_four_dimensions
     rows = data.get("指标") or []
     advice = data.get("建议") or []
     unit = next((str(r.get("单位") or "").split("/")[0] for r in rows if r.get("指标") == "类目GMV估算"), "")
@@ -139,6 +139,22 @@ def render_html(cat, data):
                 parts.append("<p class='note'>暂无单独记录；旧报告可重新运行步骤15生成。</p>")
             elif key == "AI建议":
                 parts.extend(f"<p>{_text(money(v))}</p>" for v in values)
+                four_dim = data.get("四维度拆解") or (summarize_four_dimensions(rows) if rows else None)
+                if isinstance(four_dim, dict) and four_dim.get("维度明细"):
+                    parts.append("<h3>四维度判定拆解</h3><table><colgroup><col style='width:24%'><col style='width:18%'><col style='width:58%'></colgroup>"
+                                 "<thead><tr><th>评估维度</th><th>评级</th><th>核心证据</th></tr></thead><tbody>")
+                    for item in four_dim["维度明细"]:
+                        parts.append(
+                            "<tr>"
+                            + "".join(f"<td>{_text(money(item.get(col, '')))}</td>" for col in ("维度", "评级", "核心证据"))
+                            + "</tr>"
+                        )
+                    parts.append("</tbody></table>")
+                    ref_tier = str(four_dim.get("参考档位") or "").strip()
+                    ref_reasons = "；".join(str(x) for x in (four_dim.get("触发依据") or []) if str(x).strip())
+                    if ref_tier:
+                        note_line = f"规则判定参考：{ref_tier}" + (f"（{ref_reasons}）" if ref_reasons else "")
+                        parts.append(f"<p class='note'>{_text(money(note_line))}</p>")
             else:
                 parts.append("<ul>" + "".join(f"<li>{_text(money(v))}</li>" for v in values) + "</ul>")
     parts.append("<h2>指标明细</h2>")
