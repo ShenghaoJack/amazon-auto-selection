@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 import math
 from decimal import Decimal
 import pandas as pd
@@ -193,7 +194,7 @@ _BARRIER_METRICS = {
 _WINDOW_METRICS = {"新卖家占比", "新卖家占比/存活率"}
 _LOCAL_METRICS = {"本土卖家占比", "卖家地分布"}
 _COMP_METRICS = _MONOPOLY_METRICS | _BARRIER_METRICS | _WINDOW_METRICS | _LOCAL_METRICS | {"卖家总数"}
-_ADVICE_TIERS = ("可进入", "有条件进入", "暂不建议进入", "数据不足无法判断")
+_ADVICE_TIERS = ("可进入", "低风险条件进入", "高风险条件进入", "有条件进入", "暂不建议进入", "数据不足无法判断")
 
 _DEFAULT_LIMITS = {
     "头部链接销售额占比": 60.0,
@@ -273,6 +274,12 @@ def _summarize_assessment(rows: list[dict]) -> dict:
     review_fail = False
     review_val = None
     review_lim = 5000.0
+    vc_fail = False
+    vc_val = None
+    vc_lim = 20.0
+    concentration_fail = False
+    extreme_monopoly = False
+    extreme_monopoly_notes: list[str] = []
 
     local_note = ""
 
@@ -315,11 +322,18 @@ def _summarize_assessment(rows: list[dict]) -> dict:
                 monopoly_fail += 1
                 monopoly_level = bump(monopoly_level, "轻度")
                 if name == "VC卖家占比" and val is not None:
+                    vc_fail, vc_val, vc_lim = True, val, (lim or 20.0)
+                    extreme_vc = max(70.0, lim * 3.5) if lim > 0 else 70.0
                     heavy_vc = max(50.0, lim * 2.5) if lim > 0 else 50.0
                     mid_vc = max(35.0, lim * 1.75) if lim > 0 else 35.0
                     if val >= heavy_vc:
                         monopoly_level = bump(monopoly_level, "重度")
-                        note = f"VC/AMZ近似自营重度控盘({val:.1f}%≥{heavy_vc:g}%)"
+                        if val >= extreme_vc:
+                            extreme_monopoly = True
+                            note = f"VC/AMZ近似自营极端控盘({val:.1f}%≥{extreme_vc:g}%)"
+                            extreme_monopoly_notes.append(note)
+                        else:
+                            note = f"VC/AMZ近似自营重度控盘({val:.1f}%≥{heavy_vc:g}%)"
                         monopoly_notes.append(note)
                         severe_fails.append(note)
                     elif val >= mid_vc:
@@ -328,11 +342,18 @@ def _summarize_assessment(rows: list[dict]) -> dict:
                     else:
                         monopoly_notes.append(f"VC/AMZ近似自营略超标({val:.1f}%)")
                 elif name in ("头部品牌集中度", "卖家集中度") and val is not None:
+                    concentration_fail = True
+                    extreme_c = lim + 25.0 if lim > 0 else 85.0
                     heavy_c = lim + 15.0 if lim > 0 else 75.0
                     mid_c = lim + 10.0 if lim > 0 else 70.0
                     if val >= heavy_c:
                         monopoly_level = bump(monopoly_level, "重度")
-                        note = f"{name}重度集中({val:.1f}%≥{heavy_c:g}%)"
+                        if val >= extreme_c:
+                            extreme_monopoly = True
+                            note = f"{name}极端垄断({val:.1f}%≥{extreme_c:g}%)"
+                            extreme_monopoly_notes.append(note)
+                        else:
+                            note = f"{name}重度集中({val:.1f}%≥{heavy_c:g}%)"
                         monopoly_notes.append(note)
                         severe_fails.append(note)
                     elif val >= mid_c:
@@ -341,10 +362,16 @@ def _summarize_assessment(rows: list[dict]) -> dict:
                     else:
                         monopoly_notes.append(f"{name}轻度超标({val:.1f}%)")
                 elif name == "头部链接销售额占比" and val is not None:
+                    extreme_l = lim + 20.0 if lim > 0 else 80.0
                     heavy_l = lim + 10.0 if lim > 0 else 70.0
                     if val >= heavy_l:
                         monopoly_level = bump(monopoly_level, "重度")
-                        note = f"头部链接销售额占比高度集中({val:.1f}%≥{heavy_l:g}%)"
+                        if val >= extreme_l:
+                            extreme_monopoly = True
+                            note = f"头部链接销售额占比极端集中({val:.1f}%≥{extreme_l:g}%)"
+                            extreme_monopoly_notes.append(note)
+                        else:
+                            note = f"头部链接销售额占比高度集中({val:.1f}%≥{heavy_l:g}%)"
                         monopoly_notes.append(note)
                         severe_fails.append(note)
                     else:
@@ -360,11 +387,15 @@ def _summarize_assessment(rows: list[dict]) -> dict:
                 barrier_level = bump(barrier_level, "轻度")
                 if name == "评论壁垒" and val is not None:
                     review_fail, review_val, review_lim = True, val, (lim or 5000.0)
+                    extreme_r = review_lim * 4.0
                     heavy_r = review_lim * 2.0
                     mid_r = review_lim * 1.3
                     if val >= heavy_r:
                         barrier_level = bump(barrier_level, "重度")
-                        note = f"评论壁垒重度高企({int(round(val))}条≥{int(round(heavy_r))})"
+                        if val >= extreme_r:
+                            note = f"评论壁垒极端高企({int(round(val))}条≥{int(round(extreme_r))})"
+                        else:
+                            note = f"评论壁垒重度高企({int(round(val))}条≥{int(round(heavy_r))})"
                         barrier_notes.append(note)
                         severe_fails.append(note)
                     elif val >= mid_r:
@@ -416,9 +447,20 @@ def _summarize_assessment(rows: list[dict]) -> dict:
             elif name in ("趋势方向（站内）", "趋势方向（Google）") and val is not None:
                 severe_fails.append(f"{name}显著下滑({val:+.1f}%)")
 
-    # 同维叠加修正：垄断维 ≥2 项不达标至少为中度；大卖偏高(≥+15pct)叠加高评论(≥1.6×阈值)升为重度壁垒
+    # 同维叠加修正：
+    # 1) 垄断维 ≥2 项不达标至少为中度；若 VC≥40%(≥2×阈值) 且叠加品牌/卖家集中度不达标，升为重度控盘
     if monopoly_fail >= 2:
         monopoly_level = bump(monopoly_level, "中度")
+    if vc_fail and concentration_fail and vc_val is not None:
+        vc_combo_heavy = max(40.0, vc_lim * 2.0)
+        if vc_val >= vc_combo_heavy and monopoly_level != "重度":
+            monopoly_level = bump(monopoly_level, "重度")
+            combo_note = f"VC/AMZ占比高({vc_val:.1f}%≥{vc_combo_heavy:g}%)叠加头部集中度超标构成重度控盘"
+            if combo_note not in monopoly_notes:
+                monopoly_notes.append(combo_note)
+            if combo_note not in severe_fails:
+                severe_fails.append(combo_note)
+    # 2) 大卖偏高(≥+15pct)叠加高评论(≥1.6×阈值)升为重度壁垒
     if big_seller_fail and review_fail:
         barrier_level = bump(barrier_level, "中度")
         if (
@@ -457,17 +499,28 @@ def _summarize_assessment(rows: list[dict]) -> dict:
     else:
         demand_level = "健康"
 
-    # 维度 D（新品窗口）评级
+    # 维度 D（新品窗口）评级：若新品卖家数达标但新品销额占比 < 15%，标记为「弱窗口」（新卖家多但抢不到销量）
     win_row = by_name.get("新卖家占比") or by_name.get("新卖家占比/存活率") or {}
     win_status = str(win_row.get("判定") or "").strip()
+    win_rev_share = None
+    m_share = re.search(r"新品销额占比\s*([0-9]+(?:\.[0-9]+)?)\s*%", str(win_row.get("实际值") or ""))
+    if m_share:
+        try:
+            win_rev_share = float(m_share.group(1))
+        except ValueError:
+            win_rev_share = None
     if win_status == "达标":
-        window_level = "有窗口"
+        window_level = "弱窗口" if (win_rev_share is not None and win_rev_share < 15.0) else "有窗口"
     elif win_status == "不达标":
         window_level = "无窗口"
     else:
         window_level = "未知"
 
-    # 四档判定边界（完全基于 A/B/C/D 四维度，不机械数总项数）
+    extreme_review_barrier = bool(
+        review_fail and review_val is not None and review_val >= review_lim * 4.0
+    )
+
+    # 五档判定边界（完全基于 A/B/C/D 四维度，不机械数总项数）
     reasons: list[str] = []
     if (
         total_judgeable == 0
@@ -487,9 +540,30 @@ def _summarize_assessment(rows: list[dict]) -> dict:
         reasons.append(
             f"维度B垄断/自营重度控盘({'；'.join(monopoly_notes[:3])}) 叠加 维度C评价壁垒重度({'；'.join(barrier_notes[:2])})"
         )
+    elif extreme_review_barrier and monopoly_level in ("中度", "重度"):
+        tier = "暂不建议进入"
+        reasons.append(
+            f"评论壁垒极端高企({int(round(review_val))}条≥4×阈值) 叠加 维度B垄断/自营{monopoly_level}控盘({'；'.join(monopoly_notes[:2])})"
+        )
+    elif extreme_monopoly and (barrier_level in ("中度", "重度") or window_level in ("弱窗口", "无窗口")):
+        tier = "暂不建议进入"
+        reasons.append(
+            f"维度B极端控盘/垄断({'；'.join(extreme_monopoly_notes[:2])}) 叠加 维度C评价壁垒={barrier_level}/维度D={window_level}"
+        )
     elif (monopoly_level == "重度" or barrier_level == "重度") and window_level == "无窗口":
         tier = "暂不建议进入"
         reasons.append(f"存在重度壁垒(垄断={monopoly_level}/评价={barrier_level})且维度D缺乏新品切入窗口")
+    elif (
+        window_level == "弱窗口"
+        and (
+            (monopoly_level == "重度" and barrier_level == "中度")
+            or (barrier_level == "重度" and monopoly_level == "中度")
+        )
+    ):
+        tier = "暂不建议进入"
+        reasons.append(
+            f"存在重度+中度叠加壁垒(垄断={monopoly_level}/评价={barrier_level})且维度D仅为弱新品窗口(新品销额占比{win_rev_share:.1f}%<15%)"
+        )
     elif (
         demand_level in ("健康", "偏弱")
         and d["不达标"] <= 1
@@ -502,10 +576,24 @@ def _summarize_assessment(rows: list[dict]) -> dict:
         reasons.append(
             f"维度A需求{demand_level}({d['达标']}/{d_decided})，维度B垄断({monopoly_level})与维度C壁垒({barrier_level})均可控且存在新品窗口"
         )
+    elif extreme_monopoly or extreme_review_barrier or monopoly_level == "重度" or barrier_level == "重度":
+        tier = "高风险条件进入"
+        if extreme_monopoly:
+            reasons.append(
+                f"维度B极端控盘/垄断({'；'.join(extreme_monopoly_notes[:2])})，虽维度C={barrier_level}且维度D={window_level}未触发双维封锁，但仍属高风险博弈，须人工核查新品窗口是否由第三方新卖家而非头部大牌/自营贡献"
+            )
+        elif extreme_review_barrier:
+            reasons.append(
+                f"维度C评论壁垒极端高企({int(round(review_val))}条≥4×阈值)，虽维度B={monopoly_level}且维度D={window_level}，仍属高风险冷启动，须核查差异化切入与价格带空间"
+            )
+        else:
+            reasons.append(
+                f"存在单维重度压力(维度B垄断={monopoly_level}/维度C壁垒={barrier_level})，虽另一维可控且维度D={window_level}，仍属高风险条件进入，须人工核查渠道/BuyBox/伪新品窗口风险"
+            )
     else:
-        tier = "有条件进入"
+        tier = "低风险条件进入"
         reasons.append(
-            f"维度A需求{demand_level}({d['达标']}/{d_decided})，维度B垄断({monopoly_level})/维度C壁垒({barrier_level})存在局部压力但未双维重度封锁，维度D={window_level}"
+            f"维度A需求{demand_level}({d['达标']}/{d_decided})，维度B垄断({monopoly_level})/维度C壁垒({barrier_level})存在中度或局部压力但无重度/极端封锁，维度D={window_level}"
         )
 
     dimensions = {
@@ -558,19 +646,20 @@ def build_advice_prompt(ctx, rows):
               "季节性以达标核心词的逐月搜索量合计计算两年峰谷比并判断；单词峰谷比只作细分参考，不得据此推翻整体判定。"
               "不得依据显示取整值改写指标判定。金额统一使用明确的ISO币种代码（例如 USD 2.48），金额较大时用 M 或 B，不得换算汇率。"
               "【指标名称严格对齐】输出中引用任何指标时，必须严格使用下方「指标」数组中的完整指标名称（例如使用‘上架超3年链接销额占比’而非‘老品占比’，使用‘头部链接销售额占比’而非‘头部链接占比’，使用‘新卖家占比’而非‘新卖家窗口’），确保正文与报告指标明细表逐字一致。"
-              "【四维度×四档结论判定边界（按独立业务维度而非机械数项数判定，禁止将双维重度封锁类目放宽为‘有条件进入’）】："
-              "四维度=A需求底盘（健康/偏弱/不成立）、B垄断与自营控盘（含头部链接销售额占比/头部品牌集中度/卖家集中度与VC卖家占比；VC卖家占比≥50%或≥2.5×阈值即属重度控盘；品牌/卖家集中度≥阈值+15pct即重度集中）、"
-              "C评价与冷启动壁垒（含大卖占比/评论壁垒/上架超3年链接销额占比/评分；评论壁垒≥2×阈值或大卖占比偏高叠加高评论壁垒即重度壁垒）、D新品窗口（新卖家占比为主信号，本土卖家占比为辅助提醒）。"
+              "【四维度×五档结论判定边界（按独立业务维度而非机械数项数判定，禁止将双维重度封锁类目放宽为‘低风险条件进入’或‘高风险条件进入’）】："
+              "四维度=A需求底盘（健康/偏弱/不成立）、B垄断与自营控盘（含头部链接销售额占比/头部品牌集中度/卖家集中度与VC卖家占比；VC卖家占比≥50%或≥2.5×阈值，或VC≥40%叠加品牌/卖家集中度超标均属重度控盘；品牌/卖家集中度≥阈值+15pct即重度集中；VC≥70%或品牌/卖家集中度≥85%或头部链接≥80%属极端控盘/垄断）、"
+              "C评价与冷启动壁垒（含大卖占比/评论壁垒/上架超3年链接销额占比/评分；评论壁垒≥2×阈值或大卖占比偏高叠加高评论壁垒即重度壁垒，评论壁垒≥4×阈值属极端壁垒）、D新品窗口（新卖家占比为主信号，若新品卖家数达标但新品销额占比<15%属弱窗口；本土卖家占比为辅助提醒）。"
               "1) 数据不足无法判断：有效已判定指标不足50%，或任一核心维度缺少有效判定；"
-              "2) 暂不建议进入：满足任一即归入本档——①A需求底盘不成立；②B垄断/自营控盘与C评价壁垒双双为重度（例如VC/AMZ≥50%叠加评论破万或寡头垄断叠加高壁垒）；③B或C任一为重度且D无新品窗口；"
+              "2) 暂不建议进入：满足任一即归入本档——①A需求底盘不成立；②B垄断/自营控盘与C评价壁垒双双为重度；③评论壁垒极端高企(≥4×阈值)叠加B达中度及以上，或B极端控盘/垄断叠加C达中度及以上(或D为弱/无窗口)；④B或C任一为重度且D无新品窗口，或重度+中度叠加且D仅为弱窗口(新品销额占比<15%)；"
               "3) 可进入：A健康或仅1项次要需求指标偏弱且站内趋势达标、B与C均不超过轻度、且D不缺新品窗口；"
-              "4) 有条件进入：仅适用于中间态——需求成立、未触发双维重度封锁或‘重度+无窗口’，但B或C存在中度或单维重度压力且D有新品窗口。"
+              "4) 低风险条件进入：常规中间态——需求成立、B与C均未达到重度或极端（最高为中度压力），需结合差异化/供应链条件进入；"
+              "5) 高风险条件进入：高门槛强警示中间态——需求成立且未触发‘暂不建议进入’，但B或C存在单维重度或单维极端控盘/壁垒压力（仅靠另一维可控与新品窗口保留空间）；须明确提示人工复核‘新品窗口是否由第三方新卖家而非头部大牌/自营贡献’及价格带/BuyBox/专利壁垒。"
               "原则上遵循数据中‘判定边界参考’给出的参考档位；若因指标间存在压倒性抵消确需调整一档，必须在建议中明确给出定量理由。"
               "【输出格式与稳定篇幅硬性要求】："
-              "建议：必须严格以‘可进入：’‘有条件进入：’‘暂不建议进入：’或‘数据不足无法判断：’之一开头，紧跟一段80-140字完整判断，"
+              "建议：必须严格以‘可进入：’‘低风险条件进入：’‘高风险条件进入：’‘暂不建议进入：’或‘数据不足无法判断：’之一开头，紧跟一段80-140字完整判断，"
               "依次包含：①分板块达标概览（需求端X/Y达标、竞争端A/B达标）；②决定该档位的2-4个最关键指标及实际值；③明确行动边界"
-              "（可进入→首选切入方向；有条件进入→必须同时满足的1-2个硬性前提；暂不建议进入→核心阻断因素及仅在何种极高门槛下才值得复评；数据不足→缺失关键项）。"
-              "严禁只输出孤立的结论标签（如仅写‘有条件进入’），严禁超过180字。"
+              "（可进入→首选切入方向；低风险条件进入→必须同时满足的1-2个常规差异化/供应链前提；高风险条件进入→核心高风险压制点及必须先人工核实的关键前提，如排除大牌/自营造成的伪新品窗口；暂不建议进入→核心阻断因素及仅在何种极高门槛下才值得复评；数据不足→缺失关键项）。"
+              "严禁只输出孤立的结论标签（如仅写‘低风险条件进入’或‘高风险条件进入’），严禁超过180字。"
               "主要依据：严格输出2条，第1条以‘市场需求：’开头、第2条以‘竞争格局：’开头，每条90-160字；先交代本板块达标数，再综合核心达标项与不达标项的证据与矛盾点；"
               "数据中列出的全部‘突出不达标项’必须在对应板块中逐一正面提及，严禁遗漏（尤其是VC/AMZ近似自营占比、品牌/卖家集中度、评论壁垒等）。"
               "主要风险：仅从市场需求与竞争格局两方面按严重度从高到低输出3-5条（确实无风险时可少于3条或空数组），每条45-90字，"

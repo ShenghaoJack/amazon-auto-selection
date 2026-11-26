@@ -513,9 +513,26 @@ class Step12CompetitorSubmit(BaseStep):
                 time.sleep(self._RENDER_WAIT)                 # 取消勾选后等列表刷新
                 self._check_quota(ctx, page)  # 配额提示"当天剩余0次"→ 抛 QuotaExhausted 换号
                 submission_may_exist = True  # 导出点击可能立即生效；失败后不可盲目重试
-                self._click_export(ctx, page)
-                time.sleep(self._RENDER_WAIT)                 # 点导出后等弹窗渲染
-                self._handle_export_dialog(ctx, page, first_group=is_first_group)
+                export_click_at = datetime.now()
+                try:
+                    self._click_export(ctx, page)
+                    time.sleep(self._RENDER_WAIT)                 # 点导出后等弹窗渲染
+                    self._handle_export_dialog(ctx, page, first_group=is_first_group)
+                except Exception as click_exc:
+                    # 点击或弹窗处理超时时，先自动核对一次「我的导出」：若任务已真实创建则直接认领，避免无谓卡死人工
+                    try:
+                        recovered = self._wait_export_task_created(
+                            ctx, b, page, month, export_click_at, previous_names=previous_names
+                        )
+                    except Exception:
+                        recovered = None
+                    if recovered:
+                        self.log(
+                            ctx,
+                            f"导出点击/弹窗出现异常({click_exc})，但已在'我的导出'确认任务已生成: {recovered}，自动认领继续",
+                        )
+                        return recovered
+                    raise
                 # 2026-09-10: 点击导出后必须确认任务**真实创建**在"我的导出"里, 否则视为提交未生效;
                 # 不再用兜底任务名当成功(会掩盖"导出没生效" → 下游 step13 拿到空数据)。
                 # 校验口径与步骤13 完全一致(来源=查竞品 + 任务名含目标月 + 时间>=本次提交-90s),
@@ -795,8 +812,9 @@ class Step12CompetitorSubmit(BaseStep):
                 if any(w in text for w in excluded):
                     continue
                 # 2026-09-16: 先退遮挡(被顶栏菜单/弹层盖住时原来会白等 10 秒), 再命中判定点击
+                # 2026-11-26: 卖家精灵前端/tooltip 偶发主线程卡顿超过 6 秒，超时放宽至 15000ms
                 park_mouse(page)
-                node.click(timeout=6000)
+                node.click(timeout=15000)
                 self.log(ctx, f"已点击导出: {text}")
                 park_mouse(page)
                 return
