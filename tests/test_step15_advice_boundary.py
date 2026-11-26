@@ -228,12 +228,13 @@ def test_pdf_renders_four_dimension_breakdown_table():
     four_dim = summarize_four_dimensions(rows)
     assert four_dim["参考档位"] == "暂不建议进入"
     assert [d["维度"] for d in four_dim["维度明细"]] == [
-        "A. 需求底盘",
+        "A1. 需求底盘（规模与趋势）",
+        "A2. 经营约束（CPC/客单/季节）",
         "B. 垄断与自营控盘",
         "C. 评价与冷启动壁垒",
         "D. 新品窗口与本土身份",
     ]
-    assert four_dim["维度明细"][1]["评级"] == "极端"
+    assert four_dim["维度明细"][2]["评级"] == "极端"
 
     html = render_html("Ice_Cream_Machines-US-202610", {
         "指标": rows,
@@ -241,7 +242,8 @@ def test_pdf_renders_four_dimension_breakdown_table():
         "趋势明细": {},
     })
     assert "四维度判定拆解" in html
-    assert "A. 需求底盘" in html
+    assert "A1. 需求底盘（规模与趋势）" in html
+    assert "A2. 经营约束（CPC/客单/季节）" in html
     assert "B. 垄断与自营控盘" in html
     assert "C. 评价与冷启动壁垒" in html
     assert "D. 新品窗口与本土身份" in html
@@ -253,3 +255,34 @@ def test_pdf_renders_four_dimension_breakdown_table():
     assert 'data["四维度拆解"]' in webui_html
     assert "四维度判定拆解" in webui_html
     assert "规则判定参考：" in webui_html
+
+
+def test_operating_constraints_graded_separately_from_core_demand():
+    # 核心需求 6/6 全健康 + 竞争可控，仅 3 项经营约束（CPC/客单/季节）全不达标 -> A1健康 + A2高约束 -> 高风险条件进入（不误判为需求不成立）
+    op3 = _healthy_rows()
+    for r in op3:
+        if r["指标"] in ("CPC竞价", "平均客单价", "季节波动系数"):
+            r["判定"] = "不达标"
+    res3 = _summarize_assessment(op3)
+    assert res3["四维度评估"]["A_需求底盘"]["评级"] == "健康"
+    assert res3["四维度评估"]["A2_经营约束"]["评级"] == "高约束"
+    assert res3["判定边界参考"]["参考档位"] == "高风险条件进入"
+
+    # 仅 2 项经营约束不达标 + 核心需求健康 + 竞争可控 -> A2中度约束 -> 低风险条件进入
+    op2 = _healthy_rows()
+    for r in op2:
+        if r["指标"] in ("CPC竞价", "平均客单价"):
+            r["判定"] = "不达标"
+    res2 = _summarize_assessment(op2)
+    assert res2["四维度评估"]["A_需求底盘"]["评级"] == "健康"
+    assert res2["四维度评估"]["A2_经营约束"]["评级"] == "中度约束"
+    assert res2["判定边界参考"]["参考档位"] == "低风险条件进入"
+
+    # 3 项经营约束全不达标 + 叠加竞争中度 -> 暂不建议进入
+    op3_mid = _conditional_middle_rows()
+    for r in op3_mid:
+        if r["指标"] in ("CPC竞价", "平均客单价", "季节波动系数"):
+            r["判定"] = "不达标"
+    res3_mid = _summarize_assessment(op3_mid)
+    assert res3_mid["四维度评估"]["A2_经营约束"]["评级"] == "高约束"
+    assert res3_mid["判定边界参考"]["参考档位"] == "暂不建议进入"

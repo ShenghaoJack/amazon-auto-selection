@@ -796,6 +796,11 @@ class BrowserAutomation:
                     except Exception:
                         pass
             elif self._context is not None:
+                if getattr(self, "_media_blocking_active", False):
+                    try:
+                        self._context.unroute_all(behavior="ignoreErrors")
+                    except Exception:  # noqa: BLE001 — 旧版 Playwright 或上下文已关闭时忽略
+                        pass
                 try:
                     self._context.close()
                 except Exception:

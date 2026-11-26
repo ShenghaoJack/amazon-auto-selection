@@ -992,7 +992,7 @@
       <div><input id="ncPassword" type="password" autocomplete="new-password" placeholder="请输入密码"></div></div>
     <div class="frow"><label for="ncList"><b>榜单 URL</b></label>
       <div><div class="secwrap"><input id="ncList" type="text" placeholder="https://www.amazon.com/gp/bestsellers/kitchen/123456" aria-describedby="ncListHint ncListError"></div>
-      <div id="ncListHint" class="hint">可留空。填写时请使用所选市场的 Best Sellers 短链接，新品榜由系统自动生成。</div>
+      <div id="ncListHint" class="hint">可留空。填写时请使用所选市场的 Best Sellers 短链接，多个链接请用分号 <code>;</code> 分隔，新品榜由系统自动生成。</div>
       <div id="ncListError" role="alert" style="color:var(--bad);font-size:12px;margin-top:5px"></div></div></div>
     <div class="btnbar">
       <button class="btn-sm btn-ghost" id="ncCancel">取消</button>
@@ -2323,17 +2323,23 @@ function validateNewCategoryListUrl(value, marketCode) {
   const hosts = {us:"amazon.com", uk:"amazon.co.uk", de:"amazon.de", fr:"amazon.fr",
     it:"amazon.it", es:"amazon.es", ca:"amazon.ca", jp:"amazon.co.jp", mx:"amazon.com.mx",
     br:"amazon.com.br", au:"amazon.com.au", in:"amazon.in", ae:"amazon.ae"};
-  let url;
-  try { url = new URL(value); } catch (_) { return "请输入完整的 Amazon 榜单链接，以 https:// 开头。"; }
   const host = hosts[marketCode];
-  if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.port ||
-      !host || ![host, "www." + host].includes(url.hostname.toLowerCase())) {
-    return "榜单 URL 站点与所选市场不一致，请检查链接和市场。";
-  }
-  const path = url.pathname.replace(/^\/(?:-\/)?[a-z]{2}(?:[-_][a-z]{2})?\/(?=gp\/)/i, "/");
-  if (/\/gp\/new-releases\//.test(path)) return "请填写 Best Sellers 榜单，新品榜由系统自动生成。";
-  if (url.search || url.hash || !/^\/gp\/bestsellers\/[^/?#]+\/\d+(?:\/(?:ref=[^?#]*)?)?$/.test(path)) {
-    return "格式应为 https://对应市场域名/gp/bestsellers/类目/数字节点ID。";
+  const parts = String(value).replace(/；/g, ";").split(/[;\r\n]+/).map(s => s.trim()).filter(Boolean);
+  if (!parts.length) return "";
+  for (let i = 0; i < parts.length; i++) {
+    const raw = parts[i];
+    const prefix = parts.length > 1 ? `第 ${i + 1} 条链接：` : "";
+    let url;
+    try { url = new URL(raw); } catch (_) { return prefix + "请输入完整的 Amazon 榜单链接，以 https:// 开头。"; }
+    if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.port ||
+        !host || ![host, "www." + host].includes(url.hostname.toLowerCase())) {
+      return prefix + "榜单 URL 站点与所选市场不一致，请检查链接和市场。";
+    }
+    const path = url.pathname.replace(/^\/(?:-\/)?[a-z]{2}(?:[-_][a-z]{2})?\/(?=gp\/)/i, "/");
+    if (/\/gp\/new-releases\//.test(path)) return prefix + "请填写 Best Sellers 榜单，新品榜由系统自动生成。";
+    if (url.search || url.hash || !/^\/gp\/bestsellers\/[^/?#]+\/\d+(?:\/(?:ref=[^?#]*)?)?$/.test(path)) {
+      return prefix + "格式应为 https://对应市场域名/gp/bestsellers/类目/数字节点ID。";
+    }
   }
   return "";
 }

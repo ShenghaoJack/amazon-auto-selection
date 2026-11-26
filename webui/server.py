@@ -4094,16 +4094,20 @@ class Handler(BaseHTTPRequestHandler):
             raise ValueError("请填写卖家精灵账号和密码")
         if re.search(r"[\x00-\x1f\x7f]", account + password):
             raise ValueError("卖家精灵账号和密码不能包含控制字符")
-        list_url = str(body.get("list_url") or "").strip()
-        if list_url:
+        raw_list_url = str(body.get("list_url") or "").strip()
+        list_urls = [u.strip() for u in re.split(r"[;；\r\n]+", raw_list_url) if u.strip()]
+        if list_urls:
             from steps.step00_bestsellers import Step00Bestsellers
-            problem = Step00Bestsellers._validate_bs_url(list_url)
-            if problem:
-                raise ValueError(f"榜单 URL 格式不正确: {problem}")
-            parsed_url = urlparse(list_url)
             allowed_hosts = {profile["market"], f"www.{profile['market']}"}
-            if parsed_url.netloc.lower() not in allowed_hosts:
-                raise ValueError(f"榜单 URL 站点与所选市场不一致，请使用 {profile['market']}")
+            for idx, u in enumerate(list_urls, 1):
+                prefix = f"第 {idx} 条" if len(list_urls) > 1 else ""
+                problem = Step00Bestsellers._validate_bs_url(u)
+                if problem:
+                    raise ValueError(f"{prefix}榜单 URL 格式不正确: {problem}")
+                parsed_url = urlparse(u)
+                if parsed_url.netloc.lower() not in allowed_hosts:
+                    raise ValueError(f"{prefix}榜单 URL 站点与所选市场不一致，请使用 {profile['market']}")
+        list_url = ";".join(list_urls)
         # 兼容用户输入旧式完整目录名，统一采用当前选中的市场与月份。
         cat = re.sub(r"-(?:US|USA|UK|GB|DE|FR|IT|ES|CA|JP|MX|BR|AU|IN|AE)-20\d{4}(?:\d{2})?(?:-RECENT30)?$", "", cat, flags=re.I).strip()
         if not cat:

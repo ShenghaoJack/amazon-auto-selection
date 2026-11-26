@@ -179,10 +179,15 @@ def rule_decision(rows):
     return f"已判定 {passed + failed} 项，其中 {passed} 项达标、{failed} 项不达标" + (f"；{incomplete} 项待确认或数据不足" if incomplete else "")
 
 
-_DEMAND_METRICS = {
-    "核心词搜索量", "核心词数量", "CPC竞价", "平均客单价", "月需求量估算",
-    "类目GMV估算", "趋势方向（站内）", "趋势方向（Google）", "旺季月份",
-    "淡季月份", "季节波动系数", "趋势方向",
+_DEMAND_CORE_METRICS = {
+    "核心词搜索量", "核心词数量", "月需求量估算", "类目GMV估算",
+    "趋势方向（站内）", "趋势方向（Google）", "趋势方向",
+}
+_OPERATING_CONSTRAINT_METRICS = {
+    "CPC竞价", "平均客单价", "季节波动系数",
+}
+_DEMAND_METRICS = _DEMAND_CORE_METRICS | _OPERATING_CONSTRAINT_METRICS | {
+    "旺季月份", "淡季月份",
 }
 _MONOPOLY_METRICS = {
     "头部链接销售额占比", "头部品牌集中度", "卖家集中度", "VC卖家占比",
@@ -480,10 +485,37 @@ def _summarize_assessment(rows: list[dict]) -> dict:
     total_decided = d_decided + c_decided
     total_judgeable = d_total + c_total
 
-    # 维度 A 评级
+    # 维度 A1（核心需求底盘：规模与趋势）与 A2（经营约束：CPC/客单价/季节波动）分开定级
+    core_d_pass = core_d_fail = 0
+    core_d_fail_names: list[str] = []
+    op_pass = op_fail = 0
+    op_fail_names: list[str] = []
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        rname = str(row.get("指标") or "").strip()
+        rstatus = str(row.get("判定") or "").strip()
+        if rstatus not in ("达标", "不达标"):
+            continue
+        if rname in _OPERATING_CONSTRAINT_METRICS:
+            if rstatus == "达标":
+                op_pass += 1
+            else:
+                op_fail += 1
+                op_fail_names.append(_display_metric_name(rname))
+        elif rname in _DEMAND_CORE_METRICS:
+            if rstatus == "达标":
+                core_d_pass += 1
+            else:
+                core_d_fail += 1
+                core_d_fail_names.append(_display_metric_name(rname))
+    core_d_decided = core_d_pass + core_d_fail
+    op_decided = op_pass + op_fail
+
     demand_core_fail = (
-        (d_decided > 0 and d["不达标"] * 3 >= d_decided and d["不达标"] >= 3)
+        (core_d_decided > 0 and core_d_fail >= 3)
         or (by_name.get("核心词数量", {}).get("判定") == "不达标")
+        or (by_name.get("核心词搜索量", {}).get("判定") == "不达标")
         or (by_name.get("类目GMV估算", {}).get("判定") == "不达标")
         or (
             by_name.get("趋势方向（站内）", {}).get("判定") == "不达标"
@@ -494,10 +526,19 @@ def _summarize_assessment(rows: list[dict]) -> dict:
         demand_level = "数据不足"
     elif demand_core_fail:
         demand_level = "不成立"
-    elif d["不达标"] > 0:
+    elif core_d_fail > 0:
         demand_level = "偏弱"
     else:
         demand_level = "健康"
+
+    if op_fail >= 3:
+        op_level = "高约束"
+    elif op_fail == 2:
+        op_level = "中度约束"
+    elif op_fail == 1:
+        op_level = "轻度约束"
+    else:
+        op_level = "可控"
 
     # 维度 D（新品窗口）评级：若新品卖家数达标但新品销额占比 < 15%，标记为「弱窗口」（新卖家多但抢不到销量）
     win_row = by_name.get("新卖家占比") or by_name.get("新卖家占比/存活率") or {}
@@ -520,7 +561,7 @@ def _summarize_assessment(rows: list[dict]) -> dict:
         review_fail and review_val is not None and review_val >= review_lim * 4.0
     )
 
-    # 五档判定边界（完全基于 A/B/C/D 四维度，不机械数总项数）
+    # 五档判定边界（完全基于 A1/A2/B/C/D 独立业务维度，不机械数总项数）
     reasons: list[str] = []
     if (
         total_judgeable == 0
@@ -534,7 +575,7 @@ def _summarize_assessment(rows: list[dict]) -> dict:
         reasons.append(f"有效已判定指标不足({total_decided}/{total_judgeable})")
     elif demand_level == "不成立":
         tier = "暂不建议进入"
-        reasons.append(f"维度A需求底盘不成立(不达标项: {'、'.join(d['不达标项'])})")
+        reasons.append(f"维度A1需求底盘不成立(核心不达标项: {'、'.join(core_d_fail_names or d['不达标项'])})")
     elif monopoly_level == "重度" and barrier_level == "重度":
         tier = "暂不建议进入"
         reasons.append(
@@ -564,9 +605,17 @@ def _summarize_assessment(rows: list[dict]) -> dict:
         reasons.append(
             f"存在重度+中度叠加壁垒(垄断={monopoly_level}/评价={barrier_level})且维度D仅为弱新品窗口(新品销额占比{win_rev_share:.1f}%<15%)"
         )
+    elif op_level == "高约束" and (
+        demand_level == "偏弱" or monopoly_level in ("中度", "重度") or barrier_level in ("中度", "重度")
+    ):
+        tier = "暂不建议进入"
+        reasons.append(
+            f"维度A2经营约束高({'、'.join(op_fail_names)}全不达标) 叠加 需求={demand_level}/垄断={monopoly_level}/壁垒={barrier_level}"
+        )
     elif (
         demand_level in ("健康", "偏弱")
-        and d["不达标"] <= 1
+        and (core_d_fail + op_fail) <= 1
+        and op_level in ("可控", "轻度约束")
         and by_name.get("趋势方向（站内）", {}).get("判定") != "不达标"
         and monopoly_level in ("无明显压力", "轻度")
         and barrier_level in ("无明显压力", "轻度")
@@ -574,9 +623,15 @@ def _summarize_assessment(rows: list[dict]) -> dict:
     ):
         tier = "可进入"
         reasons.append(
-            f"维度A需求{demand_level}({d['达标']}/{d_decided})，维度B垄断({monopoly_level})与维度C壁垒({barrier_level})均可控且存在新品窗口"
+            f"维度A1需求{demand_level}({core_d_pass}/{core_d_decided})、A2经营约束{op_level}，维度B垄断({monopoly_level})与维度C壁垒({barrier_level})均可控且存在新品窗口"
         )
-    elif extreme_monopoly or extreme_review_barrier or monopoly_level == "重度" or barrier_level == "重度":
+    elif (
+        extreme_monopoly
+        or extreme_review_barrier
+        or monopoly_level == "重度"
+        or barrier_level == "重度"
+        or op_level == "高约束"
+    ):
         tier = "高风险条件进入"
         if extreme_monopoly:
             reasons.append(
@@ -586,6 +641,10 @@ def _summarize_assessment(rows: list[dict]) -> dict:
             reasons.append(
                 f"维度C评论壁垒极端高企({int(round(review_val))}条≥4×阈值)，虽维度B={monopoly_level}且维度D={window_level}，仍属高风险冷启动，须核查差异化切入与价格带空间"
             )
+        elif op_level == "高约束" and monopoly_level != "重度" and barrier_level != "重度":
+            reasons.append(
+                f"维度A2经营约束高({'、'.join(op_fail_names)}全部不达标)，虽核心需求{demand_level}且竞争可控，仍属高风险条件进入，须先核算广告成本、毛利空间与备货资金周转"
+            )
         else:
             reasons.append(
                 f"存在单维重度压力(维度B垄断={monopoly_level}/维度C壁垒={barrier_level})，虽另一维可控且维度D={window_level}，仍属高风险条件进入，须人工核查渠道/BuyBox/伪新品窗口风险"
@@ -593,11 +652,12 @@ def _summarize_assessment(rows: list[dict]) -> dict:
     else:
         tier = "低风险条件进入"
         reasons.append(
-            f"维度A需求{demand_level}({d['达标']}/{d_decided})，维度B垄断({monopoly_level})/维度C壁垒({barrier_level})存在中度或局部压力但无重度/极端封锁，维度D={window_level}"
+            f"维度A1需求{demand_level}({core_d_pass}/{core_d_decided})、A2经营约束{op_level}，维度B垄断({monopoly_level})/维度C壁垒({barrier_level})存在中度或局部压力但无重度/极端封锁，维度D={window_level}"
         )
 
     dimensions = {
-        "A_需求底盘": {"评级": demand_level, "达标数": f"{d['达标']}/{d_decided}", "不达标项": d["不达标项"]},
+        "A_需求底盘": {"评级": demand_level, "达标数": f"{core_d_pass}/{core_d_decided}", "不达标项": core_d_fail_names},
+        "A2_经营约束": {"评级": op_level, "达标数": f"{op_pass}/{op_decided}", "不达标项": op_fail_names},
         "B_垄断与自营控盘": {"评级": monopoly_level, "是否极端": extreme_monopoly, "说明": monopoly_notes},
         "C_评价与冷启动壁垒": {"评级": barrier_level, "是否极端": extreme_review_barrier, "说明": barrier_notes},
         "D_新品窗口与本土身份": {
@@ -616,7 +676,7 @@ def _summarize_assessment(rows: list[dict]) -> dict:
 
 
 def summarize_four_dimensions(rows) -> dict:
-    """生成可直接用于步骤15报告/PDF展示的确定性四维度判定拆解。"""
+    """生成可直接用于步骤15报告/PDF展示的确定性维度判定拆解（含A1需求底盘与A2经营约束）。"""
     summary = _summarize_assessment(rows)
     dims = summary["四维度评估"]
     ref = summary["判定边界参考"]
@@ -628,7 +688,16 @@ def summarize_four_dimensions(rows) -> dict:
     elif a["评级"] == "数据不足":
         a_ev = "需求端有效判定指标不足"
     else:
-        a_ev = "核心词、客单价、需求量、GMV 与趋势指标均达标"
+        a_ev = "核心词搜索量、核心词数量、月需求量、GMV 与站内外趋势均达标"
+
+    a2 = dims["A2_经营约束"]
+    a2_grade = f"{a2['评级']}（{a2['达标数']}）" if a2.get("达标数") and a2["达标数"] != "0/0" else a2["评级"]
+    if a2["不达标项"]:
+        a2_ev = f"不达标项：{'、'.join(a2['不达标项'])}（属成本/毛利/备货资金门槛，独立于需求规模）"
+    elif a2.get("达标数") == "0/0":
+        a2_ev = "经营约束指标待确认"
+    else:
+        a2_ev = "CPC竞价、平均客单价与季节波动系数均达标"
 
     b = dims["B_垄断与自营控盘"]
     b_grade = "极端" if b.get("是否极端") else b["评级"]
@@ -652,7 +721,8 @@ def summarize_four_dimensions(rows) -> dict:
         "参考档位": ref["参考档位"],
         "触发依据": ref["触发依据"],
         "维度明细": [
-            {"维度": "A. 需求底盘", "评级": a_grade, "核心证据": a_ev},
+            {"维度": "A1. 需求底盘（规模与趋势）", "评级": a_grade, "核心证据": a_ev},
+            {"维度": "A2. 经营约束（CPC/客单/季节）", "评级": a2_grade, "核心证据": a2_ev},
             {"维度": "B. 垄断与自营控盘", "评级": b_grade, "核心证据": b_ev},
             {"维度": "C. 评价与冷启动壁垒", "评级": c_grade, "核心证据": c_ev},
             {"维度": "D. 新品窗口与本土身份", "评级": d["新品窗口"], "核心证据": d_ev},
@@ -696,13 +766,13 @@ def build_advice_prompt(ctx, rows):
               "不得依据显示取整值改写指标判定。金额统一使用明确的ISO币种代码（例如 USD 2.48），金额较大时用 M 或 B，不得换算汇率。"
               "【指标名称严格对齐】输出中引用任何指标时，必须严格使用下方「指标」数组中的完整指标名称（例如使用‘上架超3年链接销额占比’而非‘老品占比’，使用‘头部链接销售额占比’而非‘头部链接占比’，使用‘新卖家占比’而非‘新卖家窗口’），确保正文与报告指标明细表逐字一致。"
               "【四维度×五档结论判定边界（按独立业务维度而非机械数项数判定，禁止将双维重度封锁类目放宽为‘低风险条件进入’或‘高风险条件进入’）】："
-              "四维度=A需求底盘（健康/偏弱/不成立）、B垄断与自营控盘（含头部链接销售额占比/头部品牌集中度/卖家集中度与VC卖家占比；VC卖家占比≥50%或≥2.5×阈值，或VC≥40%叠加品牌/卖家集中度超标均属重度控盘；品牌/卖家集中度≥阈值+15pct即重度集中；VC≥70%或品牌/卖家集中度≥85%或头部链接≥80%属极端控盘/垄断）、"
+              "四维度=A1需求底盘（仅看核心词搜索量/核心词数量/月需求量估算/类目GMV估算/站内外趋势：健康/偏弱/不成立）与A2经营约束（独立定级CPC竞价/平均客单价/季节波动系数：0项不达标可控、1项轻度约束、2项中度约束、3项高约束）、B垄断与自营控盘（含头部链接销售额占比/头部品牌集中度/卖家集中度与VC卖家占比；VC卖家占比≥50%或≥2.5×阈值，或VC≥40%叠加品牌/卖家集中度超标均属重度控盘；品牌/卖家集中度≥阈值+15pct即重度集中；VC≥70%或品牌/卖家集中度≥85%或头部链接≥80%属极端控盘/垄断）、"
               "C评价与冷启动壁垒（含大卖占比/评论壁垒/上架超3年链接销额占比/评分；评论壁垒≥2×阈值或大卖占比偏高叠加高评论壁垒即重度壁垒，评论壁垒≥4×阈值属极端壁垒）、D新品窗口（新卖家占比为主信号，若新品卖家数达标但新品销额占比<15%属弱窗口；本土卖家占比为辅助提醒）。"
               "1) 数据不足无法判断：有效已判定指标不足50%，或任一核心维度缺少有效判定；"
-              "2) 暂不建议进入：满足任一即归入本档——①A需求底盘不成立；②B垄断/自营控盘与C评价壁垒双双为重度；③评论壁垒极端高企(≥4×阈值)叠加B达中度及以上，或B极端控盘/垄断叠加C达中度及以上(或D为弱/无窗口)；④B或C任一为重度且D无新品窗口，或重度+中度叠加且D仅为弱窗口(新品销额占比<15%)；"
-              "3) 可进入：A健康或仅1项次要需求指标偏弱且站内趋势达标、B与C均不超过轻度、且D不缺新品窗口；"
-              "4) 低风险条件进入：常规中间态——需求成立、B与C均未达到重度或极端（最高为中度压力），需结合差异化/供应链条件进入；"
-              "5) 高风险条件进入：高门槛强警示中间态——需求成立且未触发‘暂不建议进入’，但B或C存在单维重度或单维极端控盘/壁垒压力（仅靠另一维可控与新品窗口保留空间）；须明确提示人工复核‘新品窗口是否由第三方新卖家而非头部大牌/自营贡献’及价格带/BuyBox/专利壁垒。"
+              "2) 暂不建议进入：满足任一即归入本档——①A1需求底盘不成立；②B垄断/自营控盘与C评价壁垒双双为重度；③评论壁垒极端高企(≥4×阈值)叠加B达中度及以上，或B极端控盘/垄断叠加C达中度及以上(或D为弱/无窗口)；④B或C任一为重度且D无新品窗口，或重度+中度叠加且D仅为弱窗口(新品销额占比<15%)；⑤A2经营约束为高约束(CPC/客单价/季节波动全不达标)且叠加A1偏弱或B/C达中度及以上；"
+              "3) 可进入：A1健康或仅1项次要需求偏弱且站内趋势达标、A2不超过轻度约束(且A1+A2合计不达标≤1项)、B与C均不超过轻度、且D不缺新品窗口；"
+              "4) 低风险条件进入：常规中间态——A1成立、A2不超过中度约束、B与C均未达到重度或极端（最高为中度压力），需结合差异化/供应链条件进入；"
+              "5) 高风险条件进入：高门槛强警示中间态——A1成立且未触发‘暂不建议进入’，但B或C存在单维重度/极端压力，或A2为高约束（CPC/客单/季节全不达标但核心需求健康且竞争可控）；须明确提示人工复核‘新品窗口是否由第三方新卖家而非头部大牌/自营贡献’、价格带/BuyBox/专利壁垒及毛利与资金周转。"
               "原则上遵循数据中‘判定边界参考’给出的参考档位；若因指标间存在压倒性抵消确需调整一档，必须在建议中明确给出定量理由。"
               "【输出格式与稳定篇幅硬性要求】："
               "建议：必须严格以‘可进入：’‘低风险条件进入：’‘高风险条件进入：’‘暂不建议进入：’或‘数据不足无法判断：’之一开头，紧跟一段80-140字完整判断，"
