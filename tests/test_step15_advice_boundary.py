@@ -233,7 +233,7 @@ def test_pdf_renders_four_dimension_breakdown_table():
         "C. 评价与冷启动壁垒",
         "D. 新品窗口与本土身份",
     ]
-    assert four_dim["维度明细"][1]["评级"] == "重度（极端）"
+    assert four_dim["维度明细"][1]["评级"] == "极端"
 
     html = render_html("Ice_Cream_Machines-US-202610", {
         "指标": rows,
@@ -245,7 +245,7 @@ def test_pdf_renders_four_dimension_breakdown_table():
     assert "B. 垄断与自营控盘" in html
     assert "C. 评价与冷启动壁垒" in html
     assert "D. 新品窗口与本土身份" in html
-    assert "重度（极端）" in html
+    assert "<td>极端</td>" in html
     assert "规则判定参考：暂不建议进入" in html
 
     from pathlib import Path

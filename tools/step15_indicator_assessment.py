@@ -631,11 +631,11 @@ def summarize_four_dimensions(rows) -> dict:
         a_ev = "核心词、客单价、需求量、GMV 与趋势指标均达标"
 
     b = dims["B_垄断与自营控盘"]
-    b_grade = f"{b['评级']}（极端）" if b.get("是否极端") else b["评级"]
+    b_grade = "极端" if b.get("是否极端") else b["评级"]
     b_ev = "；".join(b["说明"]) if b.get("说明") else "头部链接/品牌/卖家集中度与 VC/AMZ 占比均可控"
 
     c = dims["C_评价与冷启动壁垒"]
-    c_grade = f"{c['评级']}（极端）" if c.get("是否极端") else c["评级"]
+    c_grade = "极端" if c.get("是否极端") else c["评级"]
     c_ev = "；".join(c["说明"]) if c.get("说明") else "评论壁垒、大卖占比、老品占比与评分均可控"
 
     d = dims["D_新品窗口与本土身份"]
