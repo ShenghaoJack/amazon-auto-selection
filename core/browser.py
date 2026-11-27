@@ -383,6 +383,7 @@ class BrowserAutomation:
         self.amazon_slot_id = str(amazon_slot_id or "").strip()
         self.block_media = bool(block_media)
         self._media_blocking_active = False
+        self._closing = False
         self._proxy_bridge = None
         self._last_activity = time.monotonic()
         self._watchdog_stop = None
@@ -752,6 +753,9 @@ class BrowserAutomation:
         try:
             def _route_handler(route) -> None:
                 try:
+                    if getattr(self, "_closing", False):
+                        route.abort()
+                        return
                     req = route.request
                     if self._is_blocked_request(req.resource_type, req.url, headed=headed):
                         route.abort()
@@ -796,9 +800,11 @@ class BrowserAutomation:
                     except Exception:
                         pass
             elif self._context is not None:
+                self._closing = True
                 if getattr(self, "_media_blocking_active", False):
                     try:
-                        self._context.unroute_all(behavior="ignoreErrors")
+                        # 使用 wait 让在途路由回调自然完成，避免 ignoreErrors 强行 cancel 触发 Playwright _done_callback CancelledError 刷屏
+                        self._context.unroute_all(behavior="wait")
                     except Exception:  # noqa: BLE001 — 旧版 Playwright 或上下文已关闭时忽略
                         pass
                 try:

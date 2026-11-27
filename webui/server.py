@@ -2993,12 +2993,85 @@ def _std_workspace_summary(workspace):
         return result
 
 
+_SECURITY_LOG_LOCK = threading.Lock()
+_SECURITY_LOGGER = None
+
+
+def _get_security_logger():
+    """返回 WebUI 安全访问日志记录器（轮转写入 logs/webui_security.log）。"""
+    global _SECURITY_LOGGER
+    env_path = str(os.environ.get("WEBUI_SECURITY_LOG_PATH") or "").strip()
+    log_path = Path(env_path) if env_path else (PROJECT_ROOT / "logs" / "webui_security.log")
+    with _SECURITY_LOG_LOCK:
+        if _SECURITY_LOGGER is not None and getattr(_SECURITY_LOGGER, "_target_path", None) == str(log_path):
+            return _SECURITY_LOGGER
+        import hashlib
+        import logging
+        from logging.handlers import RotatingFileHandler
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        lg = logging.getLogger(f"webui.security.{hashlib.sha1(str(log_path).encode('utf-8')).hexdigest()[:8]}")
+        lg.setLevel(logging.INFO)
+        lg.propagate = False
+        for h in list(lg.handlers):
+            try:
+                h.close()
+            except Exception:
+                pass
+            lg.removeHandler(h)
+        fh = RotatingFileHandler(str(log_path), maxBytes=10 * 1024 * 1024, backupCount=5, encoding="utf-8")
+        fh.setFormatter(logging.Formatter("%(message)s"))
+        lg.addHandler(fh)
+        lg._target_path = str(log_path)
+        _SECURITY_LOGGER = lg
+        return lg
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "AutoWorkflowWebUI/1.0"
 
     # ---- 基础
-    def log_message(self, fmt, *args):  # 静默访问日志
+    def log_message(self, fmt, *args):  # 静默常规访问日志；异常/扫描请求走 _log_security_event
         pass
+
+    def _client_ip(self) -> str:
+        """提取客户端真实 IP（优先取反代 X-Forwarded-For 首跳 / X-Real-IP，兜底 socket 地址）。"""
+        try:
+            xff = str(self.headers.get("X-Forwarded-For") or "").strip()
+            if xff:
+                first = xff.split(",")[0].strip()
+                if first:
+                    return first[:64]
+            xri = str(self.headers.get("X-Real-IP") or "").strip()
+            if xri:
+                return xri[:64]
+            addr = getattr(self, "client_address", None)
+            if isinstance(addr, (tuple, list)) and addr:
+                return str(addr[0])[:64]
+        except Exception:
+            pass
+        return ""
+
+    def _log_security_event(self, code: int, reason: str = "") -> None:
+        """记录 401/403/404/429 等异常/扫描请求到 logs/webui_security.log（JSONL，不含敏感凭据）。"""
+        if code not in (401, 403, 404, 429):
+            return
+        try:
+            user = getattr(self, "_user", None) or {}
+            entry = {
+                "ts": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()),
+                "status": int(code),
+                "ip": self._client_ip(),
+                "method": str(getattr(self, "command", "") or ""),
+                "path": str(urlparse(getattr(self, "path", "") or "").path or "")[:256],
+                "host": str(self.headers.get("Host") or "")[:128],
+                "user": str(user.get("name") or ""),
+                "ua": str(self.headers.get("User-Agent") or "")[:200],
+            }
+            if reason:
+                entry["reason"] = str(reason)[:160]
+            _get_security_logger().info(json.dumps(entry, ensure_ascii=False))
+        except Exception:
+            pass
 
     def _security_origin(self):
         """Only the configured HTTPS origin, or a local loopback origin, is accepted."""
@@ -3022,6 +3095,8 @@ class Handler(BaseHTTPRequestHandler):
         return cookie["wui_session"].value if "wui_session" in cookie else ""
 
     def _auth_response(self, obj, code=200, cookie=None):
+        if code in (401, 403, 404, 429):
+            self._log_security_event(code, str(obj.get("error") or "") if isinstance(obj, dict) else "")
         data = json.dumps(obj, ensure_ascii=False).encode("utf-8")
         self.send_response(code)
         self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -3141,6 +3216,16 @@ class Handler(BaseHTTPRequestHandler):
                    headers={"X-Frame-Options": "DENY"})
 
     def _send(self, code: int, body: bytes, ctype: str = "application/json; charset=utf-8", headers=None):
+        if code in (401, 403, 404, 429):
+            reason = ""
+            if "json" in str(ctype).lower():
+                try:
+                    parsed = json.loads(body.decode("utf-8", errors="ignore"))
+                    if isinstance(parsed, dict):
+                        reason = str(parsed.get("error") or "")
+                except Exception:
+                    pass
+            self._log_security_event(code, reason)
         try:
             self.send_response(code)
             self.send_header("Content-Type", ctype)
@@ -3545,6 +3630,11 @@ class Handler(BaseHTTPRequestHandler):
             snap["manual_gate"] = pending[0] if pending else None
         except Exception as exc:
             snap["manual_gate"] = {"kind":"error", "message":f"人工确认状态无法核验：{exc}"}
+        try:
+            from core.remote_verify import list_active_sessions
+            snap["remote_verify"] = list_active_sessions(allowed_cats=self._allowed_cats())
+        except Exception:
+            snap["remote_verify"] = []
         return snap
 
     def _api_history(self) -> dict:
@@ -3807,6 +3897,24 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(self._api_history())
             elif path == "/api/category/shared":
                 self._json(self._api_category_shared(q))
+            elif path == "/api/remote-verify/sessions":
+                from core.remote_verify import list_active_sessions
+                self._json({"ok": True, "sessions": list_active_sessions(allowed_cats=self._allowed_cats())})
+            elif path == "/api/remote-verify/frame":
+                from core.remote_verify import get_frame_bytes, get_session
+                sid = str((q.get("id") or [""])[0] or "").strip()
+                st = get_session(sid)
+                if not st:
+                    self._json({"ok": False, "error": "远程验证会话不存在或已结束"}, 404)
+                else:
+                    cat = str(st.get("cat") or "").strip()
+                    if cat:
+                        self._require_cat(cat)
+                    raw = get_frame_bytes(sid)
+                    if not raw:
+                        self._json({"ok": False, "error": "画面尚未就绪"}, 404)
+                    else:
+                        self._send(200, raw, "image/jpeg")
             else:
                 self._json({"ok": False, "error": f"未知接口: {path}"}, 404)
         except Forbidden as exc:
@@ -3833,7 +3941,7 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/auth/login":
                 from webui import auth
                 body = self._read_body()
-                token = auth.login(body.get("username"), body.get("password"))
+                token = auth.login(body.get("username"), body.get("password"), client_ip=self._client_ip())
                 if not token: self._auth_response({"ok": False, "error": "账号或密码错误，或尝试次数过多，请稍后再试"}, 401)
                 else: self._auth_response({"ok": True}, cookie=token)
             elif path == "/api/auth/logout":
@@ -3998,6 +4106,18 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(res)
             elif path == "/api/admin/amazon-login/cancel":
                 self._json(_amz_login_manager().cancel_login())
+            elif path == "/api/remote-verify/action":
+                from core.remote_verify import enqueue_action, get_session
+                body = self._read_body()
+                sid = str(body.get("id") or "").strip()
+                st = get_session(sid)
+                if not st:
+                    raise ValueError("远程验证会话不存在或已结束")
+                cat = str(st.get("cat") or "").strip()
+                if cat:
+                    self._require_run(cat)
+                queued = enqueue_action(sid, body)
+                self._json({"ok": True, "queued": queued, "session": get_session(sid)})
             else:
                 self._json({"ok": False, "error": f"未知接口: {path}"}, 404)
         except Forbidden as exc:

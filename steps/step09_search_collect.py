@@ -650,6 +650,22 @@ class Step09SearchCollect(BaseStep):
                                 except Exception:
                                     pass
                                 url = default_url
+                            elif not ctx.dry_run and getattr(browser, "headed", False) and browser.is_amazon_captcha_page(page):
+                                from core.remote_verify import wait_for_human_verification
+                                ok_rv = wait_for_human_verification(
+                                    ctx,
+                                    browser,
+                                    page,
+                                    step_label=f"步骤09 搜索[{word}] 第{page_no}页",
+                                    url=str(getattr(page, "url", "") or default_url),
+                                    is_resolved=lambda p: not browser.is_amazon_captcha_page(p),
+                                    log_fn=lambda m: self.log(ctx, m),
+                                )
+                                if ok_rv:
+                                    html = page.content() or ""
+                                    page_items = _extract_result_items(html)
+                                    if page_items:
+                                        break
 
                         # 浏览器重试仍 0 个 ASIN 或疑似残页(<8 个且非明确末页/无结果页) → HttpFetcher (curl_cffi) 直连兜底补抓
                         _need_http_fallback = (

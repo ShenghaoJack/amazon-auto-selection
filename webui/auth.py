@@ -135,16 +135,17 @@ def list_users():
         r['categories'] = _cats(r.get('categories'))
     return rows
 
-def login(name, password):
+def login(name, password, *, client_ip: str = ''):
     name = str(name or '')[:64]
     password = str(password or '')[:256]
+    ip_detail = f"ip={str(client_ip).strip()[:64]}" if str(client_ip or '').strip() else ''
     now = time.time()
     with connect() as db:
         db.execute('DELETE FROM failures WHERE at < ?', (now-WINDOW,))
         fails = db.execute('SELECT count(*) FROM failures WHERE username=?', (name,)).fetchone()[0]
         burst = db.execute('SELECT count(*) FROM failures WHERE at > ?', (now-60,)).fetchone()[0]
         if fails >= MAX_FAILURES or burst >= 60:
-            _audit(db, name, 'login_throttled')
+            _audit(db, name, 'login_throttled', detail=ip_detail)
             return None
         row = db.execute('SELECT * FROM users WHERE name=?', (name,)).fetchone()
         salt = row['salt'] if row else bytes(16)
@@ -152,13 +153,13 @@ def login(name, password):
         actual = _hash(password, salt)
         if not row or not row['enabled'] or not hmac.compare_digest(actual, expected):
             db.execute('INSERT INTO failures VALUES (?,?)', (name, now))
-            _audit(db, name, 'login_failed')
+            _audit(db, name, 'login_failed', detail=ip_detail)
             return None
         db.execute('DELETE FROM failures WHERE username=?', (name,))
         token, csrf = secrets.token_urlsafe(32), secrets.token_urlsafe(32)
         db.execute('DELETE FROM sessions WHERE expires < ?', (now,))
         db.execute('INSERT INTO sessions VALUES (?,?,?,?)', (hashlib.sha256(token.encode()).hexdigest(), row['name'], csrf, now+SESSION_SECONDS))
-        _audit(db, row['name'], 'login_success')
+        _audit(db, row['name'], 'login_success', detail=ip_detail)
         return token
 
 def session(token):

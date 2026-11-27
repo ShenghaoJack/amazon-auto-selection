@@ -1358,6 +1358,20 @@ class Step10Variants(BaseStep):
                 self.log(ctx, f"浏览器补抓 {asin} 偶发 captcha → 冷却 {pause:.1f} 秒原地重试 1 次")
                 time.sleep(pause)
                 continue
+            elif kind == "captcha" and not ctx.dry_run and getattr(browser, "headed", False) and getattr(self, "_rv_used_for_asin", None) != asin:
+                from core.remote_verify import wait_for_human_verification
+                self._rv_used_for_asin = asin
+                ok_rv = wait_for_human_verification(
+                    ctx,
+                    browser,
+                    page,
+                    step_label=f"步骤10 变体展开({asin})",
+                    url=str(getattr(page, "url", "") or urls[url_idx]),
+                    is_resolved=lambda p: not browser.is_amazon_captcha_page(p),
+                    log_fn=lambda m: self.log(ctx, m),
+                )
+                if ok_rv:
+                    continue
             elif kind in ("error", "empty", "content") and not retried_once:
                 retried_once = True
                 if kind == "content" and len(urls) > 1:

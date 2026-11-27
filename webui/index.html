@@ -746,6 +746,18 @@
 .overlay .box.report{max-width:97vw;width:97vw;height:93vh;display:flex;flex-direction:column;padding:14px}
 .overlay .box.report .btnbar{margin-top:8px}
 #reportFrame{flex:1;width:100%;min-height:0;border:1px solid var(--line);border-radius:8px;background:#0b1220}
+/* 远程人机验证提醒条与交互画布弹窗 */
+.rv-banner{display:none;align-items:center;gap:12px;margin:10px auto 0;max-width:1380px;padding:10px 16px;border-radius:12px;
+  background:linear-gradient(90deg,rgba(245,158,11,.18),rgba(239,68,68,.16));border:1px solid rgba(251,191,36,.45);color:#fef3c7;font-size:13px}
+.overlay .box.rv-box{max-width:min(960px,94vw);width:min(960px,94vw);max-height:94vh;display:flex;flex-direction:column;gap:10px}
+.rv-stage{position:relative;flex:1;min-height:280px;max-height:66vh;overflow:auto;border:1px solid var(--line);border-radius:10px;
+  background:#090e1a;display:flex;align-items:flex-start;justify-content:center}
+#rvImg{display:block;max-width:100%;height:auto;cursor:crosshair;user-select:none;-webkit-user-drag:none}
+.rv-dot{position:absolute;width:22px;height:22px;border-radius:50%;border:2px solid #fbbf24;background:rgba(251,191,36,.28);
+  transform:translate(-50%,-50%);pointer-events:none;animation:rvPulse .55s ease-out forwards}
+@keyframes rvPulse{0%{opacity:1;transform:translate(-50%,-50%) scale(.5)}100%{opacity:0;transform:translate(-50%,-50%) scale(1.8)}}
+.rv-controls{display:flex;flex-wrap:wrap;align-items:center;gap:8px}
+.rv-controls input[type=text]{flex:1;min-width:180px}
 /* ===== 2026-10-22 词表对话弹窗（步骤18 标准化）===== */
 .vchat{position:fixed;inset:0;z-index:300;background:#00000099;display:flex;align-items:center;justify-content:center;padding:24px}
 .vchat.hide{display:none}
@@ -951,6 +963,11 @@
   <button id="btnReconn" class="btn-sm" style="margin-left:auto">↻ 重新连接</button>
 </div>
 
+<div id="rvBanner" class="rv-banner" role="alert">
+  <span><b>⚠ 亚马逊人机验证等待人工确认</b>：<span id="rvBannerText"></span></span>
+  <button id="rvBannerOpen" class="btn-ok shine" type="button" style="margin-left:auto">打开远程验证窗口</button>
+</div>
+
 <div id="fileOverlay" class="overlay" style="display:none">
   <div class="box">
     <h3>⚠ 请不要直接双击打开 HTML 文件</h3>
@@ -1011,6 +1028,25 @@
       <button class="btn-ok shine" id="rpClose">关闭</button>
     </div>
     <iframe id="reportFrame" title="整合市场报告" src="about:blank"></iframe>
+  </div>
+</div>
+
+<div id="rvOverlay" class="overlay" style="display:none">
+  <div class="box rv-box" role="dialog" aria-modal="true" aria-labelledby="rvTitle">
+    <div style="display:flex;align-items:center;gap:10px">
+      <h3 id="rvTitle" style="margin:0">🛡 远程亚马逊人机验证</h3>
+      <span id="rvMeta" class="tiny" style="color:var(--dim)"></span>
+      <button class="btn-sm btn-ghost" id="rvClose" type="button" style="margin-left:auto">暂时收起</button>
+    </div>
+    <div id="rvMsg" class="tiny" style="color:#fde68a"></div>
+    <div id="rvStage" class="rv-stage" tabindex="0">
+      <img id="rvImg" alt="远程浏览器实时画面" src="">
+    </div>
+    <div class="rv-controls" style="justify-content:flex-end">
+      <button class="btn-sm btn-ghost" id="rvReload" type="button">↻ 刷新页面</button>
+      <button class="btn-sm" id="rvConfirm" type="button">立即复检</button>
+      <button class="btn-sm btn-ghost" id="rvAbort" type="button" style="color:var(--bad)">中止等待</button>
+    </div>
   </div>
 </div>
 <div id="stepFilesOverlay" class="overlay" style="display:none">
@@ -2880,6 +2916,218 @@ function syncManualGate(data) {
     if (__openWorkbenchPanel === oldPanel) closeWorkbenchPanel(true);
   }
 }
+/* ===== 远程亚马逊人机验证（WebUI 交互画布）===== */
+let __rvSessions = [], __rvActiveId = "", __rvLastSeq = -1, __rvTimer = null, __rvAutoOpened = new Set();
+function _fmtRvRemain(sec) {
+  const s = Math.max(0, Math.floor(Number(sec) || 0));
+  const m = Math.floor(s / 60), r = s % 60;
+  return m > 0 ? `${m}分${String(r).padStart(2, "0")}秒` : `${r}秒`;
+}
+function syncRemoteVerify(sessions) {
+  __rvSessions = Array.isArray(sessions) ? sessions : [];
+  const banner = $("rvBanner");
+  if (!__rvSessions.length) {
+    if (banner) banner.style.display = "none";
+    if (__rvActiveId) {
+      closeRemoteVerifyModal(true);
+      toast("人机验证已通过或结束，流程已继续", "ok");
+    }
+    return;
+  }
+  const first = __rvSessions[0];
+  if (banner) {
+    banner.style.display = "flex";
+    const extra = __rvSessions.length > 1 ? ` 等 ${__rvSessions.length} 个任务` : "";
+    $("rvBannerText").textContent = `${first.cat || "当前任务"} · ${first.step || "亚马逊验证"}${extra}（剩余 ${_fmtRvRemain(first.remaining_sec)}）`;
+  }
+  if (__rvActiveId) {
+    const cur = __rvSessions.find(s => s.id === __rvActiveId);
+    if (!cur) {
+      closeRemoteVerifyModal(true);
+      toast("当前人机验证已通过，流程已自动继续！", "ok");
+    } else {
+      updateRemoteVerifyView(cur);
+    }
+  } else if (!__rvAutoOpened.has(first.id)) {
+    __rvAutoOpened.add(first.id);
+    openRemoteVerifyModal(first.id);
+  }
+}
+function updateRemoteVerifyView(session) {
+  if (!session) return;
+  const rem = Math.max(0, Math.floor(Number(session.remaining_sec) || 0));
+  $("rvTitle").textContent = `🛡 远程亚马逊人机验证 · ${session.cat || ""}`;
+  const meta = $("rvMeta");
+  meta.textContent = `${session.step || ""} · 剩余 ${_fmtRvRemain(rem)}`;
+  meta.style.color = rem <= 60 ? "#f87171" : "#fbbf24";
+  $("rvMsg").textContent = (session.message || "请直接在下方画面中点击按钮或输入验证码，验证通过后系统会自动关闭弹窗并继续流程")
+    + `（剩余 ${_fmtRvRemain(rem)}，超时自动保留断点）`;
+  if (session.frame_seq !== __rvLastSeq) {
+    __rvLastSeq = session.frame_seq;
+    $("rvImg").src = `/api/remote-verify/frame?id=${encodeURIComponent(session.id)}&seq=${session.frame_seq}&t=${Date.now()}`;
+  }
+}
+function openRemoteVerifyModal(id) {
+  const target = __rvSessions.find(s => s.id === id) || __rvSessions[0];
+  if (!target) { toast("当前没有等待中的远程验证会话", "err"); return; }
+  __rvActiveId = target.id;
+  __rvLastSeq = -1;
+  $("rvOverlay").style.display = "flex";
+  updateRemoteVerifyView(target);
+  try { $("rvStage").focus(); } catch (_) {}
+  if (__rvTimer) clearInterval(__rvTimer);
+  __rvTimer = setInterval(async () => {
+    if (!__rvActiveId || $("rvOverlay").style.display === "none") return;
+    try {
+      const d = await api("/api/remote-verify/sessions");
+      syncRemoteVerify(d.sessions || []);
+    } catch (_) {}
+  }, 600);
+}
+function closeRemoteVerifyModal(clearActive = false) {
+  $("rvOverlay").style.display = "none";
+  if (__rvTimer) { clearInterval(__rvTimer); __rvTimer = null; }
+  if (clearActive) { __rvActiveId = ""; __rvLastSeq = -1; }
+}
+async function sendRemoteVerifyAction(payload) {
+  if (!__rvActiveId) return;
+  try {
+    const d = await api("/api/remote-verify/action", { method: "POST", body: { id: __rvActiveId, ...payload } });
+    if (d && d.session) updateRemoteVerifyView(d.session);
+  } catch (e) {
+    toast("操作发送失败: " + (e.message || e), "err");
+  }
+}
+(function bindRemoteVerifyUI() {
+  let typeBuf = "", typeTimer = null;
+  const flushTypeBuf = () => {
+    if (typeTimer) { clearTimeout(typeTimer); typeTimer = null; }
+    if (!typeBuf) return;
+    const text = typeBuf;
+    typeBuf = "";
+    sendRemoteVerifyAction({ type: "type", text });
+  };
+  const isRvOpen = () => !!__rvActiveId && $("rvOverlay") && $("rvOverlay").style.display !== "none";
+  if ($("rvBannerOpen")) $("rvBannerOpen").onclick = () => openRemoteVerifyModal(__rvSessions[0]?.id);
+  if ($("rvClose")) $("rvClose").onclick = () => { flushTypeBuf(); closeRemoteVerifyModal(false); };
+  if ($("rvImg")) {
+    const img = $("rvImg");
+    const toViewportXY = (ev) => {
+      const cur = __rvSessions.find(s => s.id === __rvActiveId);
+      if (!cur) return null;
+      const rect = img.getBoundingClientRect();
+      if (!rect.width || !rect.height) return null;
+      const vp = cur.viewport || { width: img.naturalWidth || 1280, height: img.naturalHeight || 800 };
+      const x = Math.max(0, Math.min(vp.width, (ev.clientX - rect.left) * (vp.width / rect.width)));
+      const y = Math.max(0, Math.min(vp.height, (ev.clientY - rect.top) * (vp.height / rect.height)));
+      return { x: Number(x.toFixed(1)), y: Number(y.toFixed(1)) };
+    };
+    const showPulse = (ev) => {
+      const dot = document.createElement("span");
+      dot.className = "rv-dot";
+      const stageRect = $("rvStage").getBoundingClientRect();
+      dot.style.left = (ev.clientX - stageRect.left + $("rvStage").scrollLeft) + "px";
+      dot.style.top = (ev.clientY - stageRect.top + $("rvStage").scrollTop) + "px";
+      $("rvStage").appendChild(dot);
+      setTimeout(() => dot.remove(), 600);
+    };
+    let dragPts = null;
+    img.addEventListener("pointerdown", (ev) => {
+      if (ev.button !== 0) return;
+      ev.preventDefault();
+      flushTypeBuf();
+      try { $("rvStage").focus(); } catch (_) {}
+      const pt = toViewportXY(ev);
+      if (!pt) return;
+      dragPts = [pt];
+      showPulse(ev);
+      try { img.setPointerCapture(ev.pointerId); } catch (_) {}
+    });
+    img.addEventListener("pointermove", (ev) => {
+      if (!dragPts) return;
+      const pt = toViewportXY(ev);
+      if (!pt) return;
+      const prev = dragPts[dragPts.length - 1];
+      if (Math.hypot(pt.x - prev.x, pt.y - prev.y) >= 6 && dragPts.length < 60) {
+        dragPts.push(pt);
+      }
+    });
+    const finishPointer = (ev) => {
+      if (!dragPts) return;
+      const pts = dragPts;
+      dragPts = null;
+      try { img.releasePointerCapture(ev.pointerId); } catch (_) {}
+      const endPt = toViewportXY(ev);
+      if (endPt) {
+        const last = pts[pts.length - 1];
+        if (Math.hypot(endPt.x - last.x, endPt.y - last.y) >= 1) pts.push(endPt);
+      }
+      const start = pts[0], end = pts[pts.length - 1];
+      const dist = Math.hypot(end.x - start.x, end.y - start.y);
+      if (dist < 6) {
+        sendRemoteVerifyAction({ type: "click", x: start.x, y: start.y });
+      } else {
+        showPulse(ev);
+        sendRemoteVerifyAction({ type: "drag", points: pts.slice(0, 60) });
+      }
+    };
+    img.addEventListener("pointerup", finishPointer);
+    img.addEventListener("pointercancel", () => { dragPts = null; });
+  }
+  document.addEventListener("keydown", (ev) => {
+    if (!isRvOpen()) return;
+    const tag = String((ev.target && ev.target.tagName) || "").toUpperCase();
+    if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+    if (ev.ctrlKey || ev.metaKey || ev.altKey) return;
+    const special = {
+      "Enter": "Enter", "Backspace": "Backspace", "Tab": "Tab",
+      "ArrowUp": "ArrowUp", "ArrowDown": "ArrowDown", "ArrowLeft": "ArrowLeft", "ArrowRight": "ArrowRight",
+    }[ev.key];
+    if (special) {
+      ev.preventDefault();
+      flushTypeBuf();
+      sendRemoteVerifyAction({ type: "key", key: special });
+      return;
+    }
+    if (ev.key && ev.key.length === 1) {
+      ev.preventDefault();
+      typeBuf += ev.key;
+      if (typeTimer) clearTimeout(typeTimer);
+      typeTimer = setTimeout(flushTypeBuf, 90);
+    }
+  });
+  document.addEventListener("paste", (ev) => {
+    if (!isRvOpen()) return;
+    const tag = String((ev.target && ev.target.tagName) || "").toUpperCase();
+    if (tag === "INPUT" || tag === "TEXTAREA") return;
+    const txt = (ev.clipboardData && ev.clipboardData.getData("text")) || "";
+    if (!txt) return;
+    ev.preventDefault();
+    flushTypeBuf();
+    sendRemoteVerifyAction({ type: "type", text: txt.slice(0, 128) });
+  });
+  if ($("rvReload")) $("rvReload").onclick = () => { flushTypeBuf(); sendRemoteVerifyAction({ type: "reload" }); };
+  if ($("rvConfirm")) $("rvConfirm").onclick = () => {
+    flushTypeBuf();
+    sendRemoteVerifyAction({ type: "confirm" });
+    toast("已通知后台立即复检页面状态…", "ok");
+  };
+  if ($("rvAbort")) $("rvAbort").onclick = () => {
+    if (!confirm("确认中止本次人机验证等待？流水线将保留断点并退出当前等待。")) return;
+    flushTypeBuf();
+    sendRemoteVerifyAction({ type: "abort" });
+    closeRemoteVerifyModal(true);
+  };
+  const pollGlobalRv = async () => {
+    if (document.hidden || ($("rvOverlay") && $("rvOverlay").style.display !== "none")) return;
+    try {
+      const d = await api("/api/remote-verify/sessions");
+      if (d && Array.isArray(d.sessions)) syncRemoteVerify(d.sessions);
+    } catch (_) {}
+  };
+  setTimeout(pollGlobalRv, 800);
+  setInterval(pollGlobalRv, 3000);
+})();
 // 2026-09-09: 记忆当前视图, 刷新后恢复(见 initBoot)
 const WUI_VIEW_KEY = "wui_view";
 function showHome() {
@@ -6230,6 +6478,7 @@ async function pollNow() {
     if (requestedFile !== selFile || requestedGeneration !== statusGeneration) return;
     lastStatus = d;      // 「中断」确认框要据此判断"是否外部/孤儿运行"(2026-09-16)
     syncManualGate(d); // 先显示必需处理，不受其他看板组件渲染失败影响。
+    syncRemoteVerify(d.remote_verify);
     // 缓冲变了(换类目 / 从 CLI 类目切到本服务类目): 旧游标作废 → 清面板并**立刻重取一次**,
     // 否则 `since(旧的大数)` 对新缓冲恒为空, 面板会一直停在上一个类目的日志(2026-09-15 修)。
     // 键优先用服务端的 stream_key(精确到"哪个缓冲"); 旧服务进程没这个字段时退回 cat

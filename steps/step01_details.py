@@ -415,6 +415,20 @@ class Step01Details(BaseStep):
                     self.log(ctx, f"浏览器补抓 {asin} 偶发 captcha → 冷却 {pause:.1f} 秒原地重试 1 次")
                     time.sleep(pause)
                     continue
+                if not ctx.dry_run and getattr(browser, "headed", False) and not getattr(self, "_rv_used_for_asin", None) == asin:
+                    from core.remote_verify import wait_for_human_verification
+                    self._rv_used_for_asin = asin
+                    ok_rv = wait_for_human_verification(
+                        ctx,
+                        browser,
+                        page,
+                        step_label=f"步骤01 商品详情({asin})",
+                        url=str(getattr(page, "url", "") or urls[url_idx]),
+                        is_resolved=lambda p: not browser.is_amazon_captcha_page(p),
+                        log_fn=lambda m: self.log(ctx, m),
+                    )
+                    if ok_rv:
+                        continue
                 break
             last_status = "parse_failed"
             if not ctx.dry_run and not retried_once and len(urls) > 1:

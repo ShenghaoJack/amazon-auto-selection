@@ -39,6 +39,69 @@ _MCP_THREAD_LOCKS: dict[str, threading.RLock] = {}
 _MCP_THREAD_LOCKS_GUARD = threading.Lock()
 DEFAULT_MCP_MIN_INTERVAL = 0.25
 
+_MCP_CALL_LOG_LOCK = threading.Lock()
+_MCP_CALL_LOGGER = None
+
+
+def _get_mcp_call_logger():
+    """返回 MCP 调用流水日志记录器（轮转写入 logs/mcp_calls.log，不记录密钥）。"""
+    global _MCP_CALL_LOGGER
+    env_path = str(os.environ.get("PIPELINE_MCP_LOG_PATH") or "").strip()
+    log_path = Path(env_path) if env_path else (Path(__file__).resolve().parent.parent / "logs" / "mcp_calls.log")
+    with _MCP_CALL_LOG_LOCK:
+        if _MCP_CALL_LOGGER is not None and getattr(_MCP_CALL_LOGGER, "_target_path", None) == str(log_path):
+            return _MCP_CALL_LOGGER
+        import logging
+        from logging.handlers import RotatingFileHandler
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        lg = logging.getLogger(f"pipeline.mcp.calls.{hashlib.sha1(str(log_path).encode('utf-8')).hexdigest()[:8]}")
+        lg.setLevel(logging.INFO)
+        lg.propagate = False
+        for h in list(lg.handlers):
+            try:
+                h.close()
+            except Exception:
+                pass
+            lg.removeHandler(h)
+        fh = RotatingFileHandler(str(log_path), maxBytes=10 * 1024 * 1024, backupCount=5, encoding="utf-8")
+        fh.setFormatter(logging.Formatter("%(message)s"))
+        lg.addHandler(fh)
+        lg._target_path = str(log_path)
+        _MCP_CALL_LOGGER = lg
+        return lg
+
+
+def _record_mcp_call(
+    *,
+    endpoint: str,
+    tool: str,
+    ok: bool,
+    duration_ms: int,
+    attempts: int,
+    cat: str = "",
+    status_code: int | None = None,
+    error: str = "",
+) -> None:
+    """将单次 MCP 工具调用记入 JSONL 流水日志（永不记录密钥或原始敏感头）。"""
+    try:
+        clean_ep = str(endpoint or "").split("?", 1)[0]
+        entry: dict[str, Any] = {
+            "ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "cat": str(cat or ""),
+            "endpoint": clean_ep,
+            "tool": str(tool or ""),
+            "ok": bool(ok),
+            "duration_ms": int(max(0, duration_ms)),
+            "attempts": int(max(1, attempts)),
+        }
+        if status_code is not None:
+            entry["status_code"] = int(status_code)
+        if error:
+            entry["error"] = str(error)[:200]
+        _get_mcp_call_logger().info(json.dumps(entry, ensure_ascii=False))
+    except Exception:  # noqa: BLE001 — 日志写入失败绝不影响业务调用
+        pass
+
 
 def _mcp_lock_dir() -> Path:
     env = str(os.environ.get("PIPELINE_MCP_LOCK_DIR") or os.environ.get("PIPELINE_AMZ_LOCK_DIR") or "").strip()
@@ -410,8 +473,13 @@ class MCPClient:
             return None
         url = self._url()
         key = str(self.config.get(self._key_key, "") or "")
+        cat_name = str(getattr(self.config, "cat", "") or "")
+        t0 = time.monotonic()
         last_err: str = ""
+        last_status: int | None = None
+        used_attempts = 0
         for attempt in range(retries):
+            used_attempts = attempt + 1
             try:
                 self._initialize()          # 已有会话则跳过(见其 docstring), 不再每次工具调用都握手
                 body = {
@@ -422,6 +490,7 @@ class MCPClient:
                 }
                 with _mcp_key_gate(url, key):
                     resp = self._http().post(url, headers=self._headers(), json=body)
+                last_status = getattr(resp, "status_code", None)
                 resp.raise_for_status()
                 data = parse_mcp_json(resp)
                 if "error" in data and data["error"]:
@@ -447,9 +516,15 @@ class MCPClient:
                     raise MCPBusinessError(tool, err_code, str(err_msg or err_obj), payload)
                 if isinstance(payload, dict) and payload.get("code") not in (None, "OK", 200, 0):
                     raise MCPBusinessError(tool, payload.get("code"), str(payload.get("message", payload)), payload)
+                _record_mcp_call(
+                    endpoint=url, tool=tool, ok=True,
+                    duration_ms=int((time.monotonic() - t0) * 1000),
+                    attempts=used_attempts, cat=cat_name, status_code=last_status,
+                )
                 return payload.get("data") if isinstance(payload, dict) and "data" in payload else payload
             except httpx.HTTPStatusError as exc:
                 status_code = exc.response.status_code if exc.response is not None else 0
+                last_status = status_code
                 body_preview = (exc.response.text or "")[:120] if exc.response is not None else ""
                 last_err = f"HTTPStatusError({status_code}): {body_preview or str(exc)[:120]}"
                 self._reset_connection(f"HTTP {status_code}")
@@ -463,8 +538,20 @@ class MCPClient:
                 # 丢弃连接与会话, 让下一次重试**重新握手**(而不是复用坏连接) —— 2026-09-15
                 self._reset_connection(type(exc).__name__)
                 time.sleep(2 + attempt * 3)
-            except RuntimeError:
+            except RuntimeError as exc:
+                _record_mcp_call(
+                    endpoint=url, tool=tool, ok=False,
+                    duration_ms=int((time.monotonic() - t0) * 1000),
+                    attempts=used_attempts, cat=cat_name, status_code=last_status,
+                    error=str(exc),
+                )
                 raise
+        _record_mcp_call(
+            endpoint=url, tool=tool, ok=False,
+            duration_ms=int((time.monotonic() - t0) * 1000),
+            attempts=max(1, used_attempts), cat=cat_name, status_code=last_status,
+            error=last_err,
+        )
         raise RuntimeError(f"MCP {tool} 重试 {retries} 次仍失败: {last_err}")
 
     def call_raw(self, tool: str, arguments: dict, retries: int = MCP_CALL_RETRIES) -> dict:
@@ -515,14 +602,20 @@ class MCPClient:
             }
         url = self._url()
         key = str(self.config.get(self._key_key, "") or "")
+        cat_name = str(getattr(self.config, "cat", "") or "")
+        t0 = time.monotonic()
         last_err: str = ""
+        last_status: int | None = None
+        used_attempts = 0
         for attempt in range(retries):
+            used_attempts = attempt + 1
             try:
                 self._initialize()
                 body = {"jsonrpc": "2.0", "method": "tools/call",
                         "params": {"name": tool, "arguments": arguments}, "id": 2}
                 with _mcp_key_gate(url, key):
                     resp = self._http().post(url, headers=self._headers(), json=body)
+                last_status = getattr(resp, "status_code", None)
                 resp.raise_for_status()
                 data = parse_mcp_json(resp)
                 if data.get("error"):
@@ -531,11 +624,32 @@ class MCPClient:
                 if result.get("isError"):
                     raise MCPBusinessError(tool, "isError", f"执行失败: {_content_texts(result)[:300]}", data)
                 payload = _parse_payload(result)
+                _record_mcp_call(
+                    endpoint=url, tool=tool, ok=True,
+                    duration_ms=int((time.monotonic() - t0) * 1000),
+                    attempts=used_attempts, cat=cat_name, status_code=last_status,
+                )
                 return payload if isinstance(payload, dict) else {"code": None, "data": payload}
             except (httpx.HTTPError, OSError) as exc:
+                if isinstance(exc, httpx.HTTPStatusError) and exc.response is not None:
+                    last_status = exc.response.status_code
                 last_err = f"{type(exc).__name__}: {str(exc)[:120]}"
                 self._reset_connection(type(exc).__name__)
                 time.sleep(2 + attempt * 3)
+            except RuntimeError as exc:
+                _record_mcp_call(
+                    endpoint=url, tool=tool, ok=False,
+                    duration_ms=int((time.monotonic() - t0) * 1000),
+                    attempts=used_attempts, cat=cat_name, status_code=last_status,
+                    error=str(exc),
+                )
+                raise
+        _record_mcp_call(
+            endpoint=url, tool=tool, ok=False,
+            duration_ms=int((time.monotonic() - t0) * 1000),
+            attempts=max(1, used_attempts), cat=cat_name, status_code=last_status,
+            error=last_err,
+        )
         raise RuntimeError(f"MCP {tool} 重试 {retries} 次仍失败: {last_err}")
 
     def keyword_miner(self, request: dict) -> dict:

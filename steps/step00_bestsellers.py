@@ -920,22 +920,30 @@ class Step00Bestsellers(BaseStep):
             pass
         if not manual_challenge:
             raise ListVerificationRequired(f"[{kind}] 第 {page_no} 页遇到亚马逊人机验证: {url}")
-        timeout = max(1, int(ctx.config.get("LOGIN_TIMEOUT", 300) or 300))
-        self.log(ctx, f"[{kind}] 请在有头浏览器完成人机验证，等待最多 {timeout} 秒；验证通过后自动继续。")
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            time.sleep(2)
+        from core.remote_verify import wait_for_human_verification
+
+        def _resolved(p) -> bool:
             try:
-                html = _page_content(page)
-            except Exception as exc:
-                if "unable to retrieve content" in str(exc).lower() and "navigat" in str(exc).lower():
-                    continue
-                raise
-            if not _is_verification_page(html):
-                _, _, strict, _ = _main_list_scope(html)
-                if strict or (kind == "nr" and self._is_no_new_releases(html)):
-                    self.log(ctx, f"[{kind}] 验证通过，已恢复榜单页面。")
-                    return
+                html = _page_content(p)
+            except Exception:
+                return False
+            if _is_verification_page(html):
+                return False
+            _, _, strict, _ = _main_list_scope(html)
+            return bool(strict or (kind == "nr" and self._is_no_new_releases(html)))
+
+        ok = wait_for_human_verification(
+            ctx,
+            browser,
+            page,
+            step_label=f"步骤00 榜单[{kind}] 第{page_no}页",
+            url=url,
+            is_resolved=_resolved,
+            log_fn=lambda m: self.log(ctx, m),
+        )
+        if ok:
+            self.log(ctx, f"[{kind}] 验证通过，已恢复榜单页面。")
+            return
         raise ListVerificationRequired(f"[{kind}] 人机验证未完成或榜单未恢复，已保留断点: {url}")
 
     def _read_list_page(self, ctx: StepContext, browser, page, url: str, kind: str,
